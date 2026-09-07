@@ -127,6 +127,42 @@ legacy checks running” case in
 Unsupported source-language files are also skipped. A missing extractor does
 not make the rest of setup or drift checking fail.
 
+### Files the corpus policy will not index
+
+The graph applies a bounded per-file size ceiling (2 MB) so one pathological
+file cannot exhaust memory. A file over that ceiling is **skipped, not fatal**:
+the rest of the repository is indexed normally, and the skipped files are
+reported by name, size and limit in `mex graph` output and in the `skipped`
+array of its `--json` result.
+
+Corpus-*wide* ceilings still abort the run. They describe the whole build and
+there is no honest partial answer to "this repository is too large to index
+within the bounded policy".
+
+### Excluding paths from the graph
+
+`node_modules`, `.git`, `dist`, `build`, `.mex`, `coverage`, `.next` and `out`
+are always excluded. A repository can exclude more by listing globs under
+`graph.ignore` in `.mex/config.json`:
+
+```json
+{
+  "graph": {
+    "ignore": ["vendor/**", "**/*.generated.ts"]
+  }
+}
+```
+
+The list is **additive**: configured globs are appended to the built-in ones
+and cannot un-ignore them, so `node_modules` and `.mex` stay excluded whatever
+the configuration says. Globs are repository-relative; absolute paths and
+upward traversal are ignored, and the list is bounded. A missing or malformed
+config simply contributes no extra globs rather than failing a build.
+
+Changing this list changes which files the graph describes, so it changes the
+build manifest and the next `mex graph status` will report the index as stale
+until it is rebuilt.
+
 ## Known limitations
 
 - **Ambiguous references stay unresolved.** The base resolver prefers a
@@ -139,10 +175,9 @@ not make the rest of setup or drift checking fail.
   reflection, dependency injection, monkey-patching, or computed calls.
 - **Generated code is path-filtered, not identified semantically.** Common
   output trees such as `node_modules`, `dist`, `build`, `.next`, `out`,
-  `coverage`, and `.mex` are excluded by the source globs in
-  [`engine-impl.ts`](../src/graph/engine-impl.ts) and
-  [`runtime.ts`](../src/graph/runtime.ts). Generated files outside those paths
-  may still be indexed.
+  `coverage`, and `.mex` are excluded by the corpus policy in
+  [`corpus-policy.ts`](../src/graph/corpus-policy.ts). Generated files outside
+  those paths may still be indexed; add a `graph.ignore` glob to exclude them.
 - **Framework behavior is opt-in and narrow.** Express route-to-handler binding
   is the only framework fixture in v0.7.0. Other frameworks remain unsupported
   until their language extractor and resolver work merges.

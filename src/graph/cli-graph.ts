@@ -1,4 +1,6 @@
-import type { GraphSourceChanges, GraphStatus } from "../team/contracts/graph.js";
+import type {
+  GraphRefreshResult, GraphSourceChanges, GraphStatus,
+} from "../team/contracts/graph.js";
 import {
   GraphMaintenanceError,
   repairGraph,
@@ -54,6 +56,7 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
         partial: result.status.parseHealth.partial,
         failed: result.status.parseHealth.failed,
       },
+      ...(result.skipped && result.skipped.length > 0 ? { skipped: result.skipped } : {}),
     }, null, 2));
     return;
   }
@@ -61,7 +64,27 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
     `Code graph built: ${result.nodesCreated} nodes, ${result.edgesCreated} edges `
       + `across ${result.filesIndexed} files in ${result.durationMs}ms → .mex/graph.db`,
   );
+  printSkippedSources(result.skipped);
 }
+
+/**
+ * Name the files that are deliberately missing from the graph.
+ *
+ * Silence here is what made an oversized file look like a graph bug: a symbol
+ * was simply absent with nothing to explain it.
+ */
+function printSkippedSources(skipped: GraphRefreshResult["skipped"]): void {
+  if (!skipped || skipped.length === 0) return;
+  const shown = skipped.slice(0, MAX_SKIPPED_PATHS_SHOWN);
+  console.log(`Skipped ${skipped.length} file(s) the bounded corpus policy will not index:`);
+  for (const file of shown) console.log(`  ${file.filePath} — ${file.message}`);
+  const omitted = skipped.length - shown.length;
+  if (omitted > 0) console.log(`  …and ${omitted} more (use --json for the full list)`);
+  console.log("Add a glob to \"graph.ignore\" in .mex/config.json to exclude a path deliberately.");
+}
+
+/** Human output stays bounded; `--json` carries the complete list. */
+const MAX_SKIPPED_PATHS_SHOWN = 10;
 
 function printStatus(status: GraphStatus): void {
   const branch = status.currentRepo.branch ?? "detached/no branch";
@@ -103,6 +126,7 @@ function printMaintenance(verb: "refreshed" | "rebuilt", result: GraphMaintenanc
     `Code graph ${verb}: ${result.nodesCreated} nodes, ${result.edgesCreated} edges `
       + `across ${result.filesIndexed} files in ${result.durationMs}ms; status ${result.status.status}.`,
   );
+  printSkippedSources(result.skipped);
   if (result.recoveryPath) {
     console.log(`Previous index retained for local recovery: ${result.recoveryPath}`);
   }
