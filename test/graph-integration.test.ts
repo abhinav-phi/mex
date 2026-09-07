@@ -20,6 +20,7 @@ import {
   loadGroundingRuntime,
   loadReadOnlyGroundingRuntime,
   persistMovedGroundings,
+  previewGroundingBaseline,
   refreshGroundingBaselines,
   type GroundingRuntime,
 } from "../src/graph/runtime.js";
@@ -346,10 +347,11 @@ describe("code-graph grounding integration", () => {
       issues: report.issues.filter((issue) => issue.code === "GROUNDING_DRIFT"),
     }], root, { config, runtime: runtime! });
     expect(bodyRepairBrief).toContain("GROUNDING REPAIR");
-    expect(bodyRepairBrief).toContain("refresh that grounds_to entry");
+    expect(bodyRepairBrief).toContain("user explicitly accepts that entry");
     expect(bodyRepairBrief).toContain('mex graph scope "<behavior being repaired>"');
     expect(bodyRepairBrief).toContain("fingerprints belong ONLY in grounds_to");
-    refreshGroundingBaselines(config, [scaffold], runtime!);
+    const acceptance = previewGroundingBaseline(config, ".mex/context/architecture.md", node.id, runtime!)!.acceptance;
+    refreshGroundingBaselines(config, [scaffold], runtime!, { acceptedGroundings: [acceptance] });
     runtime!.close();
     const refreshedContent = readFileSync(scaffold, "utf-8");
     expect(extractGroundings(refreshedContent)[0].fingerprint).not.toBe(initialFingerprint);
@@ -385,17 +387,21 @@ describe("code-graph grounding integration", () => {
     expect(anchorAmbiguousBrief).toContain("AMBIGUOUS: adjudicate the surfaced candidate");
     expect(anchorAmbiguousBrief).toContain("any matching inline anchor");
     const moved = persistMovedGroundings(config, [scaffold], runtime!);
+    const oldHash = extractGroundings(refreshedContent)[0].bodyHash;
     runtime!.close();
     expect(moved).toBe(2);
     const persisted = extractGroundings(readFileSync(scaffold, "utf-8"));
     expect(persisted[0].node).not.toBe(node.id);
     expect(persisted[0].node).toContain("function:");
+    expect(persisted[0].bodyHash).toBe(oldHash);
     const persistedContent = readFileSync(scaffold, "utf-8");
     expect(persistedContent).not.toContain(`mex://${node.id}`);
     expect(persistedContent).toContain(`mex://${persisted[0].node}`);
     report = await runDriftCheckWithGraphStatus(config, { graphWarning: warning });
     expect(report.graphStatus?.status).toBe("fresh");
-    expect(report.issues.filter((issue) => issue.code.startsWith("GROUNDING_"))).toHaveLength(0);
+    expect(report.issues.filter((issue) => issue.code.startsWith("GROUNDING_"))).toMatchObject([
+      { code: "GROUNDING_DRIFT" },
+    ]);
   }, 20_000);
 
   it("keeps legacy checks running when the graph engine fails to load", async () => {
