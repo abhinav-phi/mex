@@ -1312,6 +1312,10 @@ function maintenanceResult(
     filesIndexed: build.filesIndexed,
     nodesCreated: build.nodesCreated,
     edgesCreated: build.edgesCreated,
+    ...(build.skipped && build.skipped.length > 0 ? { skipped: build.skipped } : {}),
+    ...(build.declinedInputs && build.declinedInputs.length > 0
+      ? { declinedInputs: build.declinedInputs }
+      : {}),
     ...(published.recoveryPath ? { recoveryPath: published.recoveryPath } : {}),
   };
 }

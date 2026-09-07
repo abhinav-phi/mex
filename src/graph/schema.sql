@@ -122,8 +122,20 @@ CREATE TABLE IF NOT EXISTS files (
     extractor_version TEXT NOT NULL DEFAULT 'unknown'
 );
 
--- Unresolved references: parked during single-file extraction, resolved after a
--- full index pass (two-phase extract -> resolve). Kept so cross-file edges work.
+-- Unresolved references: parked during single-file extraction, then resolved
+-- after a full index pass (two-phase extract -> resolve).
+--
+-- Only references the resolver could NOT bind are stored. A bound reference
+-- becomes an edge, and every row this table used to keep with status
+-- 'resolved' duplicated one — measured at 100% on every repository, and 27-73%
+-- of the table. `edges` is a superset (it also holds structural `contains`
+-- edges with no reference row), so nothing is recoverable from here that is
+-- not already there.
+--
+-- What remains is the graph being honest about its own blind spots: a name
+-- some file referenced that the resolver could not decide the meaning of. That
+-- is what `mex graph query who-calls` falls back to when a name has call sites
+-- but no indexed declaration.
 CREATE TABLE IF NOT EXISTS unresolved_refs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ref_key TEXT NOT NULL UNIQUE,
@@ -253,11 +265,17 @@ ON edges(source, target, kind, IFNULL(line, -1), IFNULL(col, -1));
 CREATE INDEX IF NOT EXISTS idx_files_language ON files(language);
 CREATE INDEX IF NOT EXISTS idx_files_modified_at ON files(modified_at);
 
-CREATE INDEX IF NOT EXISTS idx_unresolved_from_node ON unresolved_refs(from_node_id);
+-- A narrow (from_node_id) index is intentionally omitted: it is a strict
+-- prefix of the composite below, which SQLite uses for every lookup the narrow
+-- one served, the ON DELETE CASCADE probe included. Verified with EXPLAIN
+-- QUERY PLAN on a real store; no plan degrades to a scan.
 CREATE INDEX IF NOT EXISTS idx_unresolved_name ON unresolved_refs(reference_name);
 CREATE INDEX IF NOT EXISTS idx_unresolved_file_path ON unresolved_refs(file_path);
 CREATE INDEX IF NOT EXISTS idx_unresolved_from_name ON unresolved_refs(from_node_id, reference_name);
-CREATE INDEX IF NOT EXISTS idx_unresolved_status ON unresolved_refs(status);
+-- Partial: a resolved reference is an edge and is not stored here. The
+-- predicate keeps the index honest if a legacy store still carries such rows.
+CREATE INDEX IF NOT EXISTS idx_unresolved_status
+ON unresolved_refs(status) WHERE status <> 'resolved';
 CREATE INDEX IF NOT EXISTS idx_import_bindings_file ON import_bindings(file_path);
 CREATE INDEX IF NOT EXISTS idx_import_bindings_local ON import_bindings(file_path, local_name);
 CREATE INDEX IF NOT EXISTS idx_aliases_canonical ON node_aliases(canonical_node_id);

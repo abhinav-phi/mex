@@ -12,7 +12,7 @@ edges:
     condition: "when changing the graph data plane or its consumers"
   - target: "context/conventions.md"
     condition: "when verifying a graph implementation change"
-last_updated: 2026-09-03
+last_updated: 2026-09-07
 mex:
   id: mx_01M1M0CJP81C590FCKTSN5HA3Q
   type: pattern
@@ -102,6 +102,32 @@ only to explicit maintenance workflows.
   cannot detect facts extracted from B; extraction must be bound to A.
 - Graph diagnostics and remediation commands must be truthful. Do not recommend
   a command for a state it cannot safely repair.
+- A bounded limit is not one kind of thing. A **per-file** ceiling means one
+  file cannot be parsed and every other file still can, so it must skip and
+  report; a **corpus-wide** ceiling means the run has no honest partial answer
+  and must abort. Conflating them lets one pathological file take a whole
+  repository's graph with it. Classify the breach, never the fact of one.
+- Do the skipping at the single discovery seam. Indexing, publication
+  verification, sync's corpus comparison and freshness inspection must all agree
+  about which files exist, or a file skipped by one and expected by another
+  makes the index permanently unable to read `fresh`.
+- Never infer which limit was breached by comparing byte values. Two limits can
+  hold the same number, and then the comparison silently reports the wrong one
+  forever. Pass the limit's name.
+- A containment guard has two separable decisions: whether to decline, and what
+  declining does. Read paths already treated an out-of-root source as a soft
+  miss while config paths threw on the identical condition — an inconsistency
+  inside one class that cost whole repositories their graph. An existence probe
+  is not a read request: the honest answer for a path we will not read is
+  "absent", recorded as a diagnostic so the degradation is visible.
+- Report a declined out-of-root path by dependency specifier, not absolutely.
+  The compiler resolves a bare specifier by walking every ancestor directory, so
+  one unresolvable name yields a dozen near-identical entries carrying absolute
+  paths from outside the repository into product output.
+- Any per-repository discovery input — a configured ignore list included — must
+  enter the corpus policy hash, or changing it leaves a stale index silently
+  describing files that are no longer in the corpus. Hash to the existing
+  constant when nothing is configured, so existing indexes stay valid.
 - Wall-clock status timings vary by machine and process-start overhead. Keep
   the benchmark non-gating, record its environment, and protect correctness
   with deterministic race, non-mutation, and bounded-work tests.

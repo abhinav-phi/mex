@@ -98,22 +98,6 @@ export interface NodeAliasRecord {
   confidence: number;
 }
 
-/** Reference edge kinds — everything except the intra-file `contains` edge.
- *  `sync` wipes these and rebuilds them from `unresolved_refs`. */
-export const REFERENCE_EDGE_KINDS: EdgeKind[] = [
-  "calls",
-  "imports",
-  "exports",
-  "extends",
-  "implements",
-  "references",
-  "type_of",
-  "returns",
-  "instantiates",
-  "overrides",
-  "decorates",
-];
-
 interface NodeRow {
   id: string;
   kind: string;
@@ -465,17 +449,6 @@ export class GraphStore {
       );
   }
 
-  updateReferenceResolution(ref: UnresolvedRefRecord): void {
-    const key = ref.refKey ?? referenceKey(ref);
-    this.db.prepare(
-      `UPDATE unresolved_refs SET status = ?, target_id = ?, confidence = ?, resolver = ?, candidates = ?
-       WHERE ref_key = ?`,
-    ).run(
-      ref.status ?? "unresolved", ref.targetId ?? null, ref.confidence ?? null,
-      ref.resolver ?? null, ref.candidates ? JSON.stringify(ref.candidates) : null, key,
-    );
-  }
-
   insertImportBinding(binding: ImportBindingRecord): void {
     this.db.prepare(
       `INSERT INTO import_bindings (
@@ -636,12 +609,6 @@ export class GraphStore {
     this.db.exec("DELETE FROM node_fingerprints");
     this.db.exec("DELETE FROM nodes");
     this.db.exec("DELETE FROM files");
-  }
-
-  /** Wipe every reference edge (keeping intra-file `contains`), so `sync` can
-   *  rebuild them from `unresolved_refs` with no duplicates. */
-  clearReferenceEdges(): void {
-    this.db.prepare("DELETE FROM edges WHERE kind != 'contains'").run();
   }
 
   // --- Reads ----------------------------------------------------------------

@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
+import { resolve } from "node:path";
 import { globIterateSync, type GlobOptions } from "glob";
 import { SUPPORTED_SOURCE_GLOB } from "./extraction/grammars.js";
 
@@ -13,6 +15,93 @@ export const GRAPH_CORPUS_IGNORE_GLOBS = Object.freeze([
   "**/.next/**",
   "**/out/**",
 ] as const);
+
+/**
+ * Hard bounds on the additive ignore list a repository may configure.
+ *
+ * The list is read from an untrusted working-tree file on every corpus walk,
+ * so it is bounded the same way every other corpus input is.
+ */
+export const GRAPH_IGNORE_CONFIG_LIMITS = Object.freeze({
+  maxGlobs: 64,
+  maxGlobLength: 256,
+  maxConfigBytes: 256 * 1024,
+} as const);
+
+/**
+ * Additional ignore globs a repository may configure, from
+ * `.mex/config.json` -> `graph.ignore`.
+ *
+ * **Additive only.** The returned list is always appended to
+ * {@link GRAPH_CORPUS_IGNORE_GLOBS}, never substituted for it, so no
+ * configuration can un-ignore `node_modules`, `.git` or `.mex`. The frozen
+ * defaults are the floor; this raises it.
+ *
+ * Read defensively and never thrown from: a missing, unreadable, oversized or
+ * malformed config yields no extra globs rather than failing a build. A
+ * repository that cannot be indexed because its own config file is malformed
+ * would trade one hard abort for another.
+ */
+export function readConfiguredGraphIgnoreGlobs(root: string): string[] {
+  let raw: string;
+  try {
+    const configPath = resolve(root, ".mex", "config.json");
+    const stats = statSync(configPath);
+    if (!stats.isFile() || stats.size > GRAPH_IGNORE_CONFIG_LIMITS.maxConfigBytes) return [];
+    raw = readFileSync(configPath, "utf8");
+  } catch {
+    return [];
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return [];
+  const graph = (parsed as Record<string, unknown>).graph;
+  if (typeof graph !== "object" || graph === null || Array.isArray(graph)) return [];
+  const ignore = (graph as Record<string, unknown>).ignore;
+  if (!Array.isArray(ignore)) return [];
+  const globs = new Set<string>();
+  for (const entry of ignore) {
+    if (typeof entry !== "string") continue;
+    const trimmed = entry.trim();
+    if (!trimmed || trimmed.length > GRAPH_IGNORE_CONFIG_LIMITS.maxGlobLength) continue;
+    const glob = trimmed.split("\\").join("/");
+    if (!isRepositoryRelativeGlob(glob)) continue;
+    globs.add(glob);
+    if (globs.size >= GRAPH_IGNORE_CONFIG_LIMITS.maxGlobs) break;
+  }
+  return [...globs].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+}
+
+/**
+ * Accept only globs that name something inside the repository.
+ *
+ * Absolute paths and upward traversal describe files outside the corpus, which
+ * discovery already refuses to walk. The check is deliberately **not**
+ * `path.isAbsolute`: that is platform-dependent, and `C:/build/**` is absolute
+ * on Windows but an ordinary relative path on Linux. `.mex/config.json` is
+ * tracked and travels with the repository, and these globs feed the corpus
+ * policy hash — so a platform-dependent verdict would give one repository two
+ * different manifest hashes and make its index read as stale purely from being
+ * opened on another machine.
+ *
+ * Expects a glob already normalized to forward slashes.
+ */
+function isRepositoryRelativeGlob(glob: string): boolean {
+  // Leading "/" covers POSIX-absolute and "//server/share" UNC alike.
+  if (glob.startsWith("/")) return false;
+  // Windows drive-absolute ("C:/x") and drive-relative ("C:x") forms.
+  if (/^[A-Za-z]:/u.test(glob)) return false;
+  return !glob.split("/").includes("..");
+}
+
+/** The complete ignore list for one repository: frozen defaults, then config. */
+export function graphCorpusIgnoreGlobs(root: string): string[] {
+  return [...GRAPH_CORPUS_IGNORE_GLOBS, ...readConfiguredGraphIgnoreGlobs(root)];
+}
 
 export const GRAPH_CONFIG_GLOBS = Object.freeze([
   "package.json",
@@ -63,13 +152,48 @@ export const GRAPH_CORPUS_LIMITS = Object.freeze({
   maxDiagnostics: 100,
 } as const);
 
+export type GraphCorpusLimitName = keyof typeof GRAPH_CORPUS_LIMITS;
+
+/**
+ * Limits that describe **one file** rather than the whole corpus.
+ *
+ * The distinction has teeth. A corpus-wide ceiling says the repository is too
+ * big for a bounded run and there is no honest partial answer, so it aborts.
+ * A per-file ceiling says one file is too big to parse — every other file in
+ * the repository is still perfectly indexable, so the file is skipped and
+ * reported instead of taking the build down with it.
+ */
+export const GRAPH_PER_FILE_CORPUS_LIMITS: ReadonlySet<GraphCorpusLimitName> = new Set([
+  "maxSourceFileBytes",
+  "maxConfigFileBytes",
+] as const);
+
 export class GraphCorpusLimitError extends Error {
   readonly code = "GRAPH_CORPUS_LIMIT_EXCEEDED";
 
-  constructor(readonly limit: keyof typeof GRAPH_CORPUS_LIMITS) {
-    super(`The graph corpus exceeded the configured ${limit} safety bound.`);
+  constructor(
+    readonly limit: GraphCorpusLimitName,
+    /** Observed size, when the breach was measured against a single file. */
+    readonly observedBytes?: number,
+  ) {
+    super(
+      observedBytes === undefined
+        ? `The graph corpus exceeded the configured ${limit} safety bound.`
+        : `The graph corpus exceeded the configured ${limit} safety bound: `
+          + `${observedBytes} bytes against a ${GRAPH_CORPUS_LIMITS[limit]}-byte limit.`,
+    );
     this.name = "GraphCorpusLimitError";
   }
+
+  /** True when only this one file is affected and the run may continue. */
+  get perFile(): boolean {
+    return GRAPH_PER_FILE_CORPUS_LIMITS.has(this.limit);
+  }
+}
+
+/** Narrow an unknown error to a per-file corpus-limit breach. */
+export function isPerFileCorpusLimitError(error: unknown): error is GraphCorpusLimitError {
+  return error instanceof GraphCorpusLimitError && error.perFile;
 }
 
 /** Lazily consume glob results and stop before an unbounded path array forms. */
@@ -100,7 +224,10 @@ export function addGraphCorpusBytes(
     ? GRAPH_CORPUS_LIMITS.maxSourceBytes
     : GRAPH_CORPUS_LIMITS.maxConfigBytes;
   if (!Number.isSafeInteger(fileBytes) || fileBytes < 0 || fileBytes > maxFile) {
-    throw new GraphCorpusLimitError(kind === "source" ? "maxSourceFileBytes" : "maxConfigFileBytes");
+    throw new GraphCorpusLimitError(
+      kind === "source" ? "maxSourceFileBytes" : "maxConfigFileBytes",
+      Number.isSafeInteger(fileBytes) ? fileBytes : undefined,
+    );
   }
   const next = total + fileBytes;
   if (!Number.isSafeInteger(next) || next > maxTotal) {
@@ -113,7 +240,10 @@ export function addGraphCorpusBytes(
 export function addGraphCompilerSourceBytes(total: number, fileBytes: number): number {
   if (!Number.isSafeInteger(fileBytes) || fileBytes < 0
     || fileBytes > GRAPH_CORPUS_LIMITS.maxSourceFileBytes) {
-    throw new GraphCorpusLimitError("maxSourceFileBytes");
+    throw new GraphCorpusLimitError(
+      "maxSourceFileBytes",
+      Number.isSafeInteger(fileBytes) ? fileBytes : undefined,
+    );
   }
   const next = total + fileBytes;
   if (!Number.isSafeInteger(next) || next > GRAPH_CORPUS_LIMITS.maxCompilerSourceBytes) {
@@ -179,3 +309,21 @@ export const GRAPH_CORPUS_POLICY_HASH = createHash("sha256").update(JSON.stringi
   globOptions: GRAPH_CORPUS_GLOB_OPTIONS,
   limits: GRAPH_CORPUS_LIMITS,
 })).digest("hex");
+
+/**
+ * Discovery identity for one repository: the frozen policy, plus whatever the
+ * repository additionally chose to ignore.
+ *
+ * A repository with no configured globs hashes to exactly
+ * {@link GRAPH_CORPUS_POLICY_HASH}, so every index built before this existed
+ * stays valid. Adding or removing a configured glob changes the corpus, so it
+ * must change the manifest and force an explicit rebuild.
+ */
+export function graphCorpusPolicyHash(root: string): string {
+  const configured = readConfiguredGraphIgnoreGlobs(root);
+  if (configured.length === 0) return GRAPH_CORPUS_POLICY_HASH;
+  return createHash("sha256").update(JSON.stringify({
+    base: GRAPH_CORPUS_POLICY_HASH,
+    configuredIgnoreGlobs: configured,
+  })).digest("hex");
+}
