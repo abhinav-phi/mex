@@ -115,7 +115,6 @@ const REQUIRED_SCHEMA_OBJECTS = {
     "idx_source_chunks_file",
     "idx_unresolved_file_path",
     "idx_unresolved_from_name",
-    "idx_unresolved_from_node",
     "idx_unresolved_name",
     "idx_unresolved_status",
   ],

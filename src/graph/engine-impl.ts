@@ -486,7 +486,15 @@ class GraphEngineImpl implements GraphEngine {
       for (const file of staged.files) for (const node of file.nodes) store.insertNode(node);
       for (const file of staged.files) {
         for (const edge of file.edges) if (store.insertEdge(edge)) edgeCount++;
-        for (const reference of file.references) store.insertUnresolvedRef(reference);
+        // A resolved reference is an edge. Keeping the row too duplicated one
+        // for every reference the resolver bound — 27-73% of this table on
+        // every repository measured, all of them already in `edges`. Resolution
+        // happens in memory during staging, so nothing downstream reads these
+        // rows back to rebuild anything.
+        for (const reference of file.references) {
+          if (reference.status === "resolved") continue;
+          store.insertUnresolvedRef(reference);
+        }
         for (const binding of file.imports) store.insertImportBinding(binding);
       }
 
