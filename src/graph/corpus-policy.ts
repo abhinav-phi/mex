@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { resolve } from "node:path";
 import { globIterateSync, type GlobOptions } from "glob";
 import { SUPPORTED_SOURCE_GLOB } from "./extraction/grammars.js";
 
@@ -66,15 +66,36 @@ export function readConfiguredGraphIgnoreGlobs(root: string): string[] {
   const globs = new Set<string>();
   for (const entry of ignore) {
     if (typeof entry !== "string") continue;
-    const glob = entry.trim();
-    if (!glob || glob.length > GRAPH_IGNORE_CONFIG_LIMITS.maxGlobLength) continue;
-    // Absolute paths and upward traversal describe files outside the corpus,
-    // which discovery already refuses to walk. Accept only repo-relative globs.
-    if (isAbsolute(glob) || glob.startsWith("../") || glob.startsWith("..\\")) continue;
-    globs.add(glob.split("\\").join("/"));
+    const trimmed = entry.trim();
+    if (!trimmed || trimmed.length > GRAPH_IGNORE_CONFIG_LIMITS.maxGlobLength) continue;
+    const glob = trimmed.split("\\").join("/");
+    if (!isRepositoryRelativeGlob(glob)) continue;
+    globs.add(glob);
     if (globs.size >= GRAPH_IGNORE_CONFIG_LIMITS.maxGlobs) break;
   }
   return [...globs].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+}
+
+/**
+ * Accept only globs that name something inside the repository.
+ *
+ * Absolute paths and upward traversal describe files outside the corpus, which
+ * discovery already refuses to walk. The check is deliberately **not**
+ * `path.isAbsolute`: that is platform-dependent, and `C:/build/**` is absolute
+ * on Windows but an ordinary relative path on Linux. `.mex/config.json` is
+ * tracked and travels with the repository, and these globs feed the corpus
+ * policy hash — so a platform-dependent verdict would give one repository two
+ * different manifest hashes and make its index read as stale purely from being
+ * opened on another machine.
+ *
+ * Expects a glob already normalized to forward slashes.
+ */
+function isRepositoryRelativeGlob(glob: string): boolean {
+  // Leading "/" covers POSIX-absolute and "//server/share" UNC alike.
+  if (glob.startsWith("/")) return false;
+  // Windows drive-absolute ("C:/x") and drive-relative ("C:x") forms.
+  if (/^[A-Za-z]:/u.test(glob)) return false;
+  return !glob.split("/").includes("..");
 }
 
 /** The complete ignore list for one repository: frozen defaults, then config. */

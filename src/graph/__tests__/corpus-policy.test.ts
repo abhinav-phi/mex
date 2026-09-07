@@ -161,11 +161,43 @@ describe("configured graph ignore globs", () => {
     expect(readConfiguredGraphIgnoreGlobs(withConfig({ graph: "nope" }))).toEqual([]);
     expect(readConfiguredGraphIgnoreGlobs(withConfig({ graph: { ignore: "nope" } }))).toEqual([]);
     expect(readConfiguredGraphIgnoreGlobs(withConfig({
-      graph: { ignore: [42, "", "   ", "../escape/**", "C:/absolute/**", "/absolute/**"] },
+      graph: { ignore: [42, "", "   "] },
     }))).toEqual([]);
     expect(readConfiguredGraphIgnoreGlobs(
       mkdtempSync(join(tmpdir(), "mex-graph-ignore-missing-")),
     )).toEqual([]);
+  });
+
+  it("rejects every escaping glob identically on every platform", () => {
+    // `.mex/config.json` is tracked and travels with the repository, and these
+    // globs feed the corpus policy hash. A platform-dependent verdict — which
+    // `path.isAbsolute` gives, since `C:/x` is absolute only on Windows — would
+    // give one repository two manifest hashes and make its index read as stale
+    // purely from being opened on another machine.
+    const escaping = [
+      "/absolute/**",
+      "//server/share/**",
+      "\\\\server\\share\\**",
+      "C:/absolute/**",
+      "c:/absolute/**",
+      "C:\\absolute\\**",
+      "C:relative/**",
+      "../escape/**",
+      "..\\escape\\**",
+      "vendor/../../escape/**",
+      "..",
+    ];
+    const root = withConfig({ graph: { ignore: escaping } });
+
+    expect(readConfiguredGraphIgnoreGlobs(root)).toEqual([]);
+    expect(graphCorpusPolicyHash(root)).toBe(GRAPH_CORPUS_POLICY_HASH);
+  });
+
+  it("keeps ordinary globs that merely contain dots", () => {
+    const root = withConfig({ graph: { ignore: ["a..b/**", "**/*.min.js", "./local/**"] } });
+
+    expect(readConfiguredGraphIgnoreGlobs(root))
+      .toEqual(["**/*.min.js", "./local/**", "a..b/**"]);
   });
 
   it("bounds the configured list", () => {
