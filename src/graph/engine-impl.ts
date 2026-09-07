@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { toPosix } from "../paths.js";
 import type {
-  BuildResult, GraphEngine, NodeSearchOptions, SkippedSourceFile,
+  BuildResult, DeclinedCompilerInput, GraphEngine, NodeSearchOptions, SkippedSourceFile,
 } from "./engine.js";
 import {
   GRAPH_CONFIG_GLOBS,
@@ -259,6 +259,8 @@ interface StagedCorpus {
   files: StagedFile[];
   /** Files discovered but not indexed, carried through to the build result. */
   skipped: GraphSkippedSourceFile[];
+  /** Config inputs the containment policy declined during compiler extraction. */
+  declinedInputs: DeclinedCompilerInput[];
   compiler: Pick<CompilerExtractionResult, "compilerVersion" | "semanticInputs">;
   semanticInputs: CompilerSemanticInput[];
   fingerprints: Array<{ nodeId: string; fingerprint: Fingerprint }>;
@@ -509,6 +511,9 @@ class GraphEngineImpl implements GraphEngine {
       edgesCreated: edgeCount,
       health: healthCounts(staged.files),
       ...(staged.skipped.length > 0 ? { skipped: [...staged.skipped] } : {}),
+      ...(staged.declinedInputs.length > 0
+        ? { declinedInputs: [...staged.declinedInputs] }
+        : {}),
     };
   }
 
@@ -678,6 +683,7 @@ async function stageCorpus(
     return {
       files,
       skipped,
+      declinedInputs: [...compiler.declinedInputs],
       compiler: {
         compilerVersion: compiler.compilerVersion,
         semanticInputs: [...compiler.semanticInputs],

@@ -100,6 +100,20 @@ export interface GraphRefreshResult extends IndexJobResult {
   edgesCreated: number;
   /** Optional and additive; absent when every discovered file was indexed. */
   skipped?: readonly GraphSkippedSource[];
+  /** Compiler config inputs outside the project corpus that were declined. */
+  declinedInputs?: readonly GraphDeclinedInput[];
+}
+
+/**
+ * A compiler config input the containment policy declined to read.
+ *
+ * No source file is missing from the graph, but the affected project's type
+ * resolution is less complete than it looks, so it is reported.
+ */
+export interface GraphDeclinedInput {
+  filePath: string;
+  reason: "outside-project-corpus";
+  message: string;
 }
 
 export interface GraphPage<T> extends Page<T> {

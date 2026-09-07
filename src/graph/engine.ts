@@ -59,6 +59,20 @@ export interface BuildResult {
    * how well they parsed, and a skipped file is in none of those buckets.
    */
   skipped?: SkippedSourceFile[];
+  /**
+   * Compiler config inputs outside the project corpus that were declined.
+   *
+   * Distinct from `skipped`: no source file is missing from the graph, but the
+   * affected project's type resolution is less complete than it looks.
+   */
+  declinedInputs?: DeclinedCompilerInput[];
+}
+
+/** A compiler input the containment policy declined to read. */
+export interface DeclinedCompilerInput {
+  filePath: string;
+  reason: "outside-project-corpus";
+  message: string;
 }
 
 /** Options for {@link GraphEngine.searchNodes}. */

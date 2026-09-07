@@ -57,6 +57,9 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
         failed: result.status.parseHealth.failed,
       },
       ...(result.skipped && result.skipped.length > 0 ? { skipped: result.skipped } : {}),
+      ...(result.declinedInputs && result.declinedInputs.length > 0
+        ? { declinedInputs: result.declinedInputs }
+        : {}),
     }, null, 2));
     return;
   }
@@ -65,6 +68,7 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
       + `across ${result.filesIndexed} files in ${result.durationMs}ms → .mex/graph.db`,
   );
   printSkippedSources(result.skipped);
+  printDeclinedInputs(result.declinedInputs);
 }
 
 /**
@@ -81,6 +85,24 @@ function printSkippedSources(skipped: GraphRefreshResult["skipped"]): void {
   const omitted = skipped.length - shown.length;
   if (omitted > 0) console.log(`  …and ${omitted} more (use --json for the full list)`);
   console.log("Add a glob to \"graph.ignore\" in .mex/config.json to exclude a path deliberately.");
+}
+
+/**
+ * Name the config inputs the graph refused to read.
+ *
+ * Every source file is still in the graph; what is reduced is type resolution
+ * for the affected project, which is otherwise invisible.
+ */
+function printDeclinedInputs(declined: GraphRefreshResult["declinedInputs"]): void {
+  if (!declined || declined.length === 0) return;
+  const shown = declined.slice(0, MAX_SKIPPED_PATHS_SHOWN);
+  console.log(
+    `Declined ${declined.length} TypeScript config input(s) outside the project; `
+      + "type resolution for the affected projects is less complete:",
+  );
+  for (const input of shown) console.log(`  ${input.filePath}`);
+  const omitted = declined.length - shown.length;
+  if (omitted > 0) console.log(`  …and ${omitted} more (use --json for the full list)`);
 }
 
 /** Human output stays bounded; `--json` carries the complete list. */
@@ -127,6 +149,7 @@ function printMaintenance(verb: "refreshed" | "rebuilt", result: GraphMaintenanc
       + `across ${result.filesIndexed} files in ${result.durationMs}ms; status ${result.status.status}.`,
   );
   printSkippedSources(result.skipped);
+  printDeclinedInputs(result.declinedInputs);
   if (result.recoveryPath) {
     console.log(`Previous index retained for local recovery: ${result.recoveryPath}`);
   }

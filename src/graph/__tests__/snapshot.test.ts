@@ -369,7 +369,12 @@ describe("graph snapshot provenance", () => {
     engine.close();
   });
 
-  it("rejects a direct external tsconfig extension and preserves prior provenance", async () => {
+  // This asserted that an external `extends` aborted the build. Declining a
+  // config input no longer costs a repository its entire graph — a tsconfig
+  // extending a hoisted package is ordinary in any pnpm/yarn workspace. What
+  // this test actually protects, and still asserts, is that the external file
+  // is never read and never becomes graph provenance.
+  it("declines a direct external tsconfig extension without reading it", async () => {
     const root = temporaryRoot("mex-graph-config-direct-escape-");
     const externalRoot = temporaryRoot("mex-graph-config-direct-external-");
     const sourcePath = join(root, "src", "stable.ts");
@@ -388,14 +393,20 @@ describe("graph snapshot provenance", () => {
       extends: externalConfig,
       include: ["src/**/*.ts"],
     }));
-    await expect(engine.sync(["tsconfig.json"])).rejects.toMatchObject({
-      name: "GraphSourceStagingError",
-      failures: [expect.objectContaining({
-        filePath: ".",
-        code: "GRAPH_SOURCE_PATH_ESCAPE",
-      })],
-    });
-    expect(metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY)).toBe(successfulSnapshot);
+    const result = await engine.sync(["tsconfig.json"]);
+
+    expect(result.declinedInputs).toContainEqual(expect.objectContaining({
+      reason: "outside-project-corpus",
+    }));
+    // The external file is not read, so it is in no snapshot and no compiler
+    // option it declares can reach the graph.
+    const snapshot = parseGraphSnapshot(metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY));
+    expect(snapshot).not.toBeNull();
+    expect(successfulSnapshot).not.toBeNull();
+    for (const input of snapshot!.semanticInputs) {
+      expect(input.filePath.startsWith("..")).toBe(false);
+      expect(input.filePath).not.toContain("attacker");
+    }
     engine.close();
   });
 

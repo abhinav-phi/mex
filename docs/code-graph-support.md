@@ -139,6 +139,23 @@ Corpus-*wide* ceilings still abort the run. They describe the whole build and
 there is no honest partial answer to "this repository is too large to index
 within the bounded policy".
 
+### Config inputs outside the project
+
+mex never reads a file outside the repository root, and a TypeScript config
+routinely points at one: `"extends": "some-package/tsconfig"` resolves through
+`node_modules`, which any hoisted pnpm/yarn layout — or a monorepo sub-package
+indexed on its own — places above the indexed root.
+
+Such an input is **declined, not fatal**. The build finishes, the affected
+project's type resolution is less complete than its config asks for, and the
+declined inputs are reported by dependency specifier (never by absolute path)
+in `mex graph` output and in the `declinedInputs` array of its `--json` result.
+The same applies to a `tsconfig` `include` or project `reference` that points
+above the root.
+
+The containment guard itself is unchanged: nothing outside the root is read,
+and nothing outside the root enters the graph's provenance.
+
 ### Excluding paths from the graph
 
 `node_modules`, `.git`, `dist`, `build`, `.mex`, `coverage`, `.next` and `out`

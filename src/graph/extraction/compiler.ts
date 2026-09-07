@@ -175,6 +175,19 @@ export interface DiscoveredTypeScriptProject {
   diagnostics: CompilerDiagnosticSummary[];
 }
 
+/**
+ * A compiler input the containment policy declined to read.
+ *
+ * Reported rather than fatal. The resulting type graph is less complete for
+ * the affected project, and a user has to be told that rather than left to
+ * infer it from missing edges.
+ */
+export interface DeclinedCompilerInput {
+  filePath: string;
+  reason: "outside-project-corpus";
+  message: string;
+}
+
 export interface CompilerExtractionResult {
   compilerVersion: string;
   extractorVersion: string;
@@ -182,6 +195,8 @@ export interface CompilerExtractionResult {
   files: CompilerFileExtraction[];
   /** Repository inputs whose exact bytes influenced config parsing or compiler facts. */
   semanticInputs: CompilerSemanticInput[];
+  /** Config inputs outside the project corpus that were declined, not read. */
+  declinedInputs: DeclinedCompilerInput[];
 }
 
 export interface CompilerStagedInput {
@@ -636,7 +651,33 @@ export function buildTypeScriptExtraction(
     projects: projectSummaries,
     files,
     semanticInputs: inputs.semanticInputs(),
+    declinedInputs: inputs.declinedConfigInputs(),
   };
+}
+
+/** Bounded like every other diagnostic channel; the list is deduplicated. */
+const MAX_DECLINED_CONFIG_INPUTS = 100;
+
+/**
+ * Name a declined path by what the user can act on.
+ *
+ * TypeScript resolves a bare `extends` specifier by walking every ancestor
+ * directory, so one unresolvable `extends "astro/tsconfigs/strict"` produces a
+ * decline at `<root>/node_modules/...`, `<parent>/node_modules/...` and so on
+ * up to the filesystem root. Reporting each rung is noise, and it puts absolute
+ * paths from outside the repository — a user's home directory among them — into
+ * build output.
+ *
+ * Keying on the dependency specifier collapses those rungs to the one fact
+ * worth reporting: this package is not resolvable inside the project. Paths
+ * with no `node_modules` segment are reported relative to the root instead.
+ */
+function reportableDeclinedPath(root: string, fileName: string): string {
+  const absolute = normalizedAbsolute(absoluteCandidate(root, fileName));
+  const segments = absolute.split("/");
+  const lastDependencyRoot = segments.lastIndexOf("node_modules");
+  if (lastDependencyRoot >= 0) return segments.slice(lastDependencyRoot).join("/");
+  return normalizeRelative(relative(root, absolute)) || absolute;
 }
 
 /** Stable identity input shared with migration/invariant tests. */
@@ -726,6 +767,7 @@ class CompilerInputLedger {
   private readonly knownDirectories = new Set<string>();
   private readonly directoryFiles = new Map<string, Set<string>>();
   private readonly directoryChildren = new Map<string, Set<string>>();
+  private readonly declinedConfigs = new Map<string, string>();
   private candidates: string[] = [];
 
   constructor(root: string, private readonly options: CompilerExtractionOptions) {
@@ -787,26 +829,76 @@ class CompilerInputLedger {
     return source;
   }
 
+  /**
+   * Read one config input, or decline it.
+   *
+   * A config path outside the project root used to throw, which took the
+   * entire build down: a `tsconfig.json` extending a package hoisted above the
+   * root — any pnpm/yarn hoisted layout, or a monorepo sub-package indexed on
+   * its own — made the repository un-indexable. `readFile` had always treated
+   * the identical condition as a soft miss for *source* files; the two halves
+   * of this class simply disagreed.
+   *
+   * The containment guard is unchanged and still declines. Declining now
+   * returns "no such config", which is the honest answer for a file we will
+   * not read, and is recorded so the degradation is reported rather than
+   * silent. The type graph is less complete; the build finishes.
+   */
   readConfigFile(fileName: string): string | undefined {
     const absolute = absoluteCandidate(this.root, fileName);
-    if (!withinRoot(this.root, absolute)) {
-      throw compilerInputContainmentError(`TypeScript config escapes the project root: ${fileName}`);
-    }
-    if (!this.isProjectInput(absolute) && !isAllowedCompilerDependency(absolute)) {
-      throw compilerInputContainmentError(`TypeScript config is outside the supported project corpus: ${fileName}`);
-    }
+    if (!this.permitsConfigInput(absolute, fileName)) return undefined;
     return this.readFile(absolute);
   }
 
+  /**
+   * Answer TypeScript's existence probe for a config path.
+   *
+   * This is a probe, not a read request. The honest answer for a path we have
+   * declined to read is `false`.
+   */
   configFileExists(fileName: string): boolean {
     const absolute = absoluteCandidate(this.root, fileName);
+    if (!this.permitsConfigInput(absolute, fileName)) return false;
+    return this.fileExists(absolute);
+  }
+
+  /** Record and decline a config input the containment policy will not read. */
+  private permitsConfigInput(absolute: string, fileName: string): boolean {
     if (!withinRoot(this.root, absolute)) {
-      throw compilerInputContainmentError(`TypeScript config escapes the project root: ${fileName}`);
+      this.declineConfigInput(fileName, "escapes the project root");
+      return false;
     }
     if (!this.isProjectInput(absolute) && !isAllowedCompilerDependency(absolute)) {
-      throw compilerInputContainmentError(`TypeScript config is outside the supported project corpus: ${fileName}`);
+      this.declineConfigInput(fileName, "is outside the supported project corpus");
+      return false;
     }
-    return this.fileExists(absolute);
+    return true;
+  }
+
+  private declineConfigInput(fileName: string, reason: string): void {
+    const reported = reportableDeclinedPath(this.root, fileName);
+    if (this.declinedConfigs.has(reported)) return;
+    if (this.declinedConfigs.size >= MAX_DECLINED_CONFIG_INPUTS) return;
+    this.declinedConfigs.set(
+      reported,
+      `TypeScript config ${reason} and was not read: ${reported}`,
+    );
+  }
+
+  /** Record a referenced project outside the root, which we do not traverse. */
+  declineProjectReference(referencePath: string): void {
+    this.declineConfigInput(referencePath, "project reference escapes the project root");
+  }
+
+  /** Config inputs the containment policy declined, in deterministic order. */
+  declinedConfigInputs(): DeclinedCompilerInput[] {
+    return [...this.declinedConfigs.entries()]
+      .sort(([left], [right]) => compareCodePoints(left, right))
+      .map(([filePath, message]) => ({
+        filePath,
+        reason: "outside-project-corpus" as const,
+        message,
+      }));
   }
 
   fileExists(fileName: string): boolean {
@@ -852,8 +944,13 @@ class CompilerInputLedger {
     includes: readonly string[],
     depth?: number,
   ): string[] {
+    // Treated exactly like a declined config read. A tsconfig `include` that
+    // points above the project root describes files we will not walk, and the
+    // honest answer for a directory we decline is "no matching files" — not an
+    // exception that costs the whole repository its graph.
     if (!withinRoot(this.root, absoluteCandidate(this.root, rootDir))) {
-      throw compilerInputContainmentError(`TypeScript config include escapes the project root: ${rootDir}`);
+      this.declineConfigInput(rootDir, "include escapes the project root");
+      return [];
     }
     // TypeScript's matcher is intentionally used with a virtual directory tree
     // built only from the immutable candidate list. This preserves exact
@@ -1014,8 +1111,13 @@ function parseProjects(
     diagnostics.push(...parsed.errors);
     for (const reference of parsed.projectReferences ?? []) {
       const referencePath = normalizedAbsolute(ts.resolveProjectReferencePath(reference));
+      // Same decision as a declined config read: a referenced project above
+      // the root is not traversed, and is reported rather than fatal. A
+      // sub-package of a monorepo indexed on its own routinely references its
+      // siblings, and that must not make it un-indexable.
       if (!withinRoot(root, referencePath)) {
-        throw compilerInputContainmentError(`TypeScript project reference escapes the project root: ${referencePath}`);
+        inputs?.declineProjectReference(referencePath);
+        continue;
       }
       if (!seen.has(referencePath)) queue.push(referencePath);
     }
@@ -2218,10 +2320,6 @@ function sha256(value: string): string {
 
 function compareCodePoints(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function compilerInputContainmentError(message: string): Error & { code: string } {
-  return Object.assign(new Error(message), { code: "GRAPH_SOURCE_PATH_ESCAPE" });
 }
 
 function isAllowedCompilerDependency(absolutePath: string): boolean {
