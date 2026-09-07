@@ -25,8 +25,9 @@ import { openSqlite, type SqliteDatabase } from "./db/sqlite.js";
 import { BANDS, K } from "./config.js";
 import {
   GRAPH_CORPUS_GLOB_OPTIONS,
-  GRAPH_CORPUS_IGNORE_GLOBS,
+  graphCorpusIgnoreGlobs,
   GRAPH_CORPUS_LIMITS,
+  isPerFileCorpusLimitError,
   GRAPH_SUPPORTED_SOURCE_GLOB,
   GraphCorpusLimitError,
   addGraphCorpusBytes,
@@ -1702,7 +1703,7 @@ function inspectLiveSources(
     matches = discoverBoundedGraphPaths(GRAPH_SUPPORTED_SOURCE_GLOB, {
       ...GRAPH_CORPUS_GLOB_OPTIONS,
       cwd: projectRoot,
-      ignore: [...GRAPH_CORPUS_IGNORE_GLOBS],
+      ignore: graphCorpusIgnoreGlobs(projectRoot),
     }, GRAPH_CORPUS_LIMITS.maxSourceFiles)
       .map(toPosix)
       .filter(isSupportedSourceFile)
@@ -1738,6 +1739,19 @@ function inspectLiveSources(
       );
       hashes.set(path, sha256(content));
     } catch (error) {
+      // A file the bounded policy will not read for its own size is skipped by
+      // indexing too, so the corpus observation stays complete and the walk
+      // continues. Only a corpus-wide breach makes the observation partial.
+      if (isPerFileCorpusLimitError(error)) {
+        discoveredPaths.delete(path);
+        reportPathDiagnostic({
+          code: "GRAPH_SOURCE_FILE_SKIPPED",
+          severity: "warning",
+          message: `Supported source file ${path} is not indexed: ${errorMessage(error)}`,
+          path,
+        });
+        continue;
+      }
       complete = false;
       const code = errorCode(error);
       const outsideProject = code === "GRAPH_CONTAINED_FILE_OUTSIDE_PROJECT";

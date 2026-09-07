@@ -15,13 +15,15 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { toPosix } from "../paths.js";
-import type { BuildResult, GraphEngine, NodeSearchOptions } from "./engine.js";
+import type {
+  BuildResult, GraphEngine, NodeSearchOptions, SkippedSourceFile,
+} from "./engine.js";
 import {
   GRAPH_CONFIG_GLOBS,
   GRAPH_CORPUS_GLOB_OPTIONS,
-  GRAPH_CORPUS_IGNORE_GLOBS,
+  graphCorpusIgnoreGlobs,
   GRAPH_CORPUS_LIMITS,
-  GRAPH_CORPUS_POLICY_HASH,
+  graphCorpusPolicyHash,
   GRAPH_SUPPORTED_SOURCE_GLOB,
   GraphCorpusLimitError,
   addGraphCompilerSourceBytes,
@@ -29,6 +31,7 @@ import {
   addGraphSemanticInput,
   createGraphSemanticInputLedger,
   discoverBoundedGraphPaths,
+  isPerFileCorpusLimitError,
 } from "./corpus-policy.js";
 import { DB_SCHEMA_VERSION, markGraphReady, openGraphDatabase } from "./db/database.js";
 import {
@@ -234,6 +237,14 @@ interface DiscoveredFile {
   modifiedAt: number;
 }
 
+type GraphSkippedSourceFile = SkippedSourceFile;
+
+/** What one source walk found: the corpus, and what it declined to read. */
+interface DiscoveredCorpus {
+  files: DiscoveredFile[];
+  skipped: GraphSkippedSourceFile[];
+}
+
 interface StagedFile {
   discovered: DiscoveredFile;
   record: FileRecord;
@@ -246,6 +257,8 @@ interface StagedFile {
 
 interface StagedCorpus {
   files: StagedFile[];
+  /** Files discovered but not indexed, carried through to the build result. */
+  skipped: GraphSkippedSourceFile[];
   compiler: Pick<CompilerExtractionResult, "compilerVersion" | "semanticInputs">;
   semanticInputs: CompilerSemanticInput[];
   fingerprints: Array<{ nodeId: string; fingerprint: Fingerprint }>;
@@ -343,7 +356,7 @@ class GraphEngineImpl implements GraphEngine {
     const store = this.getStore(true);
     const manifestChanged = store.getMetadata("manifest_hash") !== manifest.manifestHash;
     if (changedSources.length === 0 && !manifestChanged) {
-      const currentCorpus = discoverSourceFiles(this.rootDir, this.sourceFileAccess);
+      const currentCorpus = discoverSourceFiles(this.rootDir, this.sourceFileAccess).files;
       const snapshot = parseGraphSnapshot(store.getMetadata(GRAPH_SNAPSHOT_METADATA_KEY));
       if (snapshot?.manifestHash === manifest.manifestHash
         && snapshot.indexedBranch === gitBeforeStaging.branch
@@ -364,8 +377,13 @@ class GraphEngineImpl implements GraphEngine {
     );
     try {
       const stagedByPath = new Map(staged.files.map((file) => [file.record.path, file]));
+      // A file the corpus policy deliberately skipped is absent from the
+      // staged corpus by design, so it is not evidence of a lost source.
+      const skippedPaths = new Set(staged.skipped.map((file) => file.filePath));
       const unstagedExisting = changedSources.filter((file) => (
-        !deletedChangedSources.has(file) && !stagedByPath.has(file)
+        !deletedChangedSources.has(file)
+        && !stagedByPath.has(file)
+        && !skippedPaths.has(file)
       ));
       if (unstagedExisting.length > 0) {
         throw new GraphSourceStagingError(unstagedExisting.map((filePath) => ({
@@ -490,6 +508,7 @@ class GraphEngineImpl implements GraphEngine {
       nodesCreated: expectedNodes,
       edgesCreated: edgeCount,
       health: healthCounts(staged.files),
+      ...(staged.skipped.length > 0 ? { skipped: [...staged.skipped] } : {}),
     };
   }
 
@@ -552,7 +571,7 @@ async function stageCorpus(
 ): Promise<StagedCorpus> {
   const sourceSpool = new GraphSourceSpool();
   try {
-    const discovered = discoverSourceFiles(root, sourceFileAccess, sourceSpool);
+    const { files: discovered, skipped } = discoverSourceFiles(root, sourceFileAccess, sourceSpool);
     const configSources = discoverGraphConfigSources(root);
     const stagedConfigHash = configHashForSources(configSources);
     if (stagedConfigHash !== manifest.configHash) {
@@ -658,6 +677,7 @@ async function stageCorpus(
     }
     return {
       files,
+      skipped,
       compiler: {
         compilerVersion: compiler.compilerVersion,
         semanticInputs: [...compiler.semanticInputs],
@@ -1266,13 +1286,31 @@ function inspectChangedSources(
   return deleted;
 }
 
+/**
+ * Walk the repository's supported sources.
+ *
+ * A file the bounded corpus policy will not read is **skipped, not fatal.**
+ * One oversized generated file used to abort an entire multi-thousand-file
+ * build: the per-file limit error was pushed as a staging failure, the loop
+ * `break`s so no later file was even attempted, and the accumulated failures
+ * were thrown. Every other file in the repository is still perfectly
+ * indexable, so a per-file ceiling now records the file and continues.
+ *
+ * Corpus-wide ceilings (`maxSourceBytes`, `maxSourceFiles`) still abort. They
+ * describe the whole run and there is no honest partial answer to them.
+ *
+ * The skip happens here, at the single discovery seam every consumer shares,
+ * so the staged corpus, `verifyPublicationInputs`, `sync`'s corpus comparison
+ * and the freshness inspector all agree about which files exist.
+ */
 function discoverSourceFiles(
   root: string,
   sourceFileAccess: GraphSourceFileAccess,
   sourceSpool?: GraphSourceSpool,
-): DiscoveredFile[] {
+): DiscoveredCorpus {
   let matches: string[];
   const files: DiscoveredFile[] = [];
+  const skipped: GraphSkippedSourceFile[] = [];
   const failures: GraphSourceStagingFailure[] = [];
   let canonicalRoot: string;
   try {
@@ -1280,7 +1318,7 @@ function discoverSourceFiles(
     matches = discoverBoundedGraphPaths(GRAPH_SUPPORTED_SOURCE_GLOB, {
       ...GRAPH_CORPUS_GLOB_OPTIONS,
       cwd: root,
-      ignore: [...GRAPH_CORPUS_IGNORE_GLOBS],
+      ignore: graphCorpusIgnoreGlobs(root),
     }, GRAPH_CORPUS_LIMITS.maxSourceFiles).map(toPosix);
   } catch (error) {
     throw new GraphSourceStagingError([sourceStagingFailure(".", "discover", error)]);
@@ -1312,8 +1350,11 @@ function discoverSourceFiles(
         sourceSpool?.stage(relPath, file.source);
         files.push({ relPath, contentHash, size: file.size, modifiedAt: file.modifiedAt });
       } catch (error) {
-        failures.push(sourceStagingFailure(relPath, "read", error));
-        if (error instanceof GraphCorpusLimitError) break;
+        if (isPerFileCorpusLimitError(error)) skipped.push(skippedSourceFile(relPath, error));
+        else {
+          failures.push(sourceStagingFailure(relPath, "read", error));
+          if (error instanceof GraphCorpusLimitError) break;
+        }
       }
       continue;
     }
@@ -1348,12 +1389,29 @@ function discoverSourceFiles(
       });
       sourceSpool?.stage(relPath, source);
     } catch (error) {
-      failures.push(sourceStagingFailure(relPath, "read", error));
-      if (error instanceof GraphCorpusLimitError) break;
+      if (isPerFileCorpusLimitError(error)) skipped.push(skippedSourceFile(relPath, error));
+      else {
+        failures.push(sourceStagingFailure(relPath, "read", error));
+        if (error instanceof GraphCorpusLimitError) break;
+      }
     }
   }
   if (failures.length > 0) throw new GraphSourceStagingError(failures);
-  return files;
+  return { files, skipped };
+}
+
+function skippedSourceFile(
+  filePath: string,
+  error: GraphCorpusLimitError,
+): GraphSkippedSourceFile {
+  return {
+    filePath,
+    reason: "corpus-limit",
+    limit: error.limit,
+    limitBytes: GRAPH_CORPUS_LIMITS[error.limit],
+    observedBytes: error.observedBytes,
+    message: error.message,
+  };
 }
 
 function sourceCorpusMatchesFileRecords(
@@ -1401,6 +1459,10 @@ function readStableUtf8File(
   canonicalPath: string,
   sourcePath = canonicalPath,
   maxBytes = GRAPH_CORPUS_LIMITS.maxSourceFileBytes,
+  // Named explicitly rather than inferred from `maxBytes`. The source and
+  // config per-file ceilings are numerically identical, so comparing the value
+  // reported every oversized *source* file as a config-limit breach.
+  limitName: "maxSourceFileBytes" | "maxConfigFileBytes" = "maxSourceFileBytes",
 ): {
   source: string;
   size: number;
@@ -1419,9 +1481,8 @@ function readStableUtf8File(
     }
     if (!Number.isSafeInteger(opened.size) || opened.size < 0 || opened.size > maxBytes) {
       throw new GraphCorpusLimitError(
-        maxBytes === GRAPH_CORPUS_LIMITS.maxConfigFileBytes
-          ? "maxConfigFileBytes"
-          : "maxSourceFileBytes",
+        limitName,
+        Number.isSafeInteger(opened.size) ? opened.size : undefined,
       );
     }
     const source = readFileSync(fd, "utf8");
@@ -1588,7 +1649,7 @@ function verifyPublicationInputs(
   sourceFileAccess: GraphSourceFileAccess,
   internal: GraphEngineInternalHooks = {},
 ): GraphGitProvenance {
-  const currentFiles = discoverSourceFiles(root, sourceFileAccess);
+  const currentFiles = discoverSourceFiles(root, sourceFileAccess).files;
   const currentManifest = graphManifest(root);
   const failures: GraphSourceStagingFailure[] = [];
 
@@ -1686,7 +1747,7 @@ export function graphManifest(root: string): GraphManifest {
     compiler: TYPESCRIPT_COMPILER_VERSION,
     extractor: CORPUS_EXTRACTOR_VERSION,
     resolver: RESOLVER_VERSION,
-    corpusPolicyHash: GRAPH_CORPUS_POLICY_HASH,
+    corpusPolicyHash: graphCorpusPolicyHash(root),
     grammarHash,
     configHash,
   }));
@@ -1701,7 +1762,7 @@ function discoverGraphConfigSources(root: string): Map<string, string> {
     configPaths = discoverBoundedGraphPaths([...GRAPH_CONFIG_GLOBS], {
       ...GRAPH_CORPUS_GLOB_OPTIONS,
       cwd: root,
-      ignore: [...GRAPH_CORPUS_IGNORE_GLOBS],
+      ignore: graphCorpusIgnoreGlobs(root),
     }, GRAPH_CORPUS_LIMITS.maxConfigFiles).map(toPosix);
   } catch (error) {
     throw new GraphSourceStagingError([sourceStagingFailure(".", "discover", error)]);
@@ -1714,6 +1775,7 @@ function discoverGraphConfigSources(root: string): Map<string, string> {
         canonicalPath,
         resolve(root, path),
         GRAPH_CORPUS_LIMITS.maxConfigFileBytes,
+        "maxConfigFileBytes",
       );
       configBytes = addGraphCorpusBytes(
         configBytes,

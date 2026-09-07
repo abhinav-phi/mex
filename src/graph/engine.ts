@@ -24,6 +24,24 @@ import { NotImplementedError } from "./errors.js";
 // Value types
 // ----------------------------------------------------------------------------
 
+/**
+ * One repository file the bounded corpus policy declined to index.
+ *
+ * A skipped file is a reported outcome, not a failure: the rest of the
+ * repository indexed normally. It is surfaced so a user learns why a symbol is
+ * missing from the graph instead of concluding the graph is wrong.
+ */
+export interface SkippedSourceFile {
+  filePath: string;
+  reason: "corpus-limit";
+  /** The bounded-policy limit the file breached. */
+  limit: string;
+  limitBytes: number;
+  /** Observed size, when it was measured. */
+  observedBytes?: number;
+  message: string;
+}
+
 /** Summary of a build/sync pass — for the `mex graph` CLI. */
 export interface BuildResult {
   filesIndexed: number;
@@ -35,6 +53,12 @@ export interface BuildResult {
     partial: number;
     failed: number;
   };
+  /**
+   * Files discovered but deliberately not indexed. Sits beside `health`
+   * rather than inside it: `health` counts files that *are* in the graph and
+   * how well they parsed, and a skipped file is in none of those buckets.
+   */
+  skipped?: SkippedSourceFile[];
 }
 
 /** Options for {@link GraphEngine.searchNodes}. */
