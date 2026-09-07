@@ -253,6 +253,50 @@ New bounded Wiki content.
     expect((await port.getEntity(ENTITY))?.location.path).toBe(".mex/context/architecture.md");
   });
 
+  it("reads Inbox targets only from a fresh same-session Wiki snapshot without consulting Graph", async () => {
+    const target = project(true);
+    await createRepositoryWikiPort(target.root).rebuildIndex();
+    const before = readFileSync(target.firstPath);
+    const indexBefore = readFileSync(join(target.root, ".mex", "wiki.db"));
+    let reads = 0;
+    const port = createRepositoryWikiPort(target.root, {
+      groundingBridge: { async withFreshGroundingSnapshot() { throw new Error("Inbox target lookup must not consult Graph."); } },
+      __internal: {
+        read(options, callback) {
+          reads += 1;
+          return withWikiContractReadSession(options, callback);
+        },
+      },
+    });
+    await expect(port.readInboxTarget(ENTITY)).resolves.toMatchObject({
+      ref: { id: ENTITY }, body: expect.stringContaining("One service owns"),
+      sources: [{ type: "manual", note: "Maintainer review" }],
+      version: { semanticRevision: 1, contentHash: hash(before) },
+    });
+    expect(reads).toBe(1);
+    await expect(port.readInboxTarget(TARGET)).resolves.toMatchObject({ groundingHealth: "unverified" });
+    await expect(port.readInboxTarget(FOURTH)).resolves.toBeNull();
+    expect(readFileSync(target.firstPath)).toEqual(before);
+    expect(readFileSync(join(target.root, ".mex", "wiki.db"))).toEqual(indexBefore);
+
+    writeFileSync(target.firstPath, Buffer.concat([before, Buffer.from("\nConcurrent edit.\n")]));
+    await expectCode(() => port.readInboxTarget(ENTITY), "INDEX_STALE");
+    writeFileSync(target.firstPath, before);
+    const racing = createRepositoryWikiPort(target.root, {
+      __internal: {
+        read(options, callback) {
+          return withWikiContractReadSession(options, (session) => {
+            const result = callback(session);
+            writeFileSync(target.firstPath, Buffer.concat([before, Buffer.from("\nChanged after projection.\n")]));
+            return result;
+          });
+        },
+      },
+    });
+    await expectCode(() => racing.readInboxTarget(ENTITY), "REVISION_CONFLICT");
+    expect(readFileSync(join(target.root, ".mex", "wiki.db"))).toEqual(indexBefore);
+  });
+
   it("projects exact file-byte revisions and revision-bound pages", async () => {
     const target = project();
     const port = createRepositoryWikiPort(target.root);
@@ -850,6 +894,41 @@ relations:
       () => indexPort.readExactEntityAttestations([ENTITY]),
       "REVISION_CONFLICT",
     );
+  });
+
+  it("retains appended approval sources in a normalized authoring update and its replay", async () => {
+    const target = project();
+    const port = createRepositoryWikiPort(target.root);
+    await port.rebuildIndex();
+    const entity = await port.getEntity(ENTITY);
+    if (!entity) throw new Error("fixture entity missing");
+    const source = {
+      type: "document", ref: ".mex/inbox/proposal_reviewed.md",
+      note: "Accepted rationale.\n\nPreserve this evidence.",
+      metadata: { proposalId: "proposal_reviewed", approvedBy: { kind: "human", id: "reviewer" } },
+    };
+    const request: WikiOperationRequest<RepositoryWikiOperationPayload> = {
+      operation: {
+        opId: "operation_adapter_append_approval", type: "update-entry", entityId: ENTITY,
+        baseRevision: entity.version.semanticRevision, baseContentHash: entity.version.contentHash,
+        actor: { kind: "human", id: "reviewer" }, timestamp: "2026-08-28T06:00:00.000Z",
+        payload: { operations: [{ type: "update-entry", entityId: ENTITY, summary: "Approved correction.", appendSources: [source] }] },
+      },
+      expectedRevisions: [{ target: { kind: "entity", id: ENTITY }, version: entity.version }],
+    };
+    const before = readFileSync(target.firstPath);
+    const preview = await port.previewAuthoringOperations(request);
+    expect(preview.valid).toBe(true);
+    expect(readFileSync(target.firstPath)).toEqual(before);
+    if (!preview.plan.valid) throw new Error("expected a valid authoring plan");
+    const apply = { ...request, plan: preview.plan, expectedPreviewRevision: preview.previewRevision };
+    await expect(port.applyOperations(apply)).resolves.toMatchObject({ applied: true, idempotentReplay: false });
+    const updated = await port.getEntity(ENTITY);
+    expect(updated?.sources).toEqual([...entity.sources, source]);
+    expect(updated?.version.semanticRevision).toBe(entity.version.semanticRevision + 1);
+    const after = readFileSync(target.firstPath);
+    await expect(port.applyOperations(apply)).resolves.toMatchObject({ applied: true, idempotentReplay: true });
+    expect(readFileSync(target.firstPath)).toEqual(after);
   });
 
   it("forces and reports exactly one receipt-pinned create ID", async () => {

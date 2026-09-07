@@ -12,12 +12,12 @@ edges:
     condition: "when connecting team state to Hub, Wiki, or graph consumers"
   - target: "context/conventions.md"
     condition: "when changing canonical serialization or validation"
-last_updated: 2026-09-03
+last_updated: 2026-09-08
 mex:
   id: mx_01M1M0CJMRWZY5TZCEBSFJPAHT
   type: pattern
   status: promoted
-  revision: 4
+  revision: 5
   title: local-first-team-state
   grounds_to:
     - node: function:ecf1fb45ac2910d02bc78f6f761c0145
@@ -109,6 +109,18 @@ under `.mex/local/`. When present, the legacy decision-event JSONL stays byte-fo
 - Canonical handoff identity comparisons use stable Member IDs. Display names,
   Git aliases, and serialized actor objects are snapshots for review, not
   authorization keys.
+- An additive Inbox payload must preserve legacy materialization bytes: changing
+  old approval serialization can invalidate an already signed preview or its
+  interrupted-write recovery. New contribution attribution must also use stable
+  object-field order because receipt decoding may reorder JSON keys before
+  canonical YAML is rendered.
+- Inbox proposals are review artifacts, not a Wiki knowledge category. Apply
+  corrections to existing entities and append proposal/evidence sources while
+  retaining original producer attribution and grounding baselines. Routine
+  non-Spec Wiki/GROW upkeep does not require Inbox.
+- A stable Wiki read can represent an already stale index. Target discovery for
+  a correction must require fresh status in the same immutable observation as
+  the returned text and revisions; a separate earlier status check is not enough.
 
 ## Verify
 

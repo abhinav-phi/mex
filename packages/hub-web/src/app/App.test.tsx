@@ -70,28 +70,27 @@ describe("Project Hub routes", () => {
       "Overview",
       "Context",
       "Code",
+      "Inbox",
       "Relays",
       "Activity",
+      "Team",
     ]);
-    expect(within(primary).getByRole("region", { name: "Project Memory" })).toHaveTextContent(
+    expect(within(primary).getByRole("region", { name: "Project" })).toHaveTextContent(
       "ContextCode",
     );
     expect(within(within(primary).getByRole("region", { name: "Teamwork" }))
       .getAllByRole("link")
       .map((link) => link.querySelector("span")?.textContent))
-      .toEqual(["Relays", "Activity"]);
+      .toEqual(["Relays", "Activity", "Team"]);
     expect(within(primary).queryByRole("region", { name: "Coming Soon" })).not.toBeInTheDocument();
-    for (const label of ["Specs", "Workstreams", "Inbox", "Playbooks", "Catch Up"]) {
+    for (const label of ["Specs", "Workstreams", "Playbooks", "Catch Up"]) {
       expect(within(primary).queryByRole("link", { name: new RegExp(`^${label}`, "u") })).not.toBeInTheDocument();
     }
 
     const utilities = within(sidebar).getByRole("navigation", { name: "Project utilities" });
-    expect(within(utilities).getAllByRole("link").map((link) => link.textContent)).toEqual([
-      "Team",
-    ]);
+    expect(within(utilities).queryAllByRole("link")).toEqual([]);
     await user.click(within(utilities).getByRole("button", { name: /^System/u }));
     expect(within(utilities).getAllByRole("link").map((link) => link.querySelector("span")?.textContent)).toEqual([
-      "Team",
       "Health",
       "Jobs",
     ]);
@@ -102,7 +101,7 @@ describe("Project Hub routes", () => {
     const first = renderRoute("/");
     await screen.findByRole("heading", { level: 1, name: fixtureOverviewHeading });
 
-    const projectMemory = screen.getByRole("button", { name: "Project Memory" });
+    const projectMemory = screen.getByRole("button", { name: "Project" });
     const teamwork = screen.getByRole("button", { name: "Teamwork" });
     const system = screen.getByRole("button", { name: /^System/u });
     expect(projectMemory).toHaveAttribute("aria-expanded", "true");
@@ -118,14 +117,14 @@ describe("Project Hub routes", () => {
     first.unmount();
     renderRoute("/");
     await screen.findByRole("heading", { level: 1, name: fixtureOverviewHeading });
-    expect(screen.getByRole("button", { name: "Project Memory" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Project" })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("button", { name: "Teamwork" })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("button", { name: /^System/u })).toHaveAttribute("aria-expanded", "false");
   });
 
   it.each([
-    ["/knowledge/mx_01K36WVM6H7JK8M9NPQRSTVVWX", "Project Memory", "Context"],
-    ["/code/symbols/sym.createHubServer", "Project Memory", "Code"],
+    ["/knowledge/mx_01K36WVM6H7JK8M9NPQRSTVVWX", "Project", "Context"],
+    ["/code/symbols/sym.createHubServer", "Project", "Code"],
     ["/jobs", "System", "Jobs"],
   ])("opens the active group and marks its nested route for %s", async (route, group, link) => {
     renderRoute(route);
@@ -138,7 +137,7 @@ describe("Project Hub routes", () => {
   it("keeps a manually collapsed active group visibly active", async () => {
     const user = userEvent.setup();
     renderRoute("/knowledge/mx_01K36WVM6H7JK8M9NPQRSTVVWX");
-    const disclosure = await screen.findByRole("button", { name: "Project Memory" });
+    const disclosure = await screen.findByRole("button", { name: "Project" });
     await user.click(disclosure);
     expect(disclosure).toHaveAttribute("aria-expanded", "false");
     expect(disclosure).toHaveAttribute("data-active", "true");
@@ -448,7 +447,7 @@ describe("Project Hub routes", () => {
 
     expect(screen.getByRole("link", { name: "Activity" })).toBeVisible();
     expect(screen.getByRole("link", { name: "Team" })).toHaveAttribute("href", "/members");
-    expect(screen.queryByRole("link", { name: /^Inbox/u })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /^Inbox/u })).toHaveAttribute("href", "/inbox");
     expect(screen.getByRole("link", { name: /^Relays/u })).toHaveAttribute("href", "/relays");
     expect(screen.queryByRole("region", { name: "Project sections" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Recent jobs" })).not.toBeInTheDocument();

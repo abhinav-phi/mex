@@ -41,7 +41,7 @@ import type {
   InboxProposalDetail,
   InboxProposalState,
   InboxProposalSummary,
-  InboxSpecKind,
+  InboxEntityKind,
   HomeResponse,
   TeamActorRef,
   TeamCurrentActorResponse,
@@ -85,6 +85,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/primitiv
 import { ErrorState, PageHeader, StatePanel, formatDate, sentenceCase } from "../components/ui";
 import { boundedNextCursor, MAX_WORKBENCH_PAGES } from "../lib/bounds";
 import styles from "../styles/inbox.module.css";
+import { isInboxCreate, isInboxUpdate, type InboxUpdateChange } from "../lib/inbox-change";
 import type { AppliedInboxAction, ReviewAction } from "./InboxMutationDialogs";
 import type { InboxOverflowMenuProps } from "./InboxOverflowMenu";
 
@@ -255,8 +256,8 @@ function relationPhrase(relation: CreateRelation): string {
 
 function RelatedKnowledge({ input }: { input: InboxDraftInput }) {
   const change = input.change;
-  if (change.kind !== "spec.create") return null;
-  const relation = change.relation;
+  if (!isInboxCreate(change)) return null;
+  const relation = change.kind === "spec.create" ? change.relation : undefined;
   const evidenceTitles = new Map(
     input.evidence.flatMap((item) => (
       item.kind === "entity" && item.entity.title
@@ -317,7 +318,7 @@ function UpdateComparison({
   currentError,
   currentPending,
 }: {
-  change: Extract<InboxDraftInput["change"], { kind: "spec.update" }>;
+  change: InboxUpdateChange;
   current?: WikiEntityDetailResponse;
   currentError?: string;
   currentPending?: boolean;
@@ -346,7 +347,7 @@ function UpdateComparison({
       {currentError ? (
         <Alert className={styles.readWarning}>
           <AlertTriangle aria-hidden="true" />
-          <AlertTitle>Current Spec content could not be read</AlertTitle>
+          <AlertTitle>Current knowledge content could not be read</AlertTitle>
           <AlertDescription>
             Proposed values remain available below. The approval preview is still the final freshness authority. {currentError}
           </AlertDescription>
@@ -389,7 +390,7 @@ function ChangeDetail({
     <div className={styles.semanticSections}>
       <section>
         <h3>What will change</h3>
-        {change.kind === "spec.create" ? (
+        {isInboxCreate(change) ? (
           <div className={styles.createPresentation}>
             <dl className={styles.humanFacts}>
               <div><dt>Entity type</dt><dd>{sentenceCase(change.entityKind)}</dd></div>
@@ -462,12 +463,12 @@ function TechnicalDetails({
             </ul>
           </section>
         ) : null}
-        {input.change.kind === "spec.create" && (input.change.topics?.length || input.change.relation) ? (
+        {isInboxCreate(input.change) && (input.change.topics?.length || (input.change.kind === "spec.create" && input.change.relation)) ? (
           <section>
             <h4>Stored relationships</h4>
             <ul className={styles.technicalList}>
               {(input.change.topics ?? []).map((id) => <li key={id}>Topic <code>{id}</code></li>)}
-              {input.change.relation ? (
+              {input.change.kind === "spec.create" && input.change.relation ? (
                 <li>{input.change.relation.type} <code>{input.change.relation.target.id}</code></li>
               ) : null}
             </ul>
@@ -621,8 +622,8 @@ function ProposalActions({
         <div className={styles.actionContext}>
           <AlertTriangle aria-hidden="true" />
           {ownProposal
-            ? "This proposal needs fresh Spec references before it can return to review."
-            : "Its author or their agent should refresh this proposal against current Spec content."}
+            ? "This proposal needs fresh knowledge references before it can return to review."
+            : "Its author or their agent should refresh this proposal against current knowledge content."}
         </div>
         {ownProposal ? (
           <OnDemandInboxOverflowMenu
@@ -742,7 +743,7 @@ function ProposalDetail({
       <CardHeader className={styles.detailHeader}>
         <div>
           <div className={styles.detailBadges}>
-            <Badge variant="outline">Spec change</Badge>
+            <Badge variant="outline">Knowledge change</Badge>
             <Badge variant="secondary">{changeLabel(proposal.changeKind, proposal.entityKind)}</Badge>
           </div>
           <CardTitle><h2>{proposal.title}</h2></CardTitle>
@@ -768,7 +769,7 @@ function ProposalDetail({
           <Alert className={styles.staleWarning}>
             <AlertTriangle aria-hidden="true" />
             <AlertTitle>Needs refresh</AlertTitle>
-            <AlertDescription>The referenced Spec content changed after this proposal was published.</AlertDescription>
+            <AlertDescription>The referenced knowledge content changed after this proposal was published.</AlertDescription>
           </Alert>
         ) : null}
         {!terminal ? (
@@ -825,10 +826,10 @@ function inboxView(value: string | null): InboxView {
 
 function changeLabel(
   changeKind: InboxDraftSummary["changeKind"],
-  entityKind: InboxSpecKind,
+  entityKind: InboxEntityKind,
 ): string {
   const label = entityKind === "spec" ? "Spec" : entityKind.replaceAll("_", " ");
-  return `${changeKind === "spec.create" ? "New" : "Update"} ${label}`;
+  return `${changeKind.endsWith(".create") ? "New" : "Update"} ${label}`;
 }
 
 function proposalStateLabel(state: InboxProposalState): string {
@@ -922,7 +923,7 @@ function ProposalQueue({
     <Card className={styles.queuePane} role="region" aria-labelledby="proposal-queue-heading">
       <CardHeader className={styles.queuePaneHeader}>
         <div>
-          <CardTitle><h2 id="proposal-queue-heading">Spec changes</h2></CardTitle>
+          <CardTitle><h2 id="proposal-queue-heading">Knowledge changes</h2></CardTitle>
           <CardDescription>Select a change to review its meaningful content.</CardDescription>
         </div>
       </CardHeader>
@@ -936,7 +937,7 @@ function ProposalQueue({
             <EmptyHeader>
               <EmptyMedia variant="icon"><CheckCircle2 aria-hidden="true" /></EmptyMedia>
               <EmptyTitle>You’re all caught up</EmptyTitle>
-              <EmptyDescription>No Spec changes currently need review.</EmptyDescription>
+              <EmptyDescription>No knowledge changes currently need review.</EmptyDescription>
             </EmptyHeader>
             <EmptyContent>
               <Button nativeButton={false} render={<Link to="/activity" />} size="sm" variant="outline">Open Activity</Button>
@@ -1262,7 +1263,7 @@ export function InboxPage() {
     retry: false,
   });
   const selectedChange = view === "review" ? proposalDetail.data?.change : draftDetail.data?.input.change;
-  const selectedUpdateTargetId = selectedChange?.kind === "spec.update" ? selectedChange.target.id : null;
+  const selectedUpdateTargetId = isInboxUpdate(selectedChange) ? selectedChange.target.id : null;
   const wikiReadAvailable = capabilities?.wiki.read.availability === "available";
   const currentWikiEntity = useQuery({
     queryKey: ["wiki-entity", selectedUpdateTargetId],
@@ -1299,7 +1300,7 @@ export function InboxPage() {
     next.delete(view === "review" ? "proposal" : "draft");
     setSearchParams(next, { replace: true });
     setSelectionNotice(view === "review"
-      ? "That proposal is no longer in the review queue. Choose another Spec change."
+      ? "That proposal is no longer in the review queue. Choose another knowledge change."
       : "That draft is no longer on this device. Choose another draft.");
   }, [
     draftDetail.isError,
@@ -1367,6 +1368,9 @@ export function InboxPage() {
     setReviewAction(action);
   };
   const onApplied = async (kind: AppliedInboxAction, result: InboxOperationApplyResponse) => {
+    const createdDraftId = kind === "inbox.draft.save"
+      ? result.localChanges.find((change) => change.namespace === "inbox-draft" && change.beforeRevision === null)?.id
+      : undefined;
     const removesSelection = kind === "inbox.publish"
       || kind === "inbox.draft.delete"
       || kind === "inbox.approve"
@@ -1382,10 +1386,13 @@ export function InboxPage() {
       queryClient.invalidateQueries({ queryKey: ["spec"] }),
       queryClient.invalidateQueries({ queryKey: ["wiki-entity"] }),
       queryClient.invalidateQueries({ queryKey: ["wiki-entities"] }),
+      queryClient.invalidateQueries({ queryKey: ["wiki-graph"] }),
+      queryClient.invalidateQueries({ queryKey: ["context-detail"] }),
+      queryClient.invalidateQueries({ queryKey: ["context-code"] }),
     ]);
     if (removesSelection) clearModeSelection();
     const consequence = kind === "inbox.approve"
-      ? "Spec change and review record were written to your working tree. Commit and push them to share the result with your team."
+      ? "Knowledge change and review record were written to your working tree. Commit and push them to share the result with your team."
       : kind === "inbox.publish"
         ? "Proposal created in your working tree. Commit and push it to make it available to teammates."
         : result.changes.length > 0
@@ -1393,6 +1400,13 @@ export function InboxPage() {
           : "Draft state updated on this device.";
     const hasGitNotice = kind === "inbox.approve" || kind === "inbox.publish";
     flushSync(() => {
+      if (createdDraftId) {
+        const next = new URLSearchParams(searchParams);
+        next.set("view", "drafts");
+        next.set("draft", createdDraftId);
+        next.delete("proposal");
+        setSearchParams(next, { replace: true });
+      }
       setStatus(hasGitNotice ? "" : consequence);
       if (kind === "inbox.approve") setGitNotice("approval");
       else if (kind === "inbox.publish") setGitNotice("publication");
@@ -1406,14 +1420,14 @@ export function InboxPage() {
         compact
         state="empty"
         title="This proposal link is invalid"
-        detail="Return to the queue and choose an available Spec change."
+        detail="Return to the queue and choose an available knowledge change."
       />
       <Button onClick={returnToQueue} size="sm" type="button" variant="outline">Return to queue</Button>
     </div>
   ) : selectedProposalId === null ? (
-    <StatePanel compact state="empty" title="Choose a Spec change" detail="Select an item from the queue to start reviewing." />
+    <StatePanel compact state="empty" title="Choose a knowledge change" detail="Select an item from the queue to start reviewing." />
   ) : proposalDetail.isPending ? (
-    <StatePanel compact state="loading" title="Opening Spec change" detail="Loading its meaningful content only after selection." />
+    <StatePanel compact state="loading" title="Opening knowledge change" detail="Loading its meaningful content only after selection." />
   ) : proposalDetail.isError ? (
     <div className={styles.recoverableState}>
       <ErrorState error={proposalDetail.error} retry={() => void proposalDetail.refetch()} />
@@ -1503,7 +1517,7 @@ export function InboxPage() {
           <AlertTitle>{gitNotice === "approval" ? "Working tree updated" : "Proposal created"}</AlertTitle>
           <AlertDescription>
             {gitNotice === "approval"
-              ? "Spec change and review record were written to your working tree. Commit and push them to share the result with your team."
+              ? "Knowledge change and review record were written to your working tree. Commit and push them to share the result with your team."
               : "Proposal created in your working tree. Commit and push it to make it available to teammates."}
           </AlertDescription>
           <AlertAction>

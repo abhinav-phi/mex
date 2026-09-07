@@ -181,6 +181,8 @@ import {
   inboxDraftInputFromProduct,
   inboxSigningPayload,
   materializeSpecWikiRequest,
+  isInboxCreateChange,
+  isInboxUpdateChange,
   normalizeInboxListFilter,
   normalizeTeamInboxSpecCommand,
   productDraftProjection,
@@ -2440,7 +2442,7 @@ export class RepositoryTeamWorkflowPort<
     if (governedInbox && specChange === null) {
       throw artifactError(
         "VALIDATION_FAILED",
-        "Inbox proposal is outside Spec authoring",
+        "Inbox proposal is outside governed Inbox authoring",
         "The governed Inbox/Spec facade cannot execute a generic Wiki proposal.",
         current.sourcePath,
       );
@@ -2496,7 +2498,7 @@ export class RepositoryTeamWorkflowPort<
         );
       }
       const receiptSpecId = purposeId(purposeIds, "spec-entity");
-      const recoverySpecId = specChange?.kind === "spec.create"
+      const recoverySpecId = (specChange !== null && isInboxCreateChange(specChange))
         ? recoveryCreatedSpecId(
             recoveryEffects,
             current.ref.id,
@@ -2510,11 +2512,11 @@ export class RepositoryTeamWorkflowPort<
       ) throw previewConflict();
       if (
         governedInbox
-        && specChange?.kind === "spec.create"
+        && (specChange !== null && isInboxCreateChange(specChange))
         && recoveryEffects !== undefined
         && recoverySpecId === null
       ) throw incompleteRecovery();
-      const pinnedSpecId = specChange?.kind === "spec.create"
+      const pinnedSpecId = (specChange !== null && isInboxCreateChange(specChange))
         ? receiptSpecId ?? recoverySpecId ?? this.#mintSpecId()
         : undefined;
       const wikiRequest = specChange === null
@@ -2524,9 +2526,9 @@ export class RepositoryTeamWorkflowPort<
             command.authority,
             pinnedSpecId,
           ) as unknown as WikiOperationRequest<TWikiPayload>;
-      const wikiPreview = specChange?.kind === "spec.create"
+      const wikiPreview = (specChange !== null && isInboxCreateChange(specChange))
         ? await this.#previewWikiWithCreatedId(wikiRequest, pinnedSpecId!)
-        : specChange?.kind === "spec.update"
+        : (specChange !== null && isInboxUpdateChange(specChange))
           ? await this.#previewWikiAuthoringUpdate(wikiRequest)
           : await this.#wiki.previewOperations(wikiRequest);
       if (!wikiPreview.valid) {
@@ -2542,7 +2544,7 @@ export class RepositoryTeamWorkflowPort<
           ? [entitySubject(current.ref), ...wikiPreview.affectedEntities.map(entitySubject)]
           : [
               entitySubject(current.ref),
-              entitySubject(specChange.kind === "spec.create"
+              entitySubject(isInboxCreateChange(specChange)
                 ? { id: pinnedSpecId!, kind: specChange.entityKind }
                 : specChange.target),
             ],
@@ -2717,7 +2719,7 @@ export class RepositoryTeamWorkflowPort<
       ) {
         throw artifactError(
           "VALIDATION_FAILED",
-          "Inbox draft is outside Spec authoring",
+          "Inbox draft is outside governed Inbox authoring",
           "The governed Inbox/Spec facade accepts only its own typed local drafts.",
         );
       }
@@ -2732,7 +2734,7 @@ export class RepositoryTeamWorkflowPort<
     ) {
       throw artifactError(
         "VALIDATION_FAILED",
-        "Inbox proposal is outside Spec authoring",
+        "Inbox proposal is outside governed Inbox authoring",
         "The governed Inbox/Spec facade accepts only its own typed canonical proposals.",
       );
     }
@@ -3762,16 +3764,16 @@ export class RepositoryTeamWorkflowPort<
     const specChange = storedSpecChange(
       proposal as unknown as InboxProposal<JsonValue>,
     );
-    const recoveredSpecId = specChange?.kind === "spec.create"
+    const recoveredSpecId = (specChange !== null && isInboxCreateChange(specChange))
       ? recoveryCreatedSpecId(
           effects,
           proposal.ref.id,
           specChange.entityKind,
         )
       : null;
-    if (specChange?.kind === "spec.create" && recoveredSpecId === null) {
+    if ((specChange !== null && isInboxCreateChange(specChange)) && recoveredSpecId === null) {
       throw wikiRecoveryConflict(
-        "The durable Wiki recovery manifest lost the receipt-pinned Spec ID.",
+        "The durable Wiki recovery manifest lost the receipt-pinned entity ID.",
       );
     }
     const request = specChange === null
@@ -3787,7 +3789,7 @@ export class RepositoryTeamWorkflowPort<
             occurredAt: activity.occurredAt,
             repoState: activity.repoState,
           },
-          specChange.kind === "spec.create" ? recoveredSpecId! : undefined,
+          isInboxCreateChange(specChange) ? recoveredSpecId! : undefined,
         ) as unknown as WikiOperationRequest<TWikiPayload>;
     if (recovery.manifest.operationId !== request.operation.opId) {
       throw wikiRecoveryConflict(
@@ -6291,12 +6293,12 @@ function compareCodePoints(left: string, right: string): number {
 
 function inboxSummaryMatches(
   summary: {
-    changeKind: "spec.create" | "spec.update";
+    changeKind: "spec.create" | "spec.update" | "knowledge.create" | "knowledge.update";
     entityKind: string;
     state?: string;
   },
   filter: {
-    changeKinds?: readonly ("spec.create" | "spec.update")[];
+    changeKinds?: readonly ("spec.create" | "spec.update" | "knowledge.create" | "knowledge.update")[];
     entityKinds?: readonly string[];
     states?: readonly string[];
   },

@@ -30,6 +30,7 @@ type ExpansionState = Record<NavigationGroupId, boolean>;
 const LOCALITY_EXPLANATION = "MEX runs on this device. Canonical team records are shared when committed and pushed; drafts and indexes remain local to this checkout.";
 
 const countLabels: Record<NavigationCountSource, (count: number) => string> = {
+  inbox: (count) => `${count} proposals for team review.`,
   relays: (count) => `${count} open Relays for you.`,
   "active-jobs": (count) => `${count} active system operations.`,
 };
@@ -74,6 +75,11 @@ function countBadge(count: number | undefined, source: NavigationCountSource): R
 
 function itemCount(home: HomeResponse | undefined, item: NavigationItem): number | undefined {
   if (!home || !item.countSource) return undefined;
+  if (item.countSource === "inbox") {
+    return home.attention.inbox.availability === "available"
+      ? home.attention.inbox.teamReviewCount
+      : undefined;
+  }
   if (item.countSource === "relays") {
     return home.attention.relays.availability === "available"
       ? home.attention.relays.readyToTakeCount + home.attention.relays.inYourHandsCount
@@ -164,6 +170,7 @@ function NavigationList({
       {items.map((item) => (
         <li key={item.id}>
           <NavigationLink capabilities={capabilities} home={home} item={item} />
+          {item.id === "team" ? <small className={styles.identityText}>{identityText(home)}</small> : null}
         </li>
       ))}
     </ul>

@@ -804,6 +804,43 @@ The governed authoring test keeps one canonical entity available to the exact-re
     });
   });
 
+  it.each([
+    { kind: "knowledge.create", entityKind: "pattern", title: "Reviewed evidence", body: "Keep accepted code.\n\tReview drift.", summary: "", status: "in_flight" },
+    { kind: "knowledge.update", target: { id: INBOX_SPEC, kind: "architecture", title: "Architecture" }, patch: { summary: "", body: "The updated architecture." } },
+  ] as const)("projects $kind through both private Hub directions without changing content or leaking private fields", async (change) => {
+    const base = inboxDraftFixture();
+    const input: TeamInboxSpecDraftDetail["input"] = {
+      ...base.input,
+      change,
+      targetRevisions: change.kind === "knowledge.update"
+        ? [{ target: { kind: "entity", id: change.target.id }, revision: "3".repeat(64), semanticRevision: 2 }]
+        : [],
+    };
+    const draft: TeamInboxSpecDraftDetail = {
+      ...base, changeKind: change.kind,
+      entityKind: change.kind === "knowledge.create" ? change.entityKind : change.target.kind,
+      title: change.kind === "knowledge.create" ? change.title : change.target.title,
+      input: { ...input, change: Object.assign({}, change, { privateMetadata: "private engine state" }) },
+    };
+    const previewInbox = vi.fn(async (request: TeamInboxSpecCommand) => ({ ...inboxPreviewFixture(), request }));
+    const unused = async (): Promise<never> => { throw new Error("Unexpected Inbox operation."); };
+    const services = createLocalHubReadServicesBase({
+      projectRoot, scaffoldId: "scaffold-local", git, team: identityService(),
+      inbox: { getInboxDraft: async () => draft, listInboxDrafts: unused, getInboxProposal: unused,
+        listInboxProposals: unused, previewInbox, applyInbox: unused },
+      jobs: { list: () => ({ items: [] }) }, now: () => new Date(NOW),
+    });
+    const projected = InboxDraftDetailSchema.parse(await services.inboxDraft?.(INBOX_DRAFT));
+    expect(projected.input).toEqual(input);
+    expect(JSON.stringify(projected)).not.toContain("private engine state");
+    const request = InboxOperationPreviewRequestSchema.parse({
+      operationId: "hub_knowledge_projection", action: { kind: "inbox.draft.save", draft: input }, expectedRevisions: [],
+    });
+    const preview = InboxOperationPreviewResponseSchema.parse(await services.previewInboxOperation?.(request));
+    expect(preview.request).toEqual(request);
+    expect(previewInbox).toHaveBeenCalledWith(request);
+  });
+
   it("projects the private Inbox facade explicitly and counts only actionable canonical proposals", async () => {
     const draft = Object.assign(inboxDraftFixture(), { privateMetadata: "/Users/alice/draft" });
     const pending = Object.assign(inboxProposalFixture("pending"), { internalRequest: { secret: true } });

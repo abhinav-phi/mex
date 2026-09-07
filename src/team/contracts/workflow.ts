@@ -82,6 +82,25 @@ export const TEAM_INBOX_SPEC_KINDS = [
 
 export type TeamInboxSpecKind = (typeof TEAM_INBOX_SPEC_KINDS)[number];
 
+/** Existing Wiki knowledge kinds accepted by the additive Inbox facade. */
+export const TEAM_INBOX_KNOWLEDGE_KINDS = [
+  "architecture",
+  "component",
+  "convention",
+  "decision",
+  "pattern",
+  "guide",
+] as const;
+
+export type TeamInboxKnowledgeKind = (typeof TEAM_INBOX_KNOWLEDGE_KINDS)[number];
+export type TeamInboxEntityKind = TeamInboxSpecKind | TeamInboxKnowledgeKind;
+
+export interface TeamInboxKnowledgeRef {
+  id: string;
+  kind: TeamInboxKnowledgeKind;
+  title?: string;
+}
+
 export interface TeamInboxSpecRef<
   TKind extends TeamInboxSpecKind = TeamInboxSpecKind,
 > {
@@ -140,10 +159,29 @@ export interface TeamInboxSpecUpdateChange {
   patch: TeamInboxSpecUpdatePatch;
 }
 
-/** Closed one-change product request. It deliberately has no raw Wiki slot. */
+export interface TeamInboxKnowledgeCreateChange {
+  kind: "knowledge.create";
+  entityKind: TeamInboxKnowledgeKind;
+  title: string;
+  body: string;
+  summary?: string;
+  status: "in_flight" | "promoted";
+  topics?: readonly string[];
+}
+
+export interface TeamInboxKnowledgeUpdateChange {
+  kind: "knowledge.update";
+  target: TeamInboxKnowledgeRef;
+  patch: TeamInboxSpecUpdatePatch;
+}
+
+export type TeamInboxCreateChange = TeamInboxSpecCreateChange | TeamInboxKnowledgeCreateChange;
+export type TeamInboxUpdateChange = TeamInboxSpecUpdateChange | TeamInboxKnowledgeUpdateChange;
+
+/** Compatibility-named, closed one-change request. It has no raw Wiki slot. */
 export type TeamInboxSpecChange =
-  | TeamInboxSpecCreateChange
-  | TeamInboxSpecUpdateChange;
+  | TeamInboxCreateChange
+  | TeamInboxUpdateChange;
 
 export interface TeamInboxSpecDraftInput {
   change: TeamInboxSpecChange;
@@ -157,7 +195,7 @@ export interface TeamInboxSpecDraftSummary {
   revision: Revision;
   updatedAt: string;
   changeKind: TeamInboxSpecChange["kind"];
-  entityKind: TeamInboxSpecKind;
+  entityKind: TeamInboxEntityKind;
   title: string;
   rationaleExcerpt: string;
 }
@@ -174,7 +212,7 @@ export interface TeamInboxSpecProposalSummary {
   state: ProposalState;
   author: ActorRef;
   changeKind: TeamInboxSpecChange["kind"];
-  entityKind: TeamInboxSpecKind;
+  entityKind: TeamInboxEntityKind;
   title: string;
   rationaleExcerpt: string;
   reviewer?: ActorRef;
@@ -201,7 +239,7 @@ export interface TeamInboxSpecPage<T> {
 
 export interface TeamInboxDraftListRequest extends PageRequest {
   changeKinds?: readonly TeamInboxSpecChange["kind"][];
-  entityKinds?: readonly TeamInboxSpecKind[];
+  entityKinds?: readonly TeamInboxEntityKind[];
 }
 
 export interface TeamInboxProposalListRequest

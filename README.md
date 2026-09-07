@@ -75,7 +75,7 @@ The Hub is where people explore and review their team's memory. Open it to under
 ![Explore Wiki and Code, review Inbox and Specs, and coordinate Relays and Team members in the local Project Hub.](docs/diagrams/readme/hub.svg)
 
 - **Understand the project:** Overview, Search, Knowledge, Specs, and Code bring explanations and implementation evidence together.
-- **Review and carry work forward:** Inbox supports governed Spec proposals; Relays preserve what the next person needs; Workstreams retain the surrounding context.
+- **Review and carry work forward:** Inbox proposes additions and corrections to project knowledge; Relays preserve what the next person needs. Existing Spec proposals and Workstream records remain readable.
 - **See who and what:** Team/Members supports attribution and local identity selection. Activity shows accepted MEX workflow events and recorded project notes—not every code edit or Git action.
 - **Keep context usable:** Health and Jobs expose index status and explicit maintenance.
 
@@ -221,7 +221,7 @@ Drift is a review signal. It does **not** prove that prose is false, that a code
 
 ## Agents help maintain the team's memory
 
-Agents are both readers and contributors: they can retrieve the team's existing context, help capture discoveries from real work, and prepare Spec proposals or handoffs for a person to review. They do not independently decide what should be published or shared.
+Agents are both readers and contributors: they can retrieve the team's existing context, help capture discoveries from real work, and prepare knowledge proposals or handoffs for a person to review. They do not independently decide what should be published or shared.
 
 Setup installs small host-agent instructions that point to `.mex/AGENTS.md` for policy and `.mex/ROUTER.md` for task-relevant context. Agents can query Wiki and Graph evidence, provided the host follows those instructions.
 
@@ -244,7 +244,9 @@ Use `--tool claude` for Claude Code. Review the resulting instruction and skill 
 
 Instructions may select Inbox or Relay from clear natural-language intent, but skill activation never approves a canonical write. When MEX context materially informs work, the agent names the records used; this is transparency, not proof of reasoning.
 
-The governed Inbox path applies to Spec-family proposals. Ordinary Wiki and context updates do not all pass through Inbox; review those working-tree changes through your normal engineering workflow.
+With the 0.8.1 Inbox update, “use MEX Inbox to capture what we decided” produces a contribution to existing project knowledge. The agent checks existing records, then drafts one addition or correction. Architecture, components, conventions, decisions, patterns, and guides are supported alongside existing Spec proposals. A local draft stays in the checkout; publishing writes a Markdown proposal for review; approval updates canonical knowledge and retains the proposal as history. Git shares those files with teammates.
+
+Ordinary GROW, Wiki, and context upkeep remains available without Inbox. Inbox is the explicit contribution path, not another knowledge category.
 
 <a id="mcp-server"></a>
 <details>
@@ -260,7 +262,7 @@ The repository includes an [MCP workspace](https://github.com/mex-memory/mex/tre
 | --- | --- |
 | Search and retrieve Wiki or Graph evidence | Whether retrieved evidence is sufficient |
 | Create a checkout-local Inbox draft | Publishing the proposal for repository review |
-| Preview a bounded Spec create/update operation | Approving or rejecting the proposed canonical change |
+| Preview a bounded knowledge addition or correction | Approving or rejecting the proposed canonical change |
 | Create a checkout-local Relay draft | Publishing, taking, and closing a handoff |
 | Suggest context and grounding updates | Reviewing and committing working-tree changes |
 

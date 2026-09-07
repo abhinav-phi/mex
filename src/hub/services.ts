@@ -2377,6 +2377,32 @@ function projectInboxProposalDetail(
 function projectInboxSpecChange(
   change: TeamInboxSpecDraftInput["change"],
 ): InboxSpecChange {
+  if (change.kind === "knowledge.update") {
+    return {
+      kind: change.kind,
+      target: {
+        id: change.target.id,
+        kind: change.target.kind,
+        ...(change.target.title === undefined ? {} : { title: change.target.title }),
+      },
+      patch: {
+        ...(change.patch.title === undefined ? {} : { title: change.patch.title }),
+        ...(change.patch.summary === undefined ? {} : { summary: change.patch.summary }),
+        ...(change.patch.body === undefined ? {} : { body: change.patch.body }),
+      },
+    };
+  }
+  if (change.kind === "knowledge.create") {
+    return {
+      kind: change.kind,
+      entityKind: change.entityKind,
+      title: change.title,
+      body: change.body,
+      ...(change.summary === undefined ? {} : { summary: change.summary }),
+      status: change.status,
+      ...(change.topics === undefined ? {} : { topics: [...change.topics] }),
+    };
+  }
   if (change.kind === "spec.update") {
     return {
       kind: "spec.update",
@@ -2697,9 +2723,9 @@ function projectInboxDraftInputToService(
 function projectInboxSpecChangeToService(
   change: InboxSpecChange,
 ): Readonly<Record<string, unknown>> {
-  if (change.kind === "spec.update") {
+  if (change.kind === "spec.update" || change.kind === "knowledge.update") {
     return {
-      kind: "spec.update",
+      kind: change.kind,
       target: {
         id: change.target.id,
         kind: change.target.kind,
@@ -2713,14 +2739,14 @@ function projectInboxSpecChangeToService(
     };
   }
   return {
-    kind: "spec.create",
+    kind: change.kind,
     entityKind: change.entityKind,
     title: change.title,
     body: change.body,
     ...(change.summary === undefined ? {} : { summary: change.summary }),
     status: change.status,
     ...(change.topics === undefined ? {} : { topics: [...change.topics] }),
-    ...(change.relation === undefined
+    ...(change.kind !== "spec.create" || change.relation === undefined
       ? {}
       : {
           relation: {

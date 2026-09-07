@@ -273,6 +273,8 @@ test.describe("populated development fixture", () => {
     await expectAccessible(page);
     expect(errors).toEqual([]);
     if (hasReviewedHubVisualBaselines) {
+      await expect(page.locator('aside[aria-label="Project Hub navigation"]')
+        .getByText("Ada Lovelace", { exact: true })).toBeVisible();
       await expect(page).toHaveScreenshot("hub-search.png", { fullPage: true });
     }
   });
@@ -1015,6 +1017,26 @@ test.describe("populated development fixture", () => {
     }
   }
 
+  test("saves a knowledge contribution as a local Inbox draft", async ({ page }) => {
+    const errors = watchBrowserErrors(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/inbox?fixture=populated&view=drafts");
+    await page.getByRole("button", { name: "Create manually", exact: true }).click();
+    const editor = page.getByRole("dialog", { name: "Create local knowledge draft" });
+    await expect(editor).toBeVisible();
+    await editor.getByLabel("Knowledge kind", { exact: true }).selectOption("decision");
+    await editor.getByLabel("Title", { exact: true }).fill("Keep shared context in Git");
+    await editor.getByLabel("Knowledge body", { exact: true }).fill("Accepted project knowledge lives in tracked Markdown.");
+    await editor.getByLabel("Rationale", { exact: true }).fill("Capture the decision from our working session.");
+    await expectAccessible(page);
+    await editor.getByRole("button", { name: "Save draft", exact: true }).click();
+    await expect(editor).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Selected Inbox draft detail" })
+      .getByRole("heading", { level: 2, name: "Keep shared context in Git", exact: true })).toBeVisible();
+    await expect(page).toHaveURL(/view=drafts.*draft=/);
+    expect(errors).toEqual([]);
+  });
+
   test("renders Inbox as a review-first semantic desk with honest action policy", async ({ page }) => {
     const errors = watchBrowserErrors(page);
     await page.emulateMedia({ reducedMotion: "reduce" });
@@ -1038,7 +1060,7 @@ test.describe("populated development fixture", () => {
     await expect(teammate).toHaveAttribute("aria-current", "true");
     const detail = page.getByRole("region", { name: "Selected Inbox review detail" });
     await expect(detail.getByRole("heading", { level: 2, name: "Clarify release evidence review" })).toBeVisible();
-    await expect(detail.getByText("Spec change", { exact: true })).toBeVisible();
+    await expect(detail.getByText("Knowledge change", { exact: true })).toBeVisible();
     await expect(detail.getByText("Published by Grace Hopper", { exact: true })).toBeVisible();
     await expect(detail.getByRole("heading", { name: "What will change" })).toBeVisible();
     await expect(detail.getByRole("region", { name: "Summary comparison" }).getByText("Current")).toBeVisible();
@@ -1076,7 +1098,7 @@ test.describe("populated development fixture", () => {
     await stale.click();
     await expect(detail.getByRole("heading", { level: 2, name: "Refresh the stale review boundary" })).toBeVisible();
     await expect(detail.getByText(
-      "The referenced Spec content changed after this proposal was published.",
+      "The referenced knowledge content changed after this proposal was published.",
       { exact: true },
     )).toBeVisible();
     await expect(detail.getByRole("button", { name: "Approve change" })).toHaveCount(0);
@@ -1093,7 +1115,7 @@ test.describe("populated development fixture", () => {
 
     await expect(page.getByRole("tab", { name: /For review/ })).toHaveAttribute("aria-selected", "true");
     await expect(page.getByText("You’re all caught up", { exact: true })).toBeVisible();
-    await expect(page.getByText("No Spec changes currently need review.", { exact: true })).toBeVisible();
+    await expect(page.getByText("No knowledge changes currently need review.", { exact: true })).toBeVisible();
     await expect(page.locator("[data-inbox-proposal-id]")).toHaveCount(0);
     await expectAccessible(page);
     expect(errors).toEqual([]);
@@ -1241,7 +1263,7 @@ test.describe("populated development fixture", () => {
         await expect(page.getByRole("navigation", { name: "Primary" })).toBeHidden();
       } else {
         await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
-        const reviewQueue = page.getByRole("region", { name: "Spec changes" });
+        const reviewQueue = page.getByRole("region", { name: "Knowledge changes" });
         const reviewDetail = page.getByRole("region", { name: "Selected Inbox review detail" });
         await expect(reviewQueue).toBeVisible();
         await expect(reviewDetail.getByRole("heading", { level: 2, name: "Clarify release evidence review" })).toBeVisible();
@@ -1857,10 +1879,10 @@ test.describe("populated development fixture", () => {
     const sidebar = page.locator('aside[aria-label="Project Hub navigation"]');
     const primary = page.getByRole("navigation", { name: "Primary" });
     const utilities = page.getByRole("navigation", { name: "Project utilities" });
-    const projectMemory = primary.getByRole("region", { name: "Project Memory" });
+    const projectMemory = primary.getByRole("region", { name: "Project", exact: true });
     const teamwork = primary.getByRole("region", { name: "Teamwork" });
     const system = utilities.getByRole("region", { name: /^System/ });
-    const projectMemoryDisclosure = projectMemory.getByRole("button", { name: "Project Memory" });
+    const projectMemoryDisclosure = projectMemory.getByRole("button", { name: "Project", exact: true });
     const teamworkDisclosure = teamwork.getByRole("button", { name: "Teamwork" });
     const systemDisclosure = system.getByRole("button", { name: /^System/ });
 
@@ -1881,8 +1903,10 @@ test.describe("populated development fixture", () => {
       { href: "/", label: "Overview" },
       { href: "/knowledge", label: "Context" },
       { href: "/code", label: "Code" },
+      { href: "/inbox", label: "Inbox" },
       { href: "/relays", label: "Relays" },
       { href: "/activity", label: "Activity" },
+      { href: "/members", label: "Team" },
     ]);
     const utilityItems = await utilities.getByRole("link").evaluateAll((links) => links.map((link) => ({
       href: link.getAttribute("href"),
@@ -1891,7 +1915,6 @@ test.describe("populated development fixture", () => {
       ))?.textContent,
     })));
     expect(utilityItems).toEqual([
-      { href: "/members", label: "Team" },
       { href: "/health", label: "Health" },
       { href: "/jobs", label: "Jobs" },
     ]);
@@ -1910,8 +1933,8 @@ test.describe("populated development fixture", () => {
 
   test("opens deep-linked groups, preserves nested aria-current, and marks a collapsed active group", async ({ page }) => {
     await page.goto("/knowledge/mx_01K36WVM6H7JK8M9NPQRSTVVWX?fixture=populated");
-    const projectMemory = page.getByRole("region", { name: "Project Memory" });
-    const projectMemoryDisclosure = projectMemory.getByRole("button", { name: "Project Memory" });
+    const projectMemory = page.getByRole("region", { name: "Project", exact: true });
+    const projectMemoryDisclosure = projectMemory.getByRole("button", { name: "Project", exact: true });
     await expect(projectMemoryDisclosure).toHaveAttribute("aria-expanded", "true");
     await expect(projectMemory.getByRole("link", { name: "Context", exact: true }))
       .toHaveAttribute("aria-current", "page");
@@ -1920,7 +1943,7 @@ test.describe("populated development fixture", () => {
     await expect(projectMemoryDisclosure).toHaveAttribute("data-active", "true");
 
     await page.goto("/code/symbols/sym.createHubServer?fixture=populated");
-    await expect(page.getByRole("region", { name: "Project Memory" })
+    await expect(page.getByRole("region", { name: "Project", exact: true })
       .getByRole("link", { name: "Code", exact: true })).toHaveAttribute("aria-current", "page");
 
     await page.goto("/jobs?fixture=populated");
@@ -2007,7 +2030,7 @@ test.describe("populated development fixture", () => {
     await page.goto("/?fixture=populated");
     await expect(page.locator('[data-overview-workbench="ready"]')).toBeVisible();
     const sidebar = page.locator('aside[aria-label="Project Hub navigation"]');
-    await expect(sidebar.getByLabel("3 proposals awaiting team review.")).toHaveCount(0);
+    await expect(sidebar.getByLabel("3 proposals for team review.")).toHaveText("3");
     await expect(sidebar.getByLabel("2 open Relays for you.")).toHaveText("2");
     await expect(sidebar.getByLabel("1 active system operations.")).toHaveText("1");
     await expect(sidebar.getByRole("link", { name: "Team", exact: true })).toHaveAttribute("href", "/members");
@@ -2028,7 +2051,7 @@ test.describe("populated development fixture", () => {
     await page.goto("/?fixture=populated");
     await expect(page.locator('[data-overview-workbench="ready"]')).toBeVisible();
     const disclosures = {
-      projectMemory: page.getByRole("button", { name: "Project Memory" }),
+      projectMemory: page.getByRole("button", { name: "Project", exact: true }),
       teamwork: page.getByRole("button", { name: "Teamwork" }),
       system: page.getByRole("button", { name: /^System/ }),
     };
@@ -2045,7 +2068,7 @@ test.describe("populated development fixture", () => {
     await expectAccessible(page);
   });
 
-  test("captures the populated sidebar with Context and Relay counts", async ({ page }) => {
+  test("captures the populated sidebar with Inbox and Relay counts", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto("/?fixture=populated");
     await page.getByRole("button", { name: /^System/ }).click();

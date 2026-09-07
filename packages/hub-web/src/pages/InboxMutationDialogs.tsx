@@ -1,4 +1,4 @@
-import { useMutation } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -29,6 +29,8 @@ import type {
   InboxOperationPreviewResponse,
   InboxProposalDetail,
   InboxSpecKind,
+  InboxEntityKind,
+  InboxKnowledgeKind,
   TeamActorRef,
 } from "../api/types";
 import {
@@ -64,6 +66,8 @@ import { NativeSelect, NativeSelectOption } from "../components/primitives/nativ
 import { Textarea } from "../components/primitives/textarea";
 import { ErrorState, StatePanel, StatusPill, formatDate, sentenceCase } from "../components/ui";
 import styles from "../styles/inbox-mutations.module.css";
+import { boundedNextCursor, MAX_WORKBENCH_PAGES } from "../lib/bounds";
+import { inboxKnowledgeKinds, isInboxCreate, isInboxUpdate, isInboxKnowledgeKind } from "../lib/inbox-change";
 
 type CreateChange = Extract<InboxDraftInput["change"], { kind: "spec.create" }>;
 type CreateRelation = NonNullable<CreateChange["relation"]>;
@@ -166,10 +170,10 @@ function actorLabel(actor: TeamActorRef): string {
 
 function changeLabel(
   changeKind: InboxDraftDetail["changeKind"],
-  entityKind: InboxSpecKind,
+  entityKind: InboxEntityKind,
 ): string {
   const label = entityKind === "spec" ? "Spec" : entityKind.replaceAll("_", " ");
-  return `${changeKind === "spec.create" ? "New" : "Update"} ${label}`;
+  return `${changeKind.endsWith(".create") ? "New" : "Update"} ${label}`;
 }
 
 function hasLoneSurrogate(value: string): boolean {
@@ -349,6 +353,44 @@ function ExactPreviewDetails({ envelope }: { envelope: InboxOperationPreviewResp
   );
 }
 
+function KnowledgeTargetPicker({ kind, targetId, targetTitle, busy, onSelect }: {
+  kind: InboxKnowledgeKind;
+  targetId: string;
+  targetTitle: string;
+  busy: boolean;
+  onSelect(id: string): void;
+}) {
+  const api = useHubApi();
+  const records = useInfiniteQuery({
+    queryKey: ["inbox", "knowledge-targets", kind],
+    queryFn: ({ pageParam }) => api.listWikiEntities({ kind, limit: 25, ...(pageParam ? { cursor: pageParam } : {}) }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page, pages) => boundedNextCursor(page.nextCursor, pages.length),
+    retry: false,
+  });
+  const rows = records.data?.pages.flatMap((page) => page.items) ?? [];
+  return (
+    <Field>
+      <FieldLabel htmlFor="draft-knowledge-target">Knowledge to update</FieldLabel>
+      <NativeSelect id="draft-knowledge-target" value={targetId} disabled={busy || records.isPending}
+        onChange={(event) => onSelect(event.currentTarget.value)}>
+        <NativeSelectOption value="">{records.isPending ? "Loading knowledge…" : "Choose a record"}</NativeSelectOption>
+        {targetId && !rows.some((row) => row.id === targetId)
+          ? <NativeSelectOption value={targetId}>{targetTitle || targetId}</NativeSelectOption> : null}
+        {rows.map((row) => <NativeSelectOption value={row.id} key={row.id}>{row.title}</NativeSelectOption>)}
+      </NativeSelect>
+      {records.isError ? <FieldError>Knowledge could not be loaded. <Button size="sm" type="button" variant="ghost" onClick={() => void records.refetch()}>Try again</Button></FieldError> : null}
+      {records.hasNextPage ? <Button size="sm" type="button" variant="outline" disabled={records.isFetchingNextPage} onClick={() => void records.fetchNextPage()}>Load more knowledge</Button> : null}
+      {(records.data?.pages.length ?? 0) >= MAX_WORKBENCH_PAGES && records.data?.pages.at(-1)?.nextCursor
+        ? <FieldDescription>This picker reached its page limit. Open Context to find the record.</FieldDescription> : null}
+      {targetId ? <FieldDescription>
+        <Link to={`/knowledge/${encodeURIComponent(targetId)}`} target="_blank" rel="noreferrer">Open current record</Link>
+        {" · "}<Button size="sm" type="button" variant="ghost" disabled={busy} onClick={() => onSelect(targetId)}>Use current version</Button>
+      </FieldDescription> : <FieldDescription>Select a record to load its current wording.</FieldDescription>}
+    </Field>
+  );
+}
+
 function DraftEditorDialog({
   draft,
   repair,
@@ -380,6 +422,8 @@ function DraftEditorDialog({
         targetRevisions: repair.targetRevisions,
       });
   const existingChange = sourceInput?.change;
+  const legacy = existingChange?.kind.startsWith("spec.") ?? false;
+  const subject = legacy ? "Spec" : "knowledge";
   const existingExpectations = new Map(
     (sourceInput?.targetRevisions ?? []).map((item) => [item.target.id, item]),
   );
@@ -390,46 +434,46 @@ function DraftEditorDialog({
     ? undefined
     : existingExpectations.get(existingRelation.target.id);
   const [mode, setMode] = useState<"create" | "update">(
-    existingChange?.kind === "spec.update" ? "update" : "create",
+    isInboxUpdate(existingChange) ? "update" : "create",
   );
   const [includeTitle, setIncludeTitle] = useState(
-    existingChange?.kind === "spec.update"
+    isInboxUpdate(existingChange)
       ? Object.hasOwn(existingChange.patch, "title")
       : false,
   );
   const [includeSummary, setIncludeSummary] = useState(
-    existingChange?.kind === "spec.update"
+    isInboxUpdate(existingChange)
       ? Object.hasOwn(existingChange.patch, "summary")
       : false,
   );
   const [includeBody, setIncludeBody] = useState(
-    existingChange?.kind === "spec.update"
+    isInboxUpdate(existingChange)
       ? Object.hasOwn(existingChange.patch, "body")
       : true,
   );
-  const [entityKind, setEntityKind] = useState<InboxSpecKind>(
-    existingChange?.kind === "spec.create" ? existingChange.entityKind : "requirement",
+  const [entityKind, setEntityKind] = useState<InboxEntityKind>(
+    isInboxCreate(existingChange) ? existingChange.entityKind : "pattern",
   );
   const [title, setTitle] = useState(
-    existingChange?.kind === "spec.create"
+    isInboxCreate(existingChange)
       ? existingChange.title
       : existingChange?.patch.title ?? "",
   );
   const [summary, setSummary] = useState(
-    existingChange?.kind === "spec.create"
+    isInboxCreate(existingChange)
       ? existingChange.summary ?? ""
       : existingChange?.patch.summary ?? "",
   );
   const [body, setBody] = useState(
-    existingChange?.kind === "spec.create"
+    isInboxCreate(existingChange)
       ? existingChange.body
       : existingChange?.patch.body ?? "",
   );
   const [status, setStatus] = useState<"in_flight" | "promoted">(
-    existingChange?.kind === "spec.create" ? existingChange.status : "in_flight",
+    isInboxCreate(existingChange) ? existingChange.status : "in_flight",
   );
   const [topicsText, setTopicsText] = useState(
-    existingChange?.kind === "spec.create"
+    isInboxCreate(existingChange)
       ? (existingChange.topics ?? []).map((id) => {
           const expectation = existingExpectations.get(id);
           return expectation === undefined
@@ -451,15 +495,15 @@ function DraftEditorDialog({
     existingRelationExpectation ? String(existingRelationExpectation.semanticRevision) : "",
   );
   const [targetId, setTargetId] = useState(
-    existingChange?.kind === "spec.update" ? existingChange.target.id : "",
+    isInboxUpdate(existingChange) ? existingChange.target.id : "",
   );
-  const [targetKind, setTargetKind] = useState<InboxSpecKind>(
-    existingChange?.kind === "spec.update" ? existingChange.target.kind : "spec",
+  const [targetKind, setTargetKind] = useState<InboxEntityKind>(
+    isInboxUpdate(existingChange) ? existingChange.target.kind : "pattern",
   );
   const [targetTitle, setTargetTitle] = useState(
-    existingChange?.kind === "spec.update" ? existingChange.target.title ?? "" : "",
+    isInboxUpdate(existingChange) ? existingChange.target.title ?? "" : "",
   );
-  const existingTarget = existingChange?.kind === "spec.update"
+  const existingTarget = isInboxUpdate(existingChange)
     ? existingExpectations.get(existingChange.target.id)
     : undefined;
   const [targetRevision, setTargetRevision] = useState(existingTarget?.revision ?? "");
@@ -469,11 +513,37 @@ function DraftEditorDialog({
   const [rationale, setRationale] = useState(sourceInput?.rationale ?? "");
   const preservedEvidence = sourceInput?.evidence ?? [];
   const [evidenceNote, setEvidenceNote] = useState("");
+  const [targetNotice, setTargetNotice] = useState("");
   const [envelope, setEnvelope] = useState<InboxOperationPreviewResponse | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const confirmTriggerRef = useRef<HTMLButtonElement>(null);
   const applySucceeded = useRef(false);
   const previewGeneration = useRef(0);
+  const targetGeneration = useRef(0);
+  const targetLookup = useMutation({
+    mutationFn: ({ id }: { id: string; generation: number }) => api.getWikiEntity(id),
+    onSuccess: (detail, { id, generation }) => {
+      if (generation !== targetGeneration.current) return;
+      if (detail.entity.id !== id || !isInboxKnowledgeKind(detail.entity.kind) || detail.entity.version.semanticRevision < 1) {
+        setTargetNotice("This record is not available for a knowledge proposal.");
+        return;
+      }
+      setTargetId(id);
+      setTargetKind(detail.entity.kind);
+      setTargetTitle(detail.entity.title);
+      setTargetRevision(detail.entity.version.contentHash);
+      setSemanticRevision(String(detail.entity.version.semanticRevision));
+      const bodyFits = !detail.body.truncated && canonicalText(detail.body.content, 16 * 1024, true);
+      if (!sourceInput) {
+        setTitle(detail.entity.title);
+        setSummary(detail.entity.summary ?? "");
+        setBody(bodyFits ? detail.body.content : "");
+        setIncludeBody(bodyFits);
+      }
+      setTargetNotice(bodyFits ? "Current record loaded. Only the selected fields will change." : "This body exceeds the editor limit. You can update its title or summary, or write a complete replacement body.");
+      invalidate();
+    },
+  });
   const preview = useMutation({
     mutationFn: ({ request }: { request: InboxOperationPreviewRequest; generation: number }) => (
       api.previewInboxOperation(request)
@@ -538,22 +608,33 @@ function DraftEditorDialog({
     setter(value);
     invalidate();
   };
+  const selectKnowledgeTarget = (id: string) => {
+    targetGeneration.current += 1;
+    setTargetRevision("");
+    setTargetNotice("");
+    invalidate();
+    if (!id) {
+      setTargetId(""); setTargetTitle(""); targetLookup.reset();
+      return;
+    }
+    targetLookup.mutate({ id, generation: targetGeneration.current });
+  };
   const targetRevisionValid = /^[a-f0-9]{64}$/.test(targetRevision);
   const semanticRevisionNumber = Number(semanticRevision);
   const topicAttestations = parseTopicAttestations(topicsText);
   const relationSemanticRevisionNumber = Number(relationSemanticRevision);
-  const relationIsValid = relationType === "none" || (
+  const relationIsValid = !legacy || relationType === "none" || (
     /^mx_[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(relationTargetId)
     && /^[a-f0-9]{64}$/.test(relationRevision)
     && Number.isInteger(relationSemanticRevisionNumber)
     && relationSemanticRevisionNumber > 0
     && canonicalText(relationTargetTitle, 512, false)
-    && relationAccepted(entityKind, relationType, relationTargetKind)
+    && legacy && relationAccepted(entityKind as InboxSpecKind, relationType, relationTargetKind)
   );
   const createExpectationById = new Map<string, TopicAttestation>();
   let createExpectationConflict = false;
   for (const item of topicAttestations.items) createExpectationById.set(item.id, item);
-  if (relationType !== "none" && relationIsValid) {
+  if (legacy && relationType !== "none" && relationIsValid) {
     const current = createExpectationById.get(relationTargetId);
     if (current !== undefined && (
       current.revision !== relationRevision
@@ -576,7 +657,7 @@ function DraftEditorDialog({
       semanticRevision: item.semanticRevision,
     }));
   const updateHasPatch = includeTitle || includeSummary || includeBody;
-  const canPreview = canonicalText(rationale, 8 * 1024, true)
+  const canPreview = !targetLookup.isPending && canonicalText(rationale, 8 * 1024, true)
     && (mode === "create"
       ? canonicalText(body, 16 * 1024, true) && canonicalText(title, 512, true)
       : (!includeBody || canonicalText(body, 16 * 1024, true))
@@ -596,53 +677,35 @@ function DraftEditorDialog({
       && updateHasPatch
     ));
 
-  const draftInput = (): InboxDraftInput => ({
-    change: mode === "create"
-      ? {
-          kind: "spec.create",
-          entityKind,
-          title,
-          body,
-          ...(summary === "" ? {} : { summary }),
-          status,
-          ...(topicAttestations.items.length === 0
-            ? {}
-            : { topics: topicAttestations.items.map((item) => item.id) }),
-          ...(relationType === "none"
-            ? {}
-            : {
-                relation: buildCreateRelation(
-                  relationType,
-                  relationTargetId,
-                  relationTargetKind,
-                  relationTargetTitle,
-                )!,
-              }),
-        }
-      : {
-          kind: "spec.update",
-          target: {
-            id: targetId,
-            kind: targetKind,
-            ...(targetTitle === "" ? {} : { title: targetTitle }),
-          },
-          patch: {
-            ...(includeTitle ? { title } : {}),
-            ...(includeSummary ? { summary } : {}),
-            ...(includeBody ? { body } : {}),
-          },
-        },
-    rationale,
-    evidence: [
-      ...preservedEvidence,
-      ...(evidenceNote === "" ? [] : [{ kind: "manual" as const, note: evidenceNote }]),
-    ],
-    targetRevisions: mode === "create" ? createTargetRevisions : [{
-      target: { kind: "entity", id: targetId },
-      revision: targetRevision,
-      semanticRevision: semanticRevisionNumber,
-    }],
-  });
+  const draftInput = (): InboxDraftInput => {
+    const createFields = {
+      title, body, ...(summary === "" ? {} : { summary }), status,
+      ...(topicAttestations.items.length === 0 ? {} : { topics: topicAttestations.items.map((item) => item.id) }),
+    };
+    const patch = {
+      ...(includeTitle ? { title } : {}),
+      ...(includeSummary ? { summary } : {}),
+      ...(includeBody ? { body } : {}),
+    };
+    const target = { id: targetId, ...(targetTitle === "" ? {} : { title: targetTitle }) };
+    return {
+      change: mode === "create"
+        ? legacy
+          ? { kind: "spec.create", entityKind: entityKind as InboxSpecKind, ...createFields,
+              ...(relationType === "none" ? {} : {
+                relation: buildCreateRelation(relationType, relationTargetId, relationTargetKind, relationTargetTitle)!,
+              }) }
+          : { kind: "knowledge.create", entityKind: entityKind as InboxKnowledgeKind, ...createFields }
+        : legacy
+          ? { kind: "spec.update", target: { ...target, kind: targetKind as InboxSpecKind }, patch }
+          : { kind: "knowledge.update", target: { ...target, kind: targetKind as InboxKnowledgeKind }, patch },
+      rationale,
+      evidence: [...preservedEvidence, ...(evidenceNote === "" ? [] : [{ kind: "manual" as const, note: evidenceNote }])],
+      targetRevisions: mode === "create" ? createTargetRevisions : [{
+        target: { kind: "entity", id: targetId }, revision: targetRevision, semanticRevision: semanticRevisionNumber,
+      }],
+    };
+  };
 
   const request = (): InboxOperationPreviewRequest => repair === null
     ? {
@@ -666,7 +729,7 @@ function DraftEditorDialog({
 
   const editorTitle = isRepair
     ? "Repair proposal manually"
-    : draft === null ? "Create local Spec draft" : "Edit local Spec draft";
+    : draft === null ? "Create local knowledge draft" : `Edit local ${subject} draft`;
   const previewLabel = isRepair ? "Review repaired proposal" : "Preview local draft";
   const wordingInitialFocusRef = mode === "create" || includeTitle
     ? titleRef
@@ -690,8 +753,8 @@ function DraftEditorDialog({
           <DialogTitle>{editorTitle}</DialogTitle>
           <DialogDescription>
             {isRepair
-              ? "Update the proposal marked Needs refresh against current Spec content. Repair returns it to teammate review without writing the Spec."
-              : "This draft stays private to this checkout. Saving it does not publish a proposal or change the Spec."}
+              ? `Update this proposal against current ${subject} content. Repair returns it to teammate review without changing project knowledge.`
+              : "This draft stays private to this checkout. Saving does not publish a proposal or change project knowledge."}
           </DialogDescription>
         </DialogHeader>
         <div className={styles.dialogScroll}>
@@ -703,38 +766,53 @@ function DraftEditorDialog({
                   className={styles.select}
                   disabled={draft !== null || isRepair}
                   id="draft-change-kind"
-                  onChange={(event) => change(setMode, event.currentTarget.value as "create" | "update")}
+                  onChange={(event) => {
+                    targetGeneration.current += 1;
+                    targetLookup.reset();
+                    change(setMode, event.currentTarget.value as "create" | "update");
+                  }}
                   ref={changeTypeRef}
                   value={mode}
                 >
-                  <NativeSelectOption value="create">Create a Spec entity</NativeSelectOption>
-                  <NativeSelectOption value="update">Update a Spec entity</NativeSelectOption>
+                  <NativeSelectOption value="create">Create knowledge</NativeSelectOption>
+                  <NativeSelectOption value="update">Update knowledge</NativeSelectOption>
                 </NativeSelect>
               </Field>
               <Field>
-                <FieldLabel htmlFor="draft-entity-kind">Spec kind</FieldLabel>
+                <FieldLabel htmlFor="draft-entity-kind">{legacy ? "Spec kind" : "Knowledge kind"}</FieldLabel>
                 <NativeSelect
                   className={styles.select}
                   id="draft-entity-kind"
-                  onChange={(event) => change(
-                    mode === "create" ? setEntityKind : setTargetKind,
-                    event.currentTarget.value as InboxSpecKind,
-                  )}
+                  onChange={(event) => {
+                    change(mode === "create" ? setEntityKind : setTargetKind, event.currentTarget.value as InboxEntityKind);
+                    if (mode === "update" && !legacy) {
+                      targetGeneration.current += 1;
+                      targetLookup.reset();
+                      setTargetId(""); setTargetTitle(""); setTargetRevision(""); setTargetNotice("");
+                    }
+                  }}
                   ref={entityKindRef}
                   value={mode === "create" ? entityKind : targetKind}
                 >
-                  {specKinds.map((kind) => (
+                  {(legacy ? specKinds : inboxKnowledgeKinds).map((kind) => (
                     <NativeSelectOption key={kind} value={kind}>{sentenceCase(kind)}</NativeSelectOption>
                   ))}
                 </NativeSelect>
               </Field>
             </div>
+            {mode === "update" && !legacy && isInboxKnowledgeKind(targetKind) ? <>
+              <KnowledgeTargetPicker kind={targetKind} targetId={targetId} targetTitle={targetTitle}
+                busy={targetLookup.isPending} onSelect={selectKnowledgeTarget} />
+              {targetLookup.isError ? <FieldError>The current record could not be read. Choose it again to retry.</FieldError> : null}
+              {targetNotice ? <FieldDescription role="status">{targetNotice}</FieldDescription> : null}
+            </> : null}
             {mode === "update" ? (
               <Field>
                 <FieldLabel>Included patch fields</FieldLabel>
-                <div aria-label="Included Spec update fields" className={styles.patchToggles} role="group">
+                <div aria-label={`Included ${subject} update fields`} className={styles.patchToggles} role="group">
                   <Button
                     aria-pressed={includeTitle}
+                    disabled={targetLookup.isPending}
                     onClick={() => change(setIncludeTitle, !includeTitle)}
                     size="sm"
                     type="button"
@@ -744,6 +822,7 @@ function DraftEditorDialog({
                   </Button>
                   <Button
                     aria-pressed={includeSummary}
+                    disabled={targetLookup.isPending}
                     onClick={() => change(setIncludeSummary, !includeSummary)}
                     size="sm"
                     type="button"
@@ -753,6 +832,7 @@ function DraftEditorDialog({
                   </Button>
                   <Button
                     aria-pressed={includeBody}
+                    disabled={targetLookup.isPending}
                     onClick={() => change(setIncludeBody, !includeBody)}
                     size="sm"
                     type="button"
@@ -766,16 +846,16 @@ function DraftEditorDialog({
             ) : null}
             <Field>
               <FieldLabel htmlFor="draft-title">{mode === "create" ? "Title" : "Replacement title (optional)"}</FieldLabel>
-              <Input disabled={mode === "update" && !includeTitle} id="draft-title" maxLength={512} onChange={(event) => change(setTitle, event.currentTarget.value)} ref={titleRef} value={title} />
+              <Input disabled={targetLookup.isPending || (mode === "update" && !includeTitle)} id="draft-title" maxLength={512} onChange={(event) => change(setTitle, event.currentTarget.value)} ref={titleRef} value={title} />
             </Field>
             <Field>
               <FieldLabel htmlFor="draft-summary">{mode === "create" ? "Summary (optional)" : "Replacement summary"}</FieldLabel>
-              <Textarea disabled={mode === "update" && !includeSummary} id="draft-summary" maxLength={2 * 1024} onChange={(event) => change(setSummary, event.currentTarget.value)} ref={summaryRef} rows={3} value={summary} />
+              <Textarea disabled={targetLookup.isPending || (mode === "update" && !includeSummary)} id="draft-summary" maxLength={2 * 1024} onChange={(event) => change(setSummary, event.currentTarget.value)} ref={summaryRef} rows={3} value={summary} />
               {mode === "update" && includeSummary ? <FieldDescription>Leave empty to remove the current summary.</FieldDescription> : null}
             </Field>
             <Field>
-              <FieldLabel htmlFor="draft-body">{mode === "create" ? "Spec body" : "Replacement body"}</FieldLabel>
-              <Textarea disabled={mode === "update" && !includeBody} id="draft-body" maxLength={16 * 1024} onChange={(event) => change(setBody, event.currentTarget.value)} ref={bodyRef} rows={8} value={body} />
+              <FieldLabel htmlFor="draft-body">{mode === "create" ? `${legacy ? "Spec" : "Knowledge"} body` : "Replacement body"}</FieldLabel>
+              <Textarea disabled={targetLookup.isPending || (mode === "update" && !includeBody)} id="draft-body" maxLength={16 * 1024} onChange={(event) => change(setBody, event.currentTarget.value)} ref={bodyRef} rows={8} value={body} />
               <FieldDescription>Tabs and line breaks are preserved.</FieldDescription>
             </Field>
             <Field>
@@ -800,7 +880,7 @@ function DraftEditorDialog({
               contentClassName={styles.advancedEditorContent}
               label="Advanced"
             >
-                {mode === "update" ? (
+                {mode === "update" ? (legacy ? (
                   <>
                     <Field>
                       <FieldLabel htmlFor="draft-target-id">Canonical Spec ID</FieldLabel>
@@ -822,7 +902,7 @@ function DraftEditorDialog({
                       </Field>
                     </div>
                   </>
-                ) : (
+                ) : <p>The selected record supplies the exact file and semantic revisions.</p>) : (
                   <>
                     <Field>
                       <FieldLabel htmlFor="draft-status">Initial lifecycle</FieldLabel>
@@ -844,7 +924,7 @@ function DraftEditorDialog({
                       <FieldDescription>One typed topic per line. Every endpoint carries its exact file and semantic revision.</FieldDescription>
                       {topicAttestations.error ? <FieldError>{topicAttestations.error}</FieldError> : null}
                     </Field>
-                    <Field>
+                    {legacy ? <Field>
                       <FieldLabel htmlFor="draft-relation-type">One hierarchy relation (optional)</FieldLabel>
                       <NativeSelect
                         className={styles.select}
@@ -866,8 +946,8 @@ function DraftEditorDialog({
                         <NativeSelectOption value="constrained_by">Constrained by</NativeSelectOption>
                         <NativeSelectOption value="refines">Refines</NativeSelectOption>
                       </NativeSelect>
-                    </Field>
-                    {relationType !== "none" ? (
+                    </Field> : null}
+                    {legacy && relationType !== "none" ? (
                       <div className={styles.attestationBlock}>
                         <div className={styles.formPair}>
                           <Field>
@@ -956,8 +1036,8 @@ function DraftEditorDialog({
               <AlertDialogTitle>{isRepair ? "Return this proposal to review?" : "Save this private draft?"}</AlertDialogTitle>
               <AlertDialogDescription>
                 {isRepair
-                  ? "The refreshed content and references will replace the proposal content marked Needs refresh. No Spec is written."
-                  : "This writes checkout-local draft state only. It does not add proposal prose to Git or modify a Spec."}
+                  ? "The refreshed content and references will replace the proposal content marked Needs refresh. No canonical knowledge is written."
+                  : "This writes checkout-local draft state only. It does not add proposal prose to Git or modify canonical knowledge."}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <ExactPreviewDetails envelope={envelope} />
@@ -980,61 +1060,61 @@ function reviewCopy(action: ReviewAction) {
     case "inbox.publish":
       return {
         title: "Publish private draft",
-        description: "Publishing crosses the privacy boundary: checkout-local prose becomes a canonical pending proposal under .mex/inbox. No Spec is changed yet.",
+        description: "Writes a pending Markdown proposal in this checkout. Share it through Git. Project knowledge changes only after approval.",
         preview: "Preview publication",
         confirmTitle: "Publish this private draft?",
-        confirm: "The reviewed proposal bytes will enter Git-owned team memory and the local draft will be removed.",
+        confirm: "The proposal will be saved for review and its local draft removed. Commit and push the proposal to share it with teammates.",
         apply: "Publish proposal",
       };
     case "inbox.draft.delete":
       return {
         title: "Delete local draft",
-        description: "This operation affects checkout-local draft state only. Canonical proposals and Specs are unchanged.",
+        description: "Removes this private draft from the checkout. Published proposals and project knowledge stay unchanged.",
         preview: "Preview draft deletion",
         confirmTitle: "Delete this local draft?",
-        confirm: "The checkout-local draft will be removed after exact revision revalidation.",
+        confirm: "This private draft will be removed from the checkout.",
         apply: "Delete local draft",
       };
     case "inbox.approve":
       return {
         title: "Review proposal for approval",
-        description: "Approval writes the exact reviewed Spec diff, records the proposal decision, and may add immutable Activity. The private proposal body does not become the Spec body unless shown in the diff.",
-        preview: "Preview Spec approval",
-        confirmTitle: "Approve this exact Spec change?",
-        confirm: "MEX will revalidate the reviewed change, write the Spec update, and close the proposal as approved.",
-        apply: "Approve proposal and write Spec",
+        description: "Approval writes the reviewed knowledge change and records the decision. Commit and push the result to share it with teammates.",
+        preview: "Preview knowledge approval",
+        confirmTitle: "Approve this exact knowledge change?",
+        confirm: "MEX will write the reviewed knowledge change and close the proposal as approved.",
+        apply: "Approve proposal and write knowledge",
       };
     case "inbox.reject":
       return {
         title: "Decline proposal",
-        description: "Declining closes this proposal without changing the Spec. A rationale is required.",
+        description: "Declining closes this proposal without changing canonical knowledge. A rationale is required.",
         preview: "Review decline",
         confirmTitle: "Decline this proposal?",
-        confirm: "The proposal will close with your rationale and the Spec will remain unchanged.",
+        confirm: "The proposal will close with your rationale and canonical knowledge will remain unchanged.",
         apply: "Decline proposal",
       };
     case "inbox.withdraw":
       return {
         title: "Withdraw proposal",
-        description: "Withdrawal closes your proposal without changing the Spec. An optional rationale stays with the review decision.",
+        description: "Withdrawal closes your proposal without changing canonical knowledge. An optional rationale stays with the review decision.",
         preview: "Preview withdrawal",
         confirmTitle: "Withdraw this proposal?",
-        confirm: "The proposal will close and can no longer be reviewed; the target Spec remains unchanged.",
+        confirm: "The proposal will close and can no longer be reviewed; its target knowledge remains unchanged.",
         apply: "Withdraw proposal",
       };
     case "inbox.mark-stale":
       return {
         title: "Mark as needs refresh",
-        description: "Use this advanced action when the referenced Spec content changed after publication.",
+        description: "Use this advanced action when the referenced knowledge content changed after publication.",
         preview: "Review refresh state",
         confirmTitle: "Mark this proposal as needing refresh?",
-        confirm: "The proposal cannot be approved until its author or agent refreshes it against current Spec content.",
+        confirm: "The proposal cannot be approved until its author or agent refreshes it against current knowledge content.",
         apply: "Mark as needs refresh",
       };
     case "inbox.repair":
       return {
         title: "Repair proposal manually",
-        description: "Update this proposal against current Spec content. Repair returns it to teammate review and does not write the Spec.",
+        description: "Update this proposal against current knowledge content. Repair returns it to teammate review and does not write canonical knowledge.",
         preview: "Review repaired proposal",
         confirmTitle: "Return this proposal to review?",
         confirm: "The refreshed proposal content will replace the content marked Needs refresh and return to review.",
@@ -1148,7 +1228,7 @@ function ReviewActionDialog({
         </DialogHeader>
         <div className={styles.dialogScroll}>
           <div className={styles.reviewSubject}>
-            <span>Spec change</span>
+            <span>knowledge change</span>
             <strong>{action.proposal.title}</strong>
           </div>
           {action.kind === "inbox.reject" || action.kind === "inbox.withdraw" || action.kind === "inbox.mark-stale" ? (
@@ -1233,7 +1313,7 @@ function ReviewActionDialog({
 }
 
 function approvalEntityLabel(proposal: InboxProposalDetail): string {
-  if (proposal.change.kind === "spec.create") {
+  if (isInboxCreate(proposal.change)) {
     return `${sentenceCase(proposal.change.entityKind)} · ${proposal.change.title}`;
   }
   return proposal.change.target.title ?? sentenceCase(proposal.change.target.kind);
@@ -1315,7 +1395,7 @@ function ApproveChangeDialog({
             <AlertDialogMedia><AlertTriangle aria-hidden="true" /></AlertDialogMedia>
             <AlertDialogTitle>Teammate review is recommended</AlertDialogTitle>
             <AlertDialogDescription>
-              You published this proposal. Independent review is the safer default before a Spec change becomes durable team memory.
+              You published this proposal. Independent review is the safer default before a knowledge change becomes durable team memory.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1344,9 +1424,9 @@ function ApproveChangeDialog({
         <AlertDialogContent className={styles.approvalConfirmation} finalFocus={() => applySucceeded.current ? false : finalFocus()}>
           <AlertDialogHeader>
             <AlertDialogMedia><CheckCircle2 aria-hidden="true" /></AlertDialogMedia>
-            <AlertDialogTitle>Approve this Spec change?</AlertDialogTitle>
+            <AlertDialogTitle>Approve this knowledge change?</AlertDialogTitle>
             <AlertDialogDescription>
-              Review the human consequences below. The complete signed preview remains available under Exact technical details.
+              Approval writes this knowledge change in your checkout. Commit and push the result to share it with teammates.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className={styles.approvalSummary}>
@@ -1355,13 +1435,13 @@ function ApproveChangeDialog({
               <strong>{action.proposal.title}</strong>
             </div>
             <dl>
-              <div><dt>Spec entity affected</dt><dd>{approvalEntityLabel(action.proposal)}</dd></div>
+              <div><dt>Knowledge entity affected</dt><dd>{approvalEntityLabel(action.proposal)}</dd></div>
               <div><dt>Identity</dt><dd>Approving as {actorLabel(envelope.receipt.authority.actor)}</dd></div>
             </dl>
             <div className={styles.approvalConsequences}>
               <span>Approval will</span>
               <ul>
-                <li>Write the reviewed Spec change</li>
+                <li>Write the reviewed knowledge change</li>
                 <li>Update the proposal as approved</li>
                 <li>Record the decision in Activity</li>
               </ul>
@@ -1389,8 +1469,8 @@ function ApproveChangeDialog({
           <DialogTitle>{envelope && !envelope.preview.valid ? "This change is not ready to approve" : "Preparing exact approval"}</DialogTitle>
           <DialogDescription>
             {envelope && !envelope.preview.valid
-              ? "The Spec change remains visible in Inbox. Refresh it or resolve the reported issue before trying again."
-              : "MEX is checking the selected proposal against current Spec content and preparing approval details."}
+              ? "The knowledge change remains visible in Inbox. Refresh it or resolve the reported issue before trying again."
+              : "MEX is checking the selected proposal against current knowledge content and preparing approval details."}
           </DialogDescription>
         </DialogHeader>
         {preview.isPending || (!preview.isError && envelope === null) ? (
@@ -1473,8 +1553,8 @@ function DraftBoundaryDialog({
           <AlertDialogTitle>{publishing ? "Publish this draft for review?" : "Discard this draft?"}</AlertDialogTitle>
           <AlertDialogDescription>
             {publishing
-              ? "This converts checkout-local content into a Git-tracked proposal for teammate review. It does not change the Spec or share anything automatically."
-              : "This removes the private draft from this checkout. Proposals and Specs are not changed."}
+              ? "Writes a pending Markdown proposal in this checkout. Share it through Git. Project knowledge changes only after approval."
+              : "This removes the private draft from this checkout. Proposals and knowledge are not changed."}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <div className={styles.boundarySubject}>

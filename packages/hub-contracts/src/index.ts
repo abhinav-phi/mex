@@ -837,6 +837,12 @@ export const InboxSpecKindSchema = z.enum([
   "acceptance_criterion",
 ]);
 
+export const InboxKnowledgeKindSchema = z.enum([
+  "architecture", "component", "convention", "decision", "pattern", "guide",
+]);
+export const InboxEntityKindSchema = z.union([InboxKnowledgeKindSchema, InboxSpecKindSchema]);
+const inboxChangeKind = z.enum(["spec.create", "spec.update", "knowledge.create", "knowledge.update"]);
+
 export const InboxProposalStateSchema = z.enum([
   "pending",
   "approved",
@@ -950,9 +956,23 @@ export const InboxSpecUpdateChangeSchema = z.object({
   patch: inboxSpecUpdatePatch,
 }).strict();
 
+export const InboxKnowledgeCreateChangeSchema = inboxSpecCreateChangeObject
+  .omit({ relation: true })
+  .extend({ kind: z.literal("knowledge.create"), entityKind: InboxKnowledgeKindSchema })
+  .strict();
+
+export const InboxKnowledgeUpdateChangeSchema = z.object({
+  kind: z.literal("knowledge.update"),
+  target: inboxSpecRef.extend({ kind: InboxKnowledgeKindSchema }),
+  patch: inboxSpecUpdatePatch,
+}).strict();
+
+// Compatibility name: existing Spec envelopes retain their exact discriminators.
 export const InboxSpecChangeSchema = z.union([
   InboxSpecCreateChangeSchema,
   InboxSpecUpdateChangeSchema,
+  InboxKnowledgeCreateChangeSchema,
+  InboxKnowledgeUpdateChangeSchema,
 ]);
 
 const inboxEntityRevisionExpectation = z.object({
@@ -1014,10 +1034,10 @@ export const InboxEvidenceRefSchema = z.discriminatedUnion("kind", [
 ]);
 
 function inboxSpecDependencyIds(change: z.infer<typeof InboxSpecChangeSchema>): string[] {
-  if (change.kind === "spec.update") return [change.target.id];
+  if (change.kind === "spec.update" || change.kind === "knowledge.update") return [change.target.id];
   return [...new Set([
     ...(change.topics ?? []),
-    ...(change.relation ? [change.relation.target.id] : []),
+    ...(change.kind === "spec.create" && change.relation ? [change.relation.target.id] : []),
   ])].sort();
 }
 
@@ -1036,7 +1056,7 @@ function validateInboxDependencyCoverage(
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["targetRevisions"],
-      message: "Exact revisions must cover every Spec dependency once.",
+      message: "Exact revisions must cover every knowledge dependency once.",
     });
   }
 }
@@ -1060,8 +1080,8 @@ export const InboxDraftSummarySchema = z.object({
   id: InboxDraftIdSchema,
   revision,
   updatedAt: isoTimestamp,
-  changeKind: z.enum(["spec.create", "spec.update"]),
-  entityKind: InboxSpecKindSchema,
+  changeKind: inboxChangeKind,
+  entityKind: InboxEntityKindSchema,
   title: inboxText(512),
   rationaleExcerpt: utf8Text(240),
 }).strict();
@@ -1083,8 +1103,8 @@ const inboxProposalSummaryObject = z.object({
   revision,
   state: InboxProposalStateSchema,
   author: TeamActorRefSchema,
-  changeKind: z.enum(["spec.create", "spec.update"]),
-  entityKind: InboxSpecKindSchema,
+  changeKind: inboxChangeKind,
+  entityKind: InboxEntityKindSchema,
   title: inboxText(512),
   rationaleExcerpt: utf8Text(240),
   reviewer: TeamActorRefSchema.optional(),
@@ -3211,6 +3231,10 @@ export type TeamOperationApplyRequest = z.infer<typeof TeamOperationApplyRequest
 export type TeamActivityEvent = z.infer<typeof TeamActivityEventSchema>;
 export type TeamOperationApplyResponse = z.infer<typeof TeamOperationApplyResponseSchema>;
 export type InboxSpecKind = z.infer<typeof InboxSpecKindSchema>;
+export type InboxKnowledgeKind = z.infer<typeof InboxKnowledgeKindSchema>;
+export type InboxEntityKind = z.infer<typeof InboxEntityKindSchema>;
+export type InboxKnowledgeCreateChange = z.infer<typeof InboxKnowledgeCreateChangeSchema>;
+export type InboxKnowledgeUpdateChange = z.infer<typeof InboxKnowledgeUpdateChangeSchema>;
 export type InboxProposalState = z.infer<typeof InboxProposalStateSchema>;
 export type InboxDraftId = z.infer<typeof InboxDraftIdSchema>;
 export type InboxProposalId = z.infer<typeof InboxProposalIdSchema>;

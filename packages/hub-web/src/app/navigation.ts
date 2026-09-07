@@ -4,6 +4,7 @@ import {
   GitPullRequestArrow,
   HeartPulse,
   House,
+  Inbox,
   Network,
   Search,
   Send,
@@ -14,7 +15,7 @@ import type { CapabilityName } from "../api/types";
 
 export type NavigationGroupId = "project-memory" | "teamwork" | "system";
 export type NavigationPlacement = "launcher" | "primary" | "footer";
-export type NavigationCountSource = "relays" | "active-jobs";
+export type NavigationCountSource = "inbox" | "relays" | "active-jobs";
 
 export type NavigationAvailability =
   | { kind: "always" }
@@ -40,7 +41,7 @@ export interface NavigationGroup {
 }
 
 export const navigationGroups: readonly NavigationGroup[] = [
-  { id: "project-memory", label: "Project Memory", placement: "primary", defaultExpanded: true },
+  { id: "project-memory", label: "Project", placement: "primary", defaultExpanded: true },
   { id: "teamwork", label: "Teamwork", placement: "primary", defaultExpanded: true },
   { id: "system", label: "System", placement: "footer", defaultExpanded: false, countSource: "active-jobs" },
 ];
@@ -81,6 +82,16 @@ export const navigationItems: readonly NavigationItem[] = [
     availability: { kind: "runtime", capability: "graph" },
   },
   {
+    id: "inbox",
+    label: "Inbox",
+    path: "/inbox",
+    icon: Inbox,
+    group: "project-memory",
+    placement: "primary",
+    availability: { kind: "runtime", capability: "inbox" },
+    countSource: "inbox",
+  },
+  {
     id: "relays",
     label: "Relays",
     path: "/relays",
@@ -104,7 +115,8 @@ export const navigationItems: readonly NavigationItem[] = [
     label: "Team",
     path: "/members",
     icon: UsersRound,
-    placement: "footer",
+    group: "teamwork",
+    placement: "primary",
     availability: { kind: "runtime", capability: "members" },
   },
   {

@@ -10,6 +10,13 @@ import type {
   InboxDraftInput,
   InboxProposal,
   PortableWikiOperationRequest,
+  TeamInboxCreateChange,
+  TeamInboxUpdateChange,
+  TeamInboxEntityKind,
+  TeamInboxKnowledgeCreateChange,
+  TeamInboxKnowledgeUpdateChange,
+  TeamInboxKnowledgeRef,
+  TeamEvidenceRef,
   TeamInboxSpecChange,
   TeamInboxSpecCommand,
   TeamInboxSpecCreateChange,
@@ -25,6 +32,7 @@ import type {
 } from "../contracts/workflow.js";
 import {
   TEAM_INBOX_SPEC_KINDS,
+  TEAM_INBOX_KNOWLEDGE_KINDS,
   TEAM_INBOX_SPEC_LIMITS,
 } from "../contracts/workflow.js";
 import type {
@@ -37,10 +45,13 @@ import { normalizeInboxEvidence } from "../artifacts/workflow-codecs.js";
 import { isEntityId } from "../../wiki/model/ids.js";
 
 const PAYLOAD_KIND = "mex.team.inbox.spec-change.v1" as const;
+const KNOWLEDGE_PAYLOAD_KIND = "mex.team.inbox.knowledge-change.v1" as const;
 const INBOX_SIGNING_DOMAIN = "mex.team.inbox.spec.receipt.v1" as const;
 const SPEC_KINDS = new Set<string>(TEAM_INBOX_SPEC_KINDS);
+const KNOWLEDGE_KINDS = new Set<string>(TEAM_INBOX_KNOWLEDGE_KINDS);
+const ENTITY_KINDS = new Set<string>([...SPEC_KINDS, ...KNOWLEDGE_KINDS]);
 const CREATE_STATUSES = new Set<string>(["in_flight", "promoted"]);
-const CHANGE_KINDS = new Set<string>(["spec.create", "spec.update"]);
+const CHANGE_KINDS = new Set<string>(["spec.create", "spec.update", "knowledge.create", "knowledge.update"]);
 const RELATION_TYPES = new Set<string>([
   "derived_from",
   "verified_by",
@@ -50,7 +61,7 @@ const RELATION_TYPES = new Set<string>([
 
 interface StoredSpecPayload {
   schemaVersion: 1;
-  kind: typeof PAYLOAD_KIND;
+  kind: typeof PAYLOAD_KIND | typeof KNOWLEDGE_PAYLOAD_KIND;
   change: JsonValue;
 }
 
@@ -60,6 +71,19 @@ export interface ExactSpecEntityAttestation {
     ref: { id: string; kind: string; title?: string };
     version: { semanticRevision: number; contentHash: Revision };
   } | null;
+}
+
+export function isInboxCreateChange(change: TeamInboxSpecChange): change is TeamInboxCreateChange {
+  return change.kind === "spec.create" || change.kind === "knowledge.create";
+}
+
+export function isInboxUpdateChange(change: TeamInboxSpecChange): change is TeamInboxUpdateChange {
+  return change.kind === "spec.update" || change.kind === "knowledge.update";
+}
+
+function createdKnowledgePath(change: TeamInboxCreateChange, id: string): string {
+  if (change.kind === "spec.create") return `specs/${id}.md`;
+  return change.entityKind === "pattern" ? `patterns/${id}.md` : `context/${change.entityKind}-${id}.md`;
 }
 
 export function normalizeTeamInboxSpecCommand(
@@ -224,31 +248,43 @@ export function materializeSpecWikiRequest(
     proposal.targetRevisions,
     change,
   );
-  const actor = wikiActor(authority.actor);
+  const actor = wikiActor(change.kind.startsWith("knowledge.") ? stableActor(authority.actor) : authority.actor);
   const common = {
     opId: proposal.request.operation.opId,
     actor,
     timestamp: authority.occurredAt,
     reason: proposal.rationale,
   } as const;
-  if (change.kind === "spec.create") {
+  // Legacy Spec materialization stays byte-for-byte stable for signed replay.
+  const sources = change.kind.startsWith("knowledge.")
+    ? proposalSources(proposal, authority)
+    : undefined;
+  if (isInboxCreateChange(change)) {
     if (pinnedSpecId === undefined || !isWikiMintedId(pinnedSpecId)) {
-      throw invalidSpec("A Spec create approval requires one service-minted mx ID.");
+      throw invalidSpec("An Inbox create approval requires one service-minted mx ID.");
     }
+    const file = createdKnowledgePath(change, pinnedSpecId);
     return deepFreeze({
       operation: {
         ...common,
         type: "create-entry" as const,
         payload: {
-          file: `specs/${pinnedSpecId}.md`,
+          file,
           insertAt: { at: "end-of-file" },
           type: change.entityKind,
           title: change.title,
           body: change.body,
           status: change.status,
+          ...(sources === undefined ? {} : { sources }),
+          ...(sources === undefined || proposal.author.kind === "unknown" ? {} : {
+            provenance: {
+              createdBy: cloneJson(wikiActor(stableActor(proposal.author))) as unknown as JsonValue,
+              createdAt: authority.occurredAt,
+            },
+          }),
           ...(change.summary === undefined ? {} : { summary: change.summary }),
           ...(change.topics === undefined ? {} : { topics: change.topics }),
-          ...(change.relation === undefined
+          ...(change.kind !== "spec.create" || change.relation === undefined
             ? {}
             : {
                 relations: [{
@@ -263,7 +299,7 @@ export function materializeSpecWikiRequest(
         {
           target: {
             kind: "artifact" as const,
-            path: `.mex/specs/${pinnedSpecId}.md`,
+            path: `.mex/${file}`,
           },
           contentHash: null,
         },
@@ -278,10 +314,56 @@ export function materializeSpecWikiRequest(
       entityId: change.target.id,
       baseRevision: target.semanticRevision,
       baseContentHash: target.revision,
-      payload: change.patch,
+      payload: sources === undefined ? change.patch : { ...change.patch, appendSources: sources },
     },
     expectedRevisions: wikiExpectations(proposal.targetRevisions),
   });
+}
+
+function proposalSources(proposal: InboxProposal<JsonValue>, authority: TeamWorkflowAuthority): JsonValue[] {
+  const capturedAt = authority.occurredAt;
+  return [
+    {
+      type: "document",
+      ref: proposal.sourcePath,
+      note: proposal.rationale,
+      capturedAt,
+      metadata: {
+        proposalId: proposal.ref.id,
+        author: stableActor(proposal.author) as unknown as JsonValue,
+        approvedBy: stableActor(authority.actor) as unknown as JsonValue,
+      },
+    },
+    ...proposal.evidence.map((evidence: TeamEvidenceRef): JsonValue => {
+      const source = evidence.kind === "entity"
+        ? { type: "document", ref: evidence.entity.id }
+        : evidence.kind === "code"
+          ? { type: evidence.code.kind === "symbol" ? "symbol" : "file", ref: evidence.code.kind === "symbol" ? evidence.code.symbolId : evidence.code.path }
+          : evidence.kind === "commit"
+            ? { type: "commit", commit: evidence.hash }
+            : evidence.kind === "file"
+              ? { type: "document", ref: evidence.path }
+              : evidence.kind === "external"
+                ? { type: "url", ref: evidence.uri, ...(evidence.label === undefined ? {} : { note: evidence.label }) }
+                : { type: "manual", note: evidence.note };
+      return cloneJson({
+        ...source,
+        capturedAt,
+        metadata: { evidence: cloneJson(evidence) as unknown as JsonValue },
+      }) as unknown as JsonValue;
+    }),
+  ];
+}
+
+/** Receipt decoding sorts keys; explicit field order keeps reviewed Markdown identical. */
+function stableActor(actor: TeamWorkflowAuthority["actor"]): TeamWorkflowAuthority["actor"] {
+  if (actor.kind === "member") return {
+    kind: "member",
+    memberId: actor.memberId,
+    ...(actor.displayName === undefined ? {} : { displayName: actor.displayName }),
+  };
+  if (actor.kind === "git") return { kind: "git", name: actor.name, email: actor.email };
+  return { kind: "unknown" };
 }
 
 export function storedSpecChange(
@@ -299,11 +381,11 @@ export function storedSpecChange(
 }
 
 export function specDependencyIds(change: TeamInboxSpecChange): readonly string[] {
-  const ids = change.kind === "spec.update"
+  const ids = isInboxUpdateChange(change)
     ? [change.target.id]
     : [
         ...(change.topics ?? []),
-        ...(change.relation === undefined ? [] : [change.relation.target.id]),
+        ...(change.kind !== "spec.create" || change.relation === undefined ? [] : [change.relation.target.id]),
       ];
   return [...new Set(ids)].sort(compareCodePoints);
 }
@@ -507,8 +589,54 @@ function normalizeChange(value: unknown): TeamInboxSpecChange {
   }
   if (value.kind === "spec.create") return normalizeCreate(value);
   if (value.kind === "spec.update") return normalizeUpdate(value);
+  if (value.kind === "knowledge.create") return normalizeKnowledgeCreate(value);
+  if (value.kind === "knowledge.update") return normalizeKnowledgeUpdate(value);
   if (CHANGE_KINDS.has(value.kind)) throw invalidRequest();
-  throw invalidSpec("Only spec.create and spec.update are supported.");
+  throw invalidSpec("Only knowledge.create, knowledge.update, spec.create, and spec.update are supported.");
+}
+
+function normalizeKnowledgeCreate(
+  value: Readonly<Record<string, unknown>>,
+): TeamInboxKnowledgeCreateChange {
+  exactKeys(value, ["kind", "entityKind", "title", "body", "status"], ["summary", "topics"], invalidRequest);
+  if (typeof value.entityKind !== "string" || !KNOWLEDGE_KINDS.has(value.entityKind)) {
+    throw invalidSpec("Knowledge create requires an architecture, component, convention, decision, pattern, or guide.");
+  }
+  if (typeof value.status !== "string" || !CREATE_STATUSES.has(value.status)) {
+    throw invalidSpec("Knowledge create status must be in_flight or promoted.");
+  }
+  return deepFreeze({
+    kind: "knowledge.create",
+    entityKind: value.entityKind,
+    title: boundedText(value.title, "Knowledge title", TEAM_INBOX_SPEC_LIMITS.maxTitleBytes, true),
+    body: boundedText(value.body, "Knowledge body", TEAM_INBOX_SPEC_LIMITS.maxStringBytes, true),
+    status: value.status,
+    ...(value.summary === undefined ? {} : {
+      summary: boundedText(value.summary, "Knowledge summary", TEAM_INBOX_SPEC_LIMITS.maxSummaryBytes, false),
+    }),
+    ...(value.topics === undefined ? {} : { topics: normalizeTopics(value.topics) }),
+  } as TeamInboxKnowledgeCreateChange);
+}
+
+function normalizeKnowledgeUpdate(
+  value: Readonly<Record<string, unknown>>,
+): TeamInboxKnowledgeUpdateChange {
+  exactKeys(value, ["kind", "target", "patch"], [], invalidRequest);
+  if (!isPlainObject(value.target)) throw invalidRequest();
+  exactKeys(value.target, ["id", "kind"], ["title"], invalidRequest);
+  if (!isWikiMintedId(value.target.id)
+    || typeof value.target.kind !== "string"
+    || !KNOWLEDGE_KINDS.has(value.target.kind)) {
+    throw invalidSpec("Knowledge update requires one canonical mx ID and an eligible knowledge kind.");
+  }
+  const target = {
+    id: value.target.id,
+    kind: value.target.kind,
+    ...(value.target.title === undefined ? {} : {
+      title: boundedText(value.target.title, "Knowledge reference title", TEAM_INBOX_SPEC_LIMITS.maxTitleBytes, true),
+    }),
+  } as TeamInboxKnowledgeRef;
+  return deepFreeze({ kind: "knowledge.update", target, patch: normalizeTextPatch(value.patch) });
 }
 
 function normalizeCreate(
@@ -574,44 +702,44 @@ function normalizeUpdate(
 ): TeamInboxSpecUpdateChange {
   exactKeys(value, ["kind", "target", "patch"], [], invalidRequest);
   const target = normalizeSpecRef(value.target);
-  if (!isPlainObject(value.patch)) throw invalidRequest();
-  const patchKeys = Object.keys(value.patch);
+  return deepFreeze({ kind: "spec.update", target, patch: normalizeTextPatch(value.patch) });
+}
+
+function normalizeTextPatch(value: unknown): TeamInboxSpecUpdateChange["patch"] {
+  if (!isPlainObject(value)) throw invalidRequest();
+  const patchKeys = Object.keys(value);
   if (
     patchKeys.length === 0
     || patchKeys.some((key) => key !== "title" && key !== "summary" && key !== "body")
   ) {
-    throw invalidSpec("Spec update may change only a nonempty title/summary/body patch.");
+    throw invalidSpec("Inbox update may change only a nonempty title/summary/body patch.");
   }
   const patch: Record<string, string> = {};
-  if (Object.hasOwn(value.patch, "title")) {
+  if (Object.hasOwn(value, "title")) {
     patch.title = boundedText(
-      value.patch.title,
+      value.title,
       "Spec title",
       TEAM_INBOX_SPEC_LIMITS.maxTitleBytes,
       true,
     );
   }
-  if (Object.hasOwn(value.patch, "summary")) {
+  if (Object.hasOwn(value, "summary")) {
     patch.summary = boundedText(
-      value.patch.summary,
+      value.summary,
       "Spec summary",
       TEAM_INBOX_SPEC_LIMITS.maxSummaryBytes,
       false,
     );
   }
-  if (Object.hasOwn(value.patch, "body")) {
+  if (Object.hasOwn(value, "body")) {
     patch.body = boundedText(
-      value.patch.body,
+      value.body,
       "Spec body",
       TEAM_INBOX_SPEC_LIMITS.maxStringBytes,
       true,
     );
   }
-  return deepFreeze({
-    kind: "spec.update",
-    target,
-    patch,
-  } as TeamInboxSpecUpdateChange);
+  return deepFreeze(patch as TeamInboxSpecUpdateChange["patch"]);
 }
 
 function normalizeRelation(
@@ -768,13 +896,13 @@ function storedRequest(
   operationId: string,
 ): PortableWikiOperationRequest<JsonValue> {
   const change = input.change;
-  const target = change.kind === "spec.update"
+  const target = isInboxUpdateChange(change)
     ? expectationFor(input.targetRevisions, change.target.id)
     : null;
   const operation = {
     opId: internalWikiOperationId(operationId),
-    type: change.kind === "spec.create" ? "create-entry" as const : "update-entry" as const,
-    ...(change.kind === "spec.update" ? { entityId: change.target.id } : {}),
+    type: isInboxCreateChange(change) ? "create-entry" as const : "update-entry" as const,
+    ...(isInboxUpdateChange(change) ? { entityId: change.target.id } : {}),
     ...(target === null
       ? {}
       : {
@@ -783,7 +911,7 @@ function storedRequest(
         }),
     payload: cloneJson({
       schemaVersion: 1,
-      kind: PAYLOAD_KIND,
+      kind: change.kind.startsWith("knowledge.") ? KNOWLEDGE_PAYLOAD_KIND : PAYLOAD_KIND,
       change: storedChangeValue(change),
     } satisfies StoredSpecPayload) as unknown as JsonValue,
   };
@@ -799,15 +927,16 @@ function tryDecodeStoredChange(
   const payload = request.operation.payload;
   if (
     !isPlainObject(payload)
-    || payload.kind !== PAYLOAD_KIND
+    || (payload.kind !== PAYLOAD_KIND && payload.kind !== KNOWLEDGE_PAYLOAD_KIND)
     || payload.schemaVersion !== 1
   ) return null;
   exactKeys(payload, ["schemaVersion", "kind", "change"], [], invalidStored);
   const change = normalizeStoredChange(payload.change);
   if (
-    request.operation.type !== (change.kind === "spec.create" ? "create-entry" : "update-entry")
-    || (change.kind === "spec.create" && request.operation.entityId !== undefined)
-    || (change.kind === "spec.update" && request.operation.entityId !== change.target.id)
+    (payload.kind === KNOWLEDGE_PAYLOAD_KIND) !== change.kind.startsWith("knowledge.")
+    || request.operation.type !== (isInboxCreateChange(change) ? "create-entry" : "update-entry")
+    || (isInboxCreateChange(change) && request.operation.entityId !== undefined)
+    || (isInboxUpdateChange(change) && request.operation.entityId !== change.target.id)
   ) {
     throw invalidStored();
   }
@@ -835,7 +964,7 @@ function assertStoredRequestConsistency(
     throw invalidStored();
   }
   const operation = request.operation;
-  if (change.kind === "spec.create") {
+  if (isInboxCreateChange(change)) {
     if (
       operation.type !== "create-entry"
       || operation.entityId !== undefined
@@ -854,7 +983,7 @@ function assertStoredRequestConsistency(
 }
 
 function storedChangeValue(change: TeamInboxSpecChange): JsonValue {
-  if (change.kind === "spec.create") {
+  if (isInboxCreateChange(change)) {
     return cloneJson(change) as unknown as JsonValue;
   }
   return cloneJson({
@@ -865,9 +994,9 @@ function storedChangeValue(change: TeamInboxSpecChange): JsonValue {
 }
 
 function normalizeStoredChange(value: unknown): TeamInboxSpecChange {
-  if (isPlainObject(value) && value.kind === "spec.update") {
+  if (isPlainObject(value) && (value.kind === "spec.update" || value.kind === "knowledge.update")) {
     exactKeys(value, ["kind", "target", "fields"], [], invalidStored);
-    return normalizeUpdate({
+    return normalizeChange({
       kind: value.kind,
       target: value.target,
       patch: value.fields,
@@ -927,7 +1056,7 @@ function assertAttestedKinds(
   attestations: readonly ExactSpecEntityAttestation[],
 ): void {
   const byId = new Map(attestations.map((item) => [item.id, item.entity]));
-  if (change.kind === "spec.update") {
+  if (isInboxUpdateChange(change)) {
     const actual = byId.get(change.target.id);
     if (
       actual === null
@@ -936,7 +1065,7 @@ function assertAttestedKinds(
       || (change.target.title !== undefined
         && actual.ref.title !== change.target.title)
     ) {
-      throw revisionConflict("The update target is no longer the reviewed Spec-family kind.");
+      throw revisionConflict("The update target is no longer the reviewed Inbox entity kind.");
     }
     return;
   }
@@ -950,7 +1079,7 @@ function assertAttestedKinds(
       throw revisionConflict("A reviewed Spec topic endpoint is no longer a topic.");
     }
   }
-  if (change.relation !== undefined) {
+  if (change.kind === "spec.create" && change.relation !== undefined) {
     const actual = byId.get(change.relation.target.id);
     if (
       actual === null
@@ -983,10 +1112,10 @@ function draftSummary(
 }
 
 function describeChange(change: TeamInboxSpecChange): {
-  entityKind: TeamInboxSpecKind;
+  entityKind: TeamInboxEntityKind;
   title: string;
 } {
-  return change.kind === "spec.create"
+  return isInboxCreateChange(change)
     ? { entityKind: change.entityKind, title: change.title }
     : {
         entityKind: change.target.kind,
@@ -1038,7 +1167,7 @@ export function normalizeInboxListFilter(value: unknown, proposals: boolean): {
   cursor?: string;
   limit: number;
   changeKinds?: readonly TeamInboxSpecChange["kind"][];
-  entityKinds?: readonly TeamInboxSpecKind[];
+  entityKinds?: readonly TeamInboxEntityKind[];
   states?: readonly ("pending" | "approved" | "rejected" | "withdrawn" | "stale")[];
 } {
   if (value === undefined) value = {};
@@ -1063,7 +1192,7 @@ export function normalizeInboxListFilter(value: unknown, proposals: boolean): {
     throw invalidRequest();
   }
   const changeKinds = normalizeSpecPageKinds(value.changeKinds, CHANGE_KINDS, "change kind") as readonly TeamInboxSpecChange["kind"][] | undefined;
-  const entityKinds = normalizeSpecPageKinds(value.entityKinds, SPEC_KINDS, "entity kind") as readonly TeamInboxSpecKind[] | undefined;
+  const entityKinds = normalizeSpecPageKinds(value.entityKinds, ENTITY_KINDS, "entity kind") as readonly TeamInboxEntityKind[] | undefined;
   const states = proposals
     ? normalizeSpecPageKinds(
         value.states,

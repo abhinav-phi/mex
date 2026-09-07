@@ -18,10 +18,10 @@ describe("managed MEX instruction blocks", () => {
       expect(block).toContain(
         "At the start of every session, read `.mex/AGENTS.md` and `.mex/ROUTER.md`",
       );
-      expect(block).toContain("durable governed Spec proposals");
+      expect(block).toContain("explicit contributions to project knowledge");
       expect(block).toContain("durable team handoffs");
       expect(block).toContain("Invoke them automatically when intent clearly matches");
-      expect(block).toContain("explicit invocation remains available");
+      expect(block).toContain("ordinary GROW upkeep remains available without Inbox");
       expect(block).toContain(
         "MEX context used: <specific records/files/entities consulted>.",
       );

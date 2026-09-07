@@ -23,7 +23,17 @@ Use one of these command IDs:
 
 Treat this bounded action result as the exact runtime source for the request shape, available examples, constraints, preview command, and apply command. Do not dump `mex capabilities --json` or the full Inbox contract during ordinary execution. Write request and preview JSON only to ordinary regular files inside the checkout or an approved temporary directory; do not use symlinks.
 
-## Resolve a Spec update
+## Find existing knowledge and resolve a correction
+
+1. Use `mex wiki query <subject> --limit 10 --json` or `mex wiki list --type <kind> --limit 25 --json` to find related records before creating another.
+2. Read the best candidate with `mex inbox target <entity-id> --json`. This bounded read returns `target`, `version`, `sourcePath`, and the existing body from the current Wiki index, without initializing or repairing it.
+3. For `knowledge.update`, copy `target` and use `version.contentHash` as the target revision and `version.semanticRevision` as the semantic revision. Select a section entity when only that section should change. The patch body replaces the target's body; preserve its relevant existing content. A target can fit the read response but exceed the 16 KiB update-body limit; choose a smaller section or a title/summary-only patch when appropriate, never truncate existing knowledge to fit.
+4. If no suitable record exists, use `knowledge.create` with the appropriate existing kind. MEX chooses a path in `context/` or `patterns/`; do not invent an Inbox knowledge category or supply an arbitrary destination path.
+5. If several targets remain plausible after reading them, ask which one the user intends. If a read reports a stale or unavailable index, address its explicit maintenance requirement before relying on it; never fabricate revisions or silently refresh an index as part of a read.
+
+For create-time topics, find them with Wiki reads, then resolve each with `mex inbox target <topic-id> --json` for current revisions. Topics can be dependencies but are not Inbox correction targets. Omit topics when none are needed; normal knowledge creates have no relation editor.
+
+## Resolve a legacy Spec update
 
 1. Use `mex spec list --json` to identify candidates.
 2. Use `mex spec show <entity-id> --json` for the exact candidate.
@@ -36,7 +46,7 @@ Do not invent target IDs, relation endpoints, topic IDs, or revisions. For a cre
 ## Save a checkout-local draft
 
 1. Resolve `inbox.draft.save`.
-2. Create a unique operation ID and a request containing one `spec.create` or `spec.update` draft.
+2. Create a unique operation ID and a request containing one `knowledge.create` or `knowledge.update` draft (or a Spec change for actual Spec-family intent).
 3. For a new draft, provide no unrelated expectations. For an existing draft update, read it with `mex inbox draft show <draft-id> --json` and use its exact current local revision.
 4. Preview with `mex inbox draft save <request-file> --json` and capture the complete successful JSON wrapper unchanged. Require `ok: true`, `mode: "preview"`, and `data.preview.valid: true`.
 5. Summarize the proposed local effect. If the user asked to create/save/draft, apply with `mex inbox draft save --apply <preview-envelope> --json` without another confirmation.
@@ -60,7 +70,7 @@ The apply writes only checkout-local draft state. It does not create a canonical
 5. Apply the exact preview with `mex inbox publish --apply <preview-envelope> --json`.
 6. Return `/inbox?view=review&proposal=<proposal-id>`.
 
-Publishing removes the exact local draft after creating the pending proposal. It does not approve the proposal or write the requested Spec change.
+Publishing removes the exact local draft after creating the pending proposal. It does not approve the proposal or change accepted knowledge. The proposal is Markdown in the working tree; teammates receive it through Git.
 
 ## Review canonical proposals
 
@@ -73,4 +83,4 @@ Use `mex inbox proposal list --json` and `mex inbox proposal show <proposal-id> 
 5. Wait for fresh explicit confirmation.
 6. Apply the exact preview with the same command plus `--apply <preview-envelope> --json`.
 
-Approval writes the proposed Spec-family entity change, proposal decision, Wiki ledger, and Activity records to the working tree. Reject and withdraw make a terminal proposal decision without changing the Spec. Mark stale changes a pending proposal to stale only when MEX proves dependency drift. Repair replaces stale intent, clears prior review, and returns the proposal to pending without changing the Spec. These canonical transitions write Activity records; none commits, pushes, pulls, stages, or notifies teammates.
+Approval writes the proposed knowledge change, proposal decision, Wiki ledger, and Activity records to the working tree. The proposal remains review history. Reject and withdraw make a terminal proposal decision without changing knowledge. Mark stale changes a pending proposal to stale only when MEX proves dependency drift. Repair replaces stale intent, clears prior review, and returns the proposal to pending without changing knowledge. These canonical transitions write Activity records; none commits, pushes, pulls, stages, or notifies teammates.

@@ -1,3 +1,4 @@
+import { isInboxCreate, isInboxUpdate } from "../lib/inbox-change";
 import type { FixtureApiOptions, HubApi, JobSubscription } from "../api/client";
 import type {
   ActivityItem,
@@ -2870,6 +2871,15 @@ class FixtureHubApi implements HubApi {
               : "Remove the checkout-local Inbox draft.",
           }]
         : [];
+    const changedKnowledge = proposal?.change;
+    const knowledgePath = changedKnowledge?.kind === "knowledge.create"
+      ? changedKnowledge.entityKind === "pattern"
+        ? `.mex/patterns/${fixtureInboxCreatedSpecId}.md`
+        : `.mex/context/${changedKnowledge.entityKind}-${fixtureInboxCreatedSpecId}.md`
+      : changedKnowledge?.kind === "knowledge.update"
+        ? wikiEntities.find((entity) => entity.id === changedKnowledge.target.id)?.location.path
+          ?? `.mex/context/${changedKnowledge.target.kind}-${changedKnowledge.target.id}.md`
+        : undefined;
     const primaryChanges: InboxOperationPreviewResponse["preview"]["changes"] = action.kind === "inbox.draft.save" || action.kind === "inbox.draft.delete"
       ? []
       : action.kind === "inbox.publish"
@@ -2882,16 +2892,16 @@ class FixtureHubApi implements HubApi {
           }]
         : action.kind === "inbox.approve"
           ? [
-            ...(proposal?.change.kind === "spec.create" ? [{
+            ...(isInboxCreate(proposal?.change) ? [{
               kind: "create" as const,
-              path: `.mex/specs/${fixtureInboxCreatedSpecId}.md`,
-              diff: `--- /dev/null\n+++ b/.mex/specs/${fixtureInboxCreatedSpecId}.md\n+title: ${proposal.title}\n`,
+              path: knowledgePath ?? `.mex/specs/${fixtureInboxCreatedSpecId}.md`,
+              diff: `--- /dev/null\n+++ b/${knowledgePath ?? `.mex/specs/${fixtureInboxCreatedSpecId}.md`}\n+title: ${proposal!.title}\n`,
               beforeRevision: null,
               afterRevision: revision("8"),
             }] : [{
               kind: "update" as const,
-              path: `.mex/specs/${fixtureInboxSpecId}.md`,
-              diff: `--- a/.mex/specs/${fixtureInboxSpecId}.md\n+++ b/.mex/specs/${fixtureInboxSpecId}.md\n+The release gate records exact reviewed evidence.\n`,
+              path: knowledgePath ?? `.mex/specs/${fixtureInboxSpecId}.md`,
+              diff: `--- a/${knowledgePath ?? `.mex/specs/${fixtureInboxSpecId}.md`}\n+++ b/${knowledgePath ?? `.mex/specs/${fixtureInboxSpecId}.md`}\n+The release gate records exact reviewed evidence.\n`,
               beforeRevision: revision("3"),
               afterRevision: revision("8"),
             }]), {
@@ -2935,7 +2945,7 @@ class FixtureHubApi implements HubApi {
         : action.kind === "inbox.publish"
           ? [{ purpose: "activity", id: eventId }, { purpose: "proposal", id: publishedProposalId }]
           : action.kind === "inbox.approve"
-            ? proposal?.change.kind === "spec.create"
+            ? isInboxCreate(proposal?.change)
               ? [{ purpose: "activity", id: eventId }, { purpose: "spec-entity", id: fixtureInboxCreatedSpecId }]
               : [{ purpose: "activity", id: eventId }]
             : [{ purpose: "activity", id: eventId }];
@@ -2982,7 +2992,7 @@ class FixtureHubApi implements HubApi {
     if (action.kind === "inbox.draft.save") {
       const id = action.draftId ?? envelope.receipt.purposeIds.find((item) => item.purpose === "inbox-draft")?.id;
       if (id !== undefined) {
-        const descriptor = action.draft.change.kind === "spec.create"
+        const descriptor = isInboxCreate(action.draft.change)
           ? { entityKind: action.draft.change.entityKind, title: action.draft.change.title }
           : { entityKind: action.draft.change.target.kind, title: action.draft.change.target.title ?? action.draft.change.target.id };
         const next: InboxDraftDetail = {
@@ -3035,7 +3045,7 @@ class FixtureHubApi implements HubApi {
         ))?.afterRevision ?? revision("9");
         let updated: InboxProposalDetail;
         if (action.kind === "inbox.repair") {
-          const descriptor = action.replacement.change.kind === "spec.create"
+          const descriptor = isInboxCreate(action.replacement.change)
             ? {
                 entityKind: action.replacement.change.entityKind,
                 title: action.replacement.change.title,
@@ -3097,7 +3107,7 @@ class FixtureHubApi implements HubApi {
         : [{ kind: "entity" as const, entity: { id: proposalId, kind: "proposal" } }];
       const approvalTarget = action.kind !== "inbox.approve"
         ? []
-        : proposals[0]?.change.kind === "spec.create"
+        : isInboxCreate(proposals[0]?.change)
           ? [{
               kind: "entity" as const,
               entity: {
@@ -3106,7 +3116,7 @@ class FixtureHubApi implements HubApi {
                 kind: proposals[0].change.entityKind,
               },
             }]
-          : proposals[0]?.change.kind === "spec.update"
+          : isInboxUpdate(proposals[0]?.change)
             ? [{ kind: "entity" as const, entity: structuredClone(proposals[0].change.target) }]
             : [];
       if (actionName !== null) {

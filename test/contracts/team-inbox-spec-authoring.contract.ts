@@ -841,109 +841,101 @@ export function defineTeamInboxSpecAuthoringContract(
       });
     });
 
-    it("updates every Spec-family kind without minting an entity ID", async () => {
-      for (const entityKind of TEAM_INBOX_SPEC_KINDS) {
-        await withHarness(factory, "empty", async (harness) => {
-          const input = await harness.makeDraftInput("spec.update", entityKind);
-          if (input.change.kind !== "spec.update") throw new Error("Expected an update fixture.");
-          const before = await harness.readSpec(input.change.target.id);
-          if (before === null) throw new Error("Expected the update target fixture.");
-          const proposal = await createPendingProposal(
-            harness.port,
-            input,
-            `inbox_contract_update_${entityKind}`,
-          );
-          const approval = await harness.port.previewInbox(command(
-            `inbox_contract_update_${entityKind}_approve`,
-            { kind: "inbox.approve", proposalId: proposal.ref.id },
-            [proposalExpectation(proposal)],
-          ));
-          expectPurposes(approval, ["activity"]);
-          const result = await harness.port.applyInbox(roundTrip(approval));
-          const after = await harness.readSpec(input.change.target.id);
-          expect(after?.revision).not.toBe(before.revision);
-          expect(after).toMatchObject(input.change.patch);
-          expectCanonicalActivity(
-            result,
-            approval,
-            "inbox.approved",
-            [proposal.ref, input.change.target],
-          );
-        });
-      }
+    it.each(TEAM_INBOX_SPEC_KINDS)("updates %s without minting an entity ID", async (entityKind) => {
+      await withHarness(factory, "empty", async (harness) => {
+        const input = await harness.makeDraftInput("spec.update", entityKind);
+        if (input.change.kind !== "spec.update") throw new Error("Expected an update fixture.");
+        const before = await harness.readSpec(input.change.target.id);
+        if (before === null) throw new Error("Expected the update target fixture.");
+        const proposal = await createPendingProposal(
+          harness.port,
+          input,
+          `inbox_contract_update_${entityKind}`,
+        );
+        const approval = await harness.port.previewInbox(command(
+          `inbox_contract_update_${entityKind}_approve`,
+          { kind: "inbox.approve", proposalId: proposal.ref.id },
+          [proposalExpectation(proposal)],
+        ));
+        expectPurposes(approval, ["activity"]);
+        const result = await harness.port.applyInbox(roundTrip(approval));
+        const after = await harness.readSpec(input.change.target.id);
+        expect(after?.revision).not.toBe(before.revision);
+        expect(after).toMatchObject(input.change.patch);
+        expectCanonicalActivity(
+          result,
+          approval,
+          "inbox.approved",
+          [proposal.ref, input.change.target],
+        );
+      });
     });
 
-    it("requires explicit stale classification before repair after any published dependency drifts", async () => {
-      for (const driftCase of [
-        "update-target",
-        "topic-endpoint",
-        "relation-endpoint",
-      ] as const) {
-        await withHarness(factory, "empty", async (harness) => {
-          const input = await harness.makeDriftInput(driftCase);
-          const proposal = await createPendingProposal(
-            harness.port,
-            input,
-            `inbox_contract_stale_${driftCase}`,
-          );
-          const approval = await harness.port.previewInbox(command(
-            `inbox_contract_stale_${driftCase}_approve`,
-            { kind: "inbox.approve", proposalId: proposal.ref.id },
-            [proposalExpectation(proposal)],
-          ));
-          await harness.mutatePublishedDependency(proposal, driftCase);
-          const drifted = await harness.snapshot();
-          await expect(harness.port.applyInbox(roundTrip(approval))).rejects.toMatchObject({
-            problem: { code: "REVISION_CONFLICT" },
-          });
-          expect(await harness.snapshot()).toEqual(drifted);
-          await expect(harness.port.getInboxProposal(proposal.ref.id)).resolves.toMatchObject({
-            state: "pending",
-          });
-
-          const markPreview = await harness.port.previewInbox(command(
-            `inbox_contract_mark_stale_${driftCase}`,
-            {
-              kind: "inbox.mark-stale",
-              proposalId: proposal.ref.id,
-              rationale: `The exact ${driftCase} changed after publication.`,
-            },
-            [proposalExpectation(proposal)],
-          ));
-          expectPurposes(markPreview, ["activity"]);
-          const marked = await harness.port.applyInbox(roundTrip(markPreview));
-          expectCanonicalActivity(
-            marked,
-            markPreview,
-            "inbox.marked-stale",
-            [proposal.ref],
-          );
-          const stale = await requiredProposal(harness.port, proposal.ref.id);
-          expect(stale.state).toBe("stale");
-
-          const replacement = await harness.refreshDraftInput(input);
-          const repairPreview = await harness.port.previewInbox(command(
-            `inbox_contract_repair_${driftCase}`,
-            { kind: "inbox.repair", proposalId: stale.ref.id, replacement },
-            [proposalExpectation(stale)],
-          ));
-          expectPurposes(repairPreview, ["activity"]);
-          const repaired = await harness.port.applyInbox(roundTrip(repairPreview));
-          expectCanonicalActivity(
-            repaired,
-            repairPreview,
-            "inbox.repaired",
-            [proposal.ref],
-          );
-          const repairedProposal = await harness.port.getInboxProposal(stale.ref.id);
-          expect(repairedProposal).toMatchObject({
-            state: "pending",
-            change: replacement.change,
-          });
-          expect(repairedProposal).not.toHaveProperty("reviewer");
-          expect(repairedProposal).not.toHaveProperty("reviewedAt");
+    it.each(["update-target", "topic-endpoint", "relation-endpoint"] as const)("requires explicit stale classification before repair after %s drifts", async (driftCase) => {
+      await withHarness(factory, "empty", async (harness) => {
+        const input = await harness.makeDriftInput(driftCase);
+        const proposal = await createPendingProposal(
+          harness.port,
+          input,
+          `inbox_contract_stale_${driftCase}`,
+        );
+        const approval = await harness.port.previewInbox(command(
+          `inbox_contract_stale_${driftCase}_approve`,
+          { kind: "inbox.approve", proposalId: proposal.ref.id },
+          [proposalExpectation(proposal)],
+        ));
+        await harness.mutatePublishedDependency(proposal, driftCase);
+        const drifted = await harness.snapshot();
+        await expect(harness.port.applyInbox(roundTrip(approval))).rejects.toMatchObject({
+          problem: { code: "REVISION_CONFLICT" },
         });
-      }
+        expect(await harness.snapshot()).toEqual(drifted);
+        await expect(harness.port.getInboxProposal(proposal.ref.id)).resolves.toMatchObject({
+          state: "pending",
+        });
+
+        const markPreview = await harness.port.previewInbox(command(
+          `inbox_contract_mark_stale_${driftCase}`,
+          {
+            kind: "inbox.mark-stale",
+            proposalId: proposal.ref.id,
+            rationale: `The exact ${driftCase} changed after publication.`,
+          },
+          [proposalExpectation(proposal)],
+        ));
+        expectPurposes(markPreview, ["activity"]);
+        const marked = await harness.port.applyInbox(roundTrip(markPreview));
+        expectCanonicalActivity(
+          marked,
+          markPreview,
+          "inbox.marked-stale",
+          [proposal.ref],
+        );
+        const stale = await requiredProposal(harness.port, proposal.ref.id);
+        expect(stale.state).toBe("stale");
+
+        const replacement = await harness.refreshDraftInput(input);
+        const repairPreview = await harness.port.previewInbox(command(
+          `inbox_contract_repair_${driftCase}`,
+          { kind: "inbox.repair", proposalId: stale.ref.id, replacement },
+          [proposalExpectation(stale)],
+        ));
+        expectPurposes(repairPreview, ["activity"]);
+        const repaired = await harness.port.applyInbox(roundTrip(repairPreview));
+        expectCanonicalActivity(
+          repaired,
+          repairPreview,
+          "inbox.repaired",
+          [proposal.ref],
+        );
+        const repairedProposal = await harness.port.getInboxProposal(stale.ref.id);
+        expect(repairedProposal).toMatchObject({
+          state: "pending",
+          change: replacement.change,
+        });
+        expect(repairedProposal).not.toHaveProperty("reviewer");
+        expect(repairedProposal).not.toHaveProperty("reviewedAt");
+      });
     });
 
     it("rejects Team-owned duplicate Spec claimants during publish and repair without effects", async () => {

@@ -51,6 +51,8 @@ export type {
   InboxProposalSummary,
   InboxSpecChange,
   InboxSpecKind,
+  InboxKnowledgeKind,
+  InboxEntityKind,
   RelayDetail,
   RelayDraftDetail,
   RelayDraftInput,

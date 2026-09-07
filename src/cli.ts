@@ -324,6 +324,14 @@ program.addCommand(buildWorkstreamCommand({
 }));
 program.addCommand(buildInboxCommand({
   service: teamInboxSpecService,
+  targetService: async () => {
+    const projectRoot = locateTeamRepositoryRoot();
+    const { createRepositoryWikiPort } = await import("./wiki/application-adapter.js");
+    // Target text and revision need no code-health resolution or Team signer.
+    return createRepositoryWikiPort(projectRoot, {
+      exclude: readWikiExclude(resolve(projectRoot, ".mex")),
+    });
+  },
   io: processTeamCommandIo(),
 }));
 program.addCommand(buildRelayCommand({

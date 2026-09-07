@@ -25,6 +25,7 @@ import type {
   CreateEntryPayload,
 } from "../model/operation.js";
 import { sourceIdentity, type WikiSource } from "../model/source.js";
+import { authoringSourceCollectionFits } from "../model/authoring-evidence.js";
 import type { WikiRelationRef } from "../model/relation.js";
 import type { WikiEntity, WikiLifecycleState } from "../model/entity.js";
 import type { WikiGrounding } from "../model/grounding.js";
@@ -263,6 +264,7 @@ function newEntityFields(id: EntityId, payload: CreateEntryPayload): (readonly [
     ["topics", payload.topics === undefined || payload.topics.length === 0 ? undefined : payload.topics],
     ["relations", payload.relations === undefined || payload.relations.length === 0 ? undefined : payload.relations],
     ["sources", payload.sources === undefined || payload.sources.length === 0 ? undefined : payload.sources],
+    ["provenance", payload.provenance],
     [METADATA_KEYS.groundsTo, payload.groundsTo === undefined || payload.groundsTo.length === 0 ? undefined : payload.groundsTo],
   ];
 }
@@ -525,9 +527,24 @@ export function buildOperationEdits(operation: WikiOperation, context: Operation
 
 function updateEntry(context: OperationContext, operation: Extract<WikiOperation, { type: "update-entry" }>): OperationEdits {
   const located = context.located!;
-  const { title, summary, body } = operation.payload;
+  const { title, summary, body, appendSources } = operation.payload;
   const fields: (readonly [string, unknown])[] = [];
   const extra: PatchEdit[] = [];
+
+  if (appendSources !== undefined && appendSources.length > 0) {
+    const sources = [...located.entity.sources];
+    const existing = new Set(sources.map(sourceIdentity));
+    for (const source of appendSources) {
+      const identity = sourceIdentity(source);
+      if (existing.has(identity)) continue;
+      sources.push(source);
+      existing.add(identity);
+    }
+    if (!authoringSourceCollectionFits(sources)) {
+      return reject("INVALID_OPERATION_PAYLOAD", "Appending evidence would exceed the entity's source count or byte bounds.", located.entity.id);
+    }
+    if (sources.length > located.entity.sources.length) fields.push([METADATA_KEYS.sources, sources]);
+  }
 
   if (summary !== undefined) fields.push([METADATA_KEYS.summary, summary]);
 

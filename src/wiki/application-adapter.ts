@@ -163,6 +163,7 @@ export type RepositoryWikiBatchOperation =
       readonly title?: string;
       readonly summary?: string;
       readonly body?: string;
+      readonly appendSources?: readonly JsonValue[];
     }
   | {
       readonly type: "add-relation";
@@ -714,6 +715,16 @@ export class RepositoryWikiPort implements WikiPort<
     return this.#readCurrent((session, graph) => {
       const entity = session.get(id);
       return entity === null ? null : projectEntity(entity, stableObservationTime(session), graph);
+    });
+  }
+
+  /** Inbox target discovery requires a fresh Wiki snapshot and no Code Graph. */
+  async readInboxTarget(id: EntityId): Promise<WikiEntity<never> | null> {
+    return this.#read((session) => {
+      const status = session.status();
+      if (status.state !== "fresh") throw indexError(status);
+      const entity = session.get(id);
+      return entity === null ? null : projectEntity(entity, stableObservationTime(session), null);
     });
   }
 
@@ -3710,6 +3721,7 @@ function normalizeRepositoryOperationItem(value: unknown): NormalizedRepositoryO
         ...(value["title"] === undefined ? {} : { title: value["title"] as JsonValue }),
         ...(value["summary"] === undefined ? {} : { summary: value["summary"] as JsonValue }),
         ...(value["body"] === undefined ? {} : { body: value["body"] as JsonValue }),
+        ...(value["appendSources"] === undefined ? {} : { appendSources: value["appendSources"] as JsonValue }),
       },
     };
   }

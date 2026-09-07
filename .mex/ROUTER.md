@@ -88,6 +88,17 @@ Then read this file fully before doing anything else in this session.
   navigation now emphasize Context, Code, Relays, and Activity while legacy
   workflow routes remain readable. Local verification is recorded in the
   same release plan; this is local implementation, not a published release.
+- Phase 2b extends Inbox into an explicit contribution workflow for existing
+  Wiki knowledge: architecture, component, convention, decision, pattern, and
+  guide additions or text corrections, including existing section entities.
+  Local drafts publish as Markdown proposals; approval writes existing
+  `context/` or `patterns/` knowledge and carries the proposal source/evidence.
+  Original attribution and grounding survive corrections. Legacy Spec payloads
+  and signed recovery remain supported; ordinary GROW upkeep remains direct.
+  Inbox and its review count are restored in primary navigation; Team sits with
+  Relays/Activity. The agent skill searches existing knowledge and uses the
+  fresh, bounded `mex inbox target <id> --json` lookup for exact correction
+  revisions. This is working-tree implementation, not a published release.
 - Explicit graph status, refresh, and isolated rebuild/recovery commands preserve
   the last trustworthy index behind one cross-process maintenance lease.
 - Targeted graph get/query/impact consumers use one provenance-bound immutable

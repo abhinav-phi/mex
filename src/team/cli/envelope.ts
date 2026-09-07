@@ -43,6 +43,7 @@ export type TeamCliCommandName =
   | "workstream.archive"
   | "inbox"
   | "inbox.contract"
+  | "inbox.target"
   | "inbox.draft"
   | "inbox.draft.list"
   | "inbox.draft.show"

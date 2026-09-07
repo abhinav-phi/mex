@@ -205,6 +205,13 @@
           "output": "jsonl-v3"
         },
         {
+          "id": "inbox.target",
+          "path": "mex inbox target",
+          "usage": "mex inbox target <entity-id> --json",
+          "output": "json",
+          "contractResolver": "inbox.contract"
+        },
+        {
           "id": "spec.list",
           "path": "mex spec list",
           "usage": "mex spec list --json",
