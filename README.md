@@ -207,6 +207,8 @@ mex graph get <node-id>
 mex impact requireSession
 ```
 
+When `who-calls` finds no declaration for a name that call sites nonetheless reference — a dynamically generated method, or a symbol defined outside the indexed corpus — it reports the recorded call sites as `unresolved-reference` records instead of a bare not-found. They are labelled as unresolved rather than returned as graph facts, and they are capped like every other response. See [Code graph support](docs/code-graph-support.md#unresolved-references).
+
 MEX indexes TypeScript/TSX, JavaScript/JSX, Python, and Rust. Module variants such as `.mts`, `.cts`, `.mjs`, and `.cjs` have partial coverage, and Express is the only framework-specific resolver documented for 0.8. Exact `query`, `get`, and `impact` reads—and Hub Code—require a provably fresh Graph; `scope` can instead return bounded live-text evidence for stale or unindexed files, clearly marked `text-only`.
 
 ### Grounding and drift

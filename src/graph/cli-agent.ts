@@ -162,6 +162,8 @@ export function runGraphQuery(
   return withAgentGraphSession(rootDir, deps, output, "fresh", (session, write) => {
     const nodes = resolveSymbol(session.graph, target);
     if (nodes.length === 0) {
+      if (relation === "who-calls"
+        && emitUnresolvedCallers(session, write, target, opts)) return;
       writeJson(write, { type: "error", code: "TARGET_NOT_FOUND", target });
       return;
     }
@@ -2079,6 +2081,121 @@ function transitiveCallers(graph: GraphEngine, root: GraphNode, maxDepth: number
  * underlying store. Older schemas are rejected by the immutable reader and
  * require an explicit rebuild before this query can run.
  */
+/**
+ * A call site the resolver captured but could not bind to a declaration.
+ *
+ * These are not graph facts. They record that some file referenced this name
+ * and the resolver could not decide what it meant.
+ */
+interface UnresolvedCallSite {
+  reference_name: string;
+  reference_kind: string;
+  status: string;
+  file_path: string;
+  line: number;
+  col: number;
+  from_node_id: string;
+  receiver: string | null;
+  qualifier: string | null;
+}
+
+/**
+ * `who-calls` fallback for a name with call sites but no declaration.
+ *
+ * A dynamically generated method has real callers and no literal definition,
+ * so no node resolves and the honest structural answer is "not found" — which
+ * left an agent with no next step, while the call sites sat in
+ * `unresolved_refs` with no reader anywhere in the CLI. Recovering them meant
+ * hand-written SQL against internal schema.
+ *
+ * Returns false when there is nothing to offer, so the caller still abstains
+ * with TARGET_NOT_FOUND rather than emitting an empty alternative answer.
+ */
+function emitUnresolvedCallers(
+  session: AgentGraphSession,
+  write: (line: string) => void,
+  target: string,
+  opts: AgentOptions,
+): boolean {
+  const matched = unresolvedCallSiteCount(session.db, target);
+  if (matched === 0) return false;
+
+  // `limit` bounds the answer, not the work: hot names are common
+  // (`forwardRef`, `json`, `error`) and an uncapped fallback would flood the
+  // agent with hundreds of rows for one query.
+  const rows = unresolvedCallSites(session.db, target, opts.maxNodes);
+  const anticipated = rows.length > 0
+    ? [`mex graph get ${rows[0]!.from_node_id} --detail source`] : [];
+  const ctx = beginResponse("graph query who-calls", opts, undefined, anticipated);
+  const records: Rec[] = [];
+  let truncated = matched > rows.length;
+  for (const row of rows) {
+    // A distinct record type, never `type: "result"`. An agent must not be
+    // able to mistake an unbound name for a resolved graph edge.
+    const record: Rec = {
+      type: "unresolved-reference",
+      relation: "who-calls",
+      target,
+      name: row.reference_name,
+      referenceKind: row.reference_kind,
+      resolution: row.status,
+      file: row.file_path,
+      line: row.line,
+      col: row.col,
+      fromNode: row.from_node_id,
+      ...(row.receiver === null ? {} : { receiver: row.receiver }),
+      ...(row.qualifier === null ? {} : { qualifier: row.qualifier }),
+    };
+    if (!ctx.ledger.tryAdd(record)) { truncated = true; break; }
+    records.push(record);
+  }
+
+  emitAll(write, ctx.meta, records);
+  write(JSON.stringify(summaryRecord(ctx, {
+    matchedNodes: matched,
+    // No node was returned: these are call sites, not declarations.
+    returnedNodes: 0,
+    returnedEdges: 0,
+    truncated,
+    status: "partial",
+    evidenceStrength: "weak",
+    suggestedNextCommands: records.length > 0
+      ? [`mex graph get ${records[0]!.fromNode as string} --detail source`] : [],
+    warnings: [
+      `No declaration named "${target}" is indexed. `
+        + `${matched} unresolved reference(s) to that name were recorded during `
+        + "extraction and are reported instead of resolved callers; they may be "
+        + "dynamically generated, defined outside the indexed corpus, or ambiguous.",
+    ],
+  })));
+  return true;
+}
+
+/** Total matching call sites, so the summary can report what it capped. */
+function unresolvedCallSiteCount(db: SqliteDatabase, name: string): number {
+  const row = db.prepare(
+    `SELECT COUNT(*) AS total FROM unresolved_refs
+      WHERE reference_name = ? AND status <> 'resolved'`,
+  ).get(name) as { total?: unknown } | undefined;
+  return typeof row?.total === "number" ? row.total : 0;
+}
+
+/** Exact-name lookup, deterministically ordered and bounded in SQL. */
+function unresolvedCallSites(
+  db: SqliteDatabase,
+  name: string,
+  limit: number,
+): UnresolvedCallSite[] {
+  return db.prepare(
+    `SELECT reference_name, reference_kind, status, file_path, line, col,
+            from_node_id, receiver, qualifier
+       FROM unresolved_refs
+      WHERE reference_name = ? AND status <> 'resolved'
+      ORDER BY file_path, line, col, from_node_id
+      LIMIT ?`,
+  ).all(name, Math.max(0, limit)) as UnresolvedCallSite[];
+}
+
 function groundedFiles(db: SqliteDatabase, nodeIds: string[]): Array<{ scaffold_file: string; node_id: string }> {
   if (nodeIds.length === 0) return [];
   const placeholders = nodeIds.map(() => "?").join(",");

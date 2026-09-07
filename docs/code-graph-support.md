@@ -180,6 +180,47 @@ Changing this list changes which files the graph describes, so it changes the
 build manifest and the next `mex graph status` will report the index as stale
 until it is rebuilt.
 
+## Unresolved references
+
+Extraction records every reference it sees. The resolver then binds what it
+can to a declaration and emits an edge; what it cannot bind stays recorded as
+an unresolved reference. Those records are the graph being honest about its own
+blind spots: a name a file referenced, that the resolver could not decide the
+meaning of.
+
+They matter for `who-calls`. A dynamically generated method has real call sites
+and no literal declaration, so no node resolves and the structural answer is
+"not found" — accurate, and useless as a next step. When `who-calls` cannot
+resolve its target, it now looks the name up among the recorded unresolved
+references and reports those call sites:
+
+```bash
+mex graph query who-calls mark_failed
+```
+
+```json
+{"type":"unresolved-reference","relation":"who-calls","target":"mark_failed",
+ "name":"mark_failed","referenceKind":"calls","resolution":"unresolved",
+ "file":"app/models/job.rb","line":42,"col":8,"fromNode":"function:…",
+ "receiver":"job"}
+```
+
+Three properties of that output are deliberate:
+
+- **It is not a `result` record.** An unresolved reference is not a resolved
+  graph fact and an agent must not be able to confuse the two, so it carries
+  its own record type.
+- **It is capped and charged to the same output budget** as every other
+  response. Common names accumulate hundreds of unresolved references, and an
+  uncapped fallback on a hot name would flood the caller. The `summary` reports
+  the total that matched alongside what was returned.
+- **The response is a normal one**, with `meta` and `summary`, and a `summary`
+  whose `status` is `partial` and `evidenceStrength` is `weak`.
+
+A name with no declaration *and* no recorded reference still abstains with
+`TARGET_NOT_FOUND`. `where-defined` and `what-calls` are unchanged: they
+either resolve the requested declaration exactly or abstain.
+
 ## Known limitations
 
 - **Ambiguous references stay unresolved.** The base resolver prefers a

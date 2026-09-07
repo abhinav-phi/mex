@@ -404,8 +404,8 @@ describe("graph snapshot provenance", () => {
     expect(snapshot).not.toBeNull();
     expect(successfulSnapshot).not.toBeNull();
     for (const input of snapshot!.semanticInputs) {
-      expect(input.filePath.startsWith("..")).toBe(false);
-      expect(input.filePath).not.toContain("attacker");
+      expect(input.path.startsWith("..")).toBe(false);
+      expect(input.path).not.toContain("attacker");
     }
     engine.close();
   });
