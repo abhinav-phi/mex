@@ -387,5 +387,6 @@ MEX keeps team memory in repository files and provides local retrieval and revie
 - Check the [runtime and compatibility guide](https://github.com/mex-memory/mex/blob/v0.8.0/COMPATIBILITY.md) and [security policy](https://github.com/mex-memory/mex/blob/v0.8.0/SECURITY.md).
 - Review the [Code Graph support matrix](https://github.com/mex-memory/mex/blob/v0.8.0/docs/code-graph-support.md).
 - See the [extractor model and supported relationships](https://github.com/mex-memory/mex/blob/v0.8.0/docs/extractors.md).
+- Read the [graph retrieval benchmark results](https://github.com/mex-memory/mex/blob/v0.8.0/evaluate/RESULTS.md), including the blind-graded comparison against an ordinary file-search baseline.
 - Inspect the CLI locally with `mex capabilities --json` and `mex commands`.
 - Join the [MEX community on Discord](https://discord.gg/FEdNsQ4Qt4) or visit [mexmemory.com](https://mexmemory.com).
