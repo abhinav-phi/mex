@@ -112,6 +112,8 @@ export type {
   TeamWorkstreamListRequest,
   TeamWorkstreamListResponse,
   TeamWorkstreamState,
+  WikiGraphResponse,
+  WikiGroundedCodeResponse,
   WikiSearchResult,
   WikiBacklinksRequest,
   WikiBacklinksResponse,

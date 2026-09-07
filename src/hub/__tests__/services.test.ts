@@ -14,6 +14,8 @@ import {
   InboxProposalListResponseSchema,
   SpecDetailResponseSchema,
   SpecListResponseSchema,
+  WikiGraphResponseSchema,
+  WikiGroundedCodeResponseSchema,
   type HubJobSnapshot,
 } from "@mex/hub-contracts";
 import { OverviewResponseSchema } from "@mex/hub-contracts/overview";
@@ -1335,6 +1337,148 @@ The governed authoring test keeps one canonical entity available to the exact-re
     });
     expect(JSON.stringify(detail)).not.toContain("/Users/alice");
     expect(JSON.stringify(detail)).not.toContain("session-private");
+  });
+
+  it("truncates metadata-rich Context nodes to one MiB without retaining dangling relations", async () => {
+    const nodes = Array.from({ length: 100 }, (_, index) => ({
+      ...wikiSummary(`mx_${String(index + 1).padStart(26, "0")}`, "pattern", "界".repeat(170)),
+      summary: "🧭".repeat(512),
+      topics: Array.from({ length: 50 }, (_, topic) => `mx_${String(topic + 1_000).padStart(26, "0")}`),
+      sourceTypes: Array.from({ length: 50 }, (_, type) => `source-${type}-`.padEnd(128, "x")),
+      location: { path: `.mex/context/${"nested/".repeat(110)}entry.md`, startLine: 1, endLine: 12 },
+    }));
+    const wiki = {
+      ...wikiWithStatus("fresh"),
+      graphOverview: async () => ({
+        indexedRevision: "f".repeat(64),
+        observedAt: NOW.toISOString(),
+        nodes,
+        relations: [
+          { type: "related_to", source: { id: nodes[0]!.ref.id, kind: "pattern" }, target: { id: nodes[99]!.ref.id, kind: "pattern" }, note: "Omitted target" },
+          { type: "related_to", source: { id: nodes[0]!.ref.id, kind: "pattern" }, target: { id: nodes[1]!.ref.id, kind: "pattern" }, note: "Included target" },
+        ],
+        coverage: { nodeLimit: 100 as const, relationLimit: 500 as const, nodesTruncated: false, relationsTruncated: false },
+      }),
+    } satisfies HubWikiReadService;
+    const services = createLocalHubReadServices({
+      projectRoot, scaffoldId: "scaffold-local", git, wiki,
+      jobs: { list: () => ({ items: [] }) }, now: () => new Date(NOW),
+    });
+
+    const result = await services.wikiGraph!();
+    expect(WikiGraphResponseSchema.safeParse(result).success).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(result), "utf8")).toBeLessThanOrEqual(HUB_LIMITS.maxJsonResponseBytes);
+    expect(result.nodes.length).toBeGreaterThan(1);
+    expect(result.nodes.length).toBeLessThan(nodes.length);
+    expect(result.coverage).toMatchObject({ nodesTruncated: true, relationsTruncated: true });
+    expect(result.relations).toHaveLength(1);
+    expect(result.relations[0]!.note).toBe("Included target");
+    const included = new Set(result.nodes.map((node) => node.id));
+    expect(result.relations.every((relation) => included.has(relation.source.id) && included.has(relation.target.id))).toBe(true);
+  });
+
+  it("truncates metadata-rich Context relations to one MiB while preserving the complete node set", async () => {
+    const nodes = Array.from({ length: 100 }, (_, index) => (
+      wikiSummary(`mx_${String(index + 1).padStart(26, "0")}`, "pattern", "界".repeat(170))
+    ));
+    const relations = Array.from({ length: 500 }, (_, index) => ({
+      type: "related_to",
+      source: nodes[index % nodes.length]!.ref,
+      target: nodes[(index + 1 + Math.floor(index / nodes.length)) % nodes.length]!.ref,
+      note: "🧭".repeat(512),
+      metadata: { privateMarker: "unprojected-edge-metadata" },
+    }));
+    const wiki = {
+      ...wikiWithStatus("fresh"),
+      graphOverview: async () => ({
+        indexedRevision: "f".repeat(64), observedAt: NOW.toISOString(), nodes, relations,
+        coverage: { nodeLimit: 100 as const, relationLimit: 500 as const, nodesTruncated: false, relationsTruncated: false },
+      }),
+    } satisfies HubWikiReadService;
+    const services = createLocalHubReadServices({
+      projectRoot, scaffoldId: "scaffold-local", git, wiki,
+      jobs: { list: () => ({ items: [] }) }, now: () => new Date(NOW),
+    });
+
+    const result = await services.wikiGraph!();
+    expect(WikiGraphResponseSchema.safeParse(result).success).toBe(true);
+    const serialized = JSON.stringify(result);
+    expect(Buffer.byteLength(serialized, "utf8")).toBeLessThanOrEqual(HUB_LIMITS.maxJsonResponseBytes);
+    expect(result.nodes.map((node) => node.id)).toEqual(nodes.map((node) => node.ref.id));
+    expect(result.relations.length).toBeGreaterThan(0);
+    expect(result.relations.length).toBeLessThan(relations.length);
+    expect(result.coverage).toMatchObject({ nodesTruncated: false, relationsTruncated: true });
+    expect(serialized).not.toContain("unprojected-edge-metadata");
+    const included = new Set(result.nodes.map((node) => node.id));
+    expect(result.relations.every((relation) => included.has(relation.source.id) && included.has(relation.target.id))).toBe(true);
+  });
+
+  it("projects compact grounded code through an allowlist and preserves absent symbols", async () => {
+    const entityId = "mx_01ARZ3NDEKTSV4RRFFQ69G5FA1";
+    const symbol = {
+      ref: { kind: "symbol" as const, symbolId: "function:router", fingerprint: "private-fingerprint" },
+      symbolKind: "function", name: "router", qualifiedName: "hub.router", language: "typescript",
+      path: "src/router.ts", startLine: 3, endLine: 7, signature: "界".repeat(1_000),
+      content: "private-source-body", bodyHash: "private-body-hash", docstring: "private-docstring",
+    };
+    const readGroundedCode = vi.fn(async (id: string) => ({
+      indexedRevision: "f".repeat(64), observedAt: NOW.toISOString(), entityId: id,
+      graphRevision: "c".repeat(64),
+      groundings: [
+        {
+          requestedNode: "function:old-router", resolvedNode: "function:router", health: "changed" as const,
+          symbol, reason: "private-grounding-reason", fingerprint: "private-fingerprint",
+        },
+        { requestedNode: "function:missing", resolvedNode: null, health: "missing" as const, symbol: null },
+      ],
+      truncated: true,
+      privateMetadata: "private-top-level-metadata",
+    }));
+    const wiki = { ...wikiWithStatus("fresh"), readGroundedCode } satisfies HubWikiReadService;
+    const services = createLocalHubReadServices({
+      projectRoot, scaffoldId: "scaffold-local", git, wiki,
+      jobs: { list: () => ({ items: [] }) }, now: () => new Date(NOW),
+    });
+
+    const result = await services.wikiGroundedCode!(entityId);
+    expect(readGroundedCode).toHaveBeenCalledExactlyOnceWith(entityId);
+    expect(WikiGroundedCodeResponseSchema.safeParse(result).success).toBe(true);
+    expect(result).toMatchObject({
+      entityId, graphRevision: "c".repeat(64), truncated: true,
+      groundings: [
+        {
+          requestedNode: "function:old-router", resolvedNode: "function:router", health: "changed",
+          symbol: { id: "function:router", name: "router", path: "src/router.ts", startLine: 3, endLine: 7 },
+        },
+        { requestedNode: "function:missing", resolvedNode: null, health: "missing", symbol: null },
+      ],
+    });
+    expect(Buffer.byteLength(result.groundings[0]!.symbol!.signature!, "utf8")).toBeLessThanOrEqual(2_048);
+    expect(JSON.stringify(result)).not.toContain("private-");
+  });
+
+  it("keeps grounded code unavailable without inventing a Graph revision or symbol", async () => {
+    const entityId = "mx_01ARZ3NDEKTSV4RRFFQ69G5FA1";
+    const wiki = {
+      ...wikiWithStatus("fresh"),
+      readGroundedCode: async () => ({
+        indexedRevision: "f".repeat(64), observedAt: NOW.toISOString(), entityId,
+        graphRevision: null,
+        groundings: [{ requestedNode: "function:router", resolvedNode: null, health: "unverified" as const, symbol: null }],
+        truncated: false,
+      }),
+    } satisfies HubWikiReadService;
+    const services = createLocalHubReadServices({
+      projectRoot, scaffoldId: "scaffold-local", git, wiki,
+      jobs: { list: () => ({ items: [] }) }, now: () => new Date(NOW),
+    });
+
+    const result = await services.wikiGroundedCode!(entityId);
+    expect(WikiGroundedCodeResponseSchema.safeParse(result).success).toBe(true);
+    expect(result).toMatchObject({
+      graphRevision: null,
+      groundings: [{ requestedNode: "function:router", resolvedNode: null, health: "unverified", symbol: null }],
+    });
   });
 
   it("projects real bounded Wiki browse, detail, relations, search, Code links, and health", async () => {

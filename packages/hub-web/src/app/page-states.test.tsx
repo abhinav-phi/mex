@@ -61,13 +61,12 @@ describe("Home states", () => {
   it("renders established focus, semantic team memory, stale context, and an exact active operation", async () => {
     renderRoute("/", createFixtureApi({ overviewFixture: "established" }));
 
-    expect(await screen.findByRole("heading", { name: "Review 3 proposed Spec changes" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Take the handoff waiting for you" })).toBeVisible();
+    expect(screen.queryByText("Review 3 proposed Spec changes")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Attention" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Open Inbox" })).toHaveAttribute(
-      "href",
-      "/inbox?view=review&proposal=proposal_01000000000000000000001720",
-    );
-    expect(screen.getByText("Take the handoff waiting for you").closest("a")).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Explore Context" })).toHaveAttribute("href", "/knowledge");
+    expect(screen.getByRole("button", { name: "View Relays" })).toHaveAttribute("href", "/relays");
+    expect(screen.getByRole("button", { name: "Open handoff" })).toHaveAttribute(
       "href",
       "/relays?view=mine&state=open&relay=relay_01000000000000000000000001",
     );
@@ -162,10 +161,8 @@ describe("Home states", () => {
     await user.click(screen.getByRole("button", { name: "View technical details for Attention" }));
     expect(screen.getByText("RELAY_LEGACY_PUBLICATION_TIME")).toBeVisible();
     expect(screen.getByText("Relay diagnostics truncated").nextElementSibling).toHaveTextContent("Yes");
-    expect(screen.getByText("INBOX_SOURCE_TRUNCATED")).toBeVisible();
-    expect(screen.getByText("Inbox corpus truncated").nextElementSibling).toHaveTextContent("Yes");
-    expect(screen.getByText("Inbox source truncated").nextElementSibling).toHaveTextContent("Yes");
-    expect(screen.getByText("Inbox diagnostics truncated").nextElementSibling).toHaveTextContent("Yes");
+    expect(screen.queryByText("Inbox focus unavailable")).not.toBeInTheDocument();
+    expect(screen.queryByText("INBOX_SOURCE_TRUNCATED")).not.toBeInTheDocument();
   });
 
   it("renders detached and unborn Graph repository observations without shell fallback", async () => {
@@ -197,7 +194,7 @@ describe("Home states", () => {
 
     expect(await screen.findByText("You’re caught up")).toBeVisible();
     expect(screen.getByRole("heading", { name: "Overview" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Browse project memory" })).toHaveAttribute("href", "/search");
+    expect(screen.getByRole("button", { name: "Browse shared knowledge" })).toHaveAttribute("href", "/knowledge");
     expect(screen.getAllByText("Fresh", { selector: "dd" })).toHaveLength(2);
     expect(screen.getAllByText("Fresh", { selector: "strong" })).toHaveLength(2);
     expect(screen.queryByRole("heading", { name: "Active operation" })).not.toBeInTheDocument();
@@ -254,7 +251,7 @@ describe("Home states", () => {
     expect(await screen.findByText("Resolve who you’re working as")).toBeVisible();
     expect(screen.getByText("The referenced member no longer exists.")).toBeVisible();
     expect(screen.getByRole("button", { name: "Review identity" })).toHaveAttribute("href", "/members");
-    expect(screen.getByText("Review 3 proposed Spec changes")).toBeVisible();
+    expect(screen.queryByText("Review 3 proposed Spec changes")).not.toBeInTheDocument();
   });
 
   it("renders degraded parse composition and determinate or indeterminate operations exactly", async () => {

@@ -31,6 +31,8 @@ import {
   TeamWorkstreamIdSchema,
   TeamWorkstreamListResponseSchema,
   TeamWorkstreamSchema,
+  WikiGraphResponseSchema,
+  WikiGroundedCodeResponseSchema,
   WikiBacklinksResponseSchema,
   WikiEntityDetailResponseSchema,
   WikiEntityIdSchema,
@@ -91,6 +93,8 @@ import type {
   TeamWorkstream,
   TeamWorkstreamListRequest,
   TeamWorkstreamListResponse,
+  WikiGraphResponse,
+  WikiGroundedCodeResponse,
   WikiBacklinksRequest,
   WikiBacklinksResponse,
   WikiEntityDetailResponse,
@@ -187,6 +191,8 @@ export interface HubApi {
   getActivity(request: ActivityRequest): Promise<ActivityResponse>;
   search(request: SearchRequest): Promise<SearchResponse>;
   getCodeSymbol(id: string, request: CodeWorkspaceRequest): Promise<CodeWorkspaceResponse>;
+  wikiGraph(): Promise<WikiGraphResponse>;
+  getWikiGroundedCode(id: string): Promise<WikiGroundedCodeResponse>;
   listWikiEntities(request: WikiEntityListRequest): Promise<WikiEntityListResponse>;
   getWikiEntity(id: string): Promise<WikiEntityDetailResponse>;
   getWikiRelations(id: string, request: WikiRelationsRequest): Promise<WikiRelationsResponse>;
@@ -548,6 +554,14 @@ export class HttpHubApi implements HubApi {
       `/code/symbols/${encodeURIComponent(assertSafeSymbolId(id))}?${params}`,
       CodeWorkspaceResponseSchema,
     );
+  }
+
+  wikiGraph(): Promise<WikiGraphResponse> {
+    return this.#request("/wiki/graph", WikiGraphResponseSchema);
+  }
+
+  getWikiGroundedCode(id: string): Promise<WikiGroundedCodeResponse> {
+    return this.#request(`/wiki/entities/${encodeURIComponent(assertSafeWikiEntityId(id))}/code`, WikiGroundedCodeResponseSchema);
   }
 
   listWikiEntities(request: WikiEntityListRequest): Promise<WikiEntityListResponse> {

@@ -78,6 +78,8 @@ import {
   type WikiEntityListResponse,
   type WikiEntitySummary as HubWikiEntitySummary,
   type WikiGrounding as HubWikiGrounding,
+  type WikiGraphResponse,
+  type WikiGroundedCodeResponse,
   type WikiHealthDetails,
   type WikiRelation as HubWikiRelation,
   type WikiRelationsRequest,
@@ -188,6 +190,8 @@ import type {
   RepositoryKnowledgeWorkspaceRequest,
   RepositoryWikiListBundle,
   RepositoryWikiSearchBundle,
+  RepositoryWikiGraphOverview,
+  RepositoryWikiGroundedCode,
 } from "../wiki/application-adapter.js";
 import {
   TEAM_READABLE_ENTITY_TYPES,
@@ -215,6 +219,8 @@ export interface HubWikiReadService {
   searchBundle(request: WikiQueryRequest): Promise<RepositoryWikiSearchBundle>;
   readKnowledgeWorkspace(request: RepositoryKnowledgeWorkspaceRequest): Promise<RepositoryKnowledgeWorkspace>;
   knowledgeForCode(request: RepositoryCodeKnowledgeRequest): Promise<RepositoryCodeKnowledgeResult>;
+  graphOverview?(): Promise<RepositoryWikiGraphOverview>;
+  readGroundedCode?(entityId: string): Promise<RepositoryWikiGroundedCode>;
 }
 
 /** Exact internal C0 application facade used by the private Hub. */
@@ -837,6 +843,29 @@ export function createLocalHubReadServices(
       return readCodeWorkspace(graph, symbolId, request);
     },
 
+    async wikiGraph(): Promise<WikiGraphResponse> {
+      const connected = requireWiki(wiki);
+      if (!connected.graphOverview) throw unavailableWikiGraph();
+      return projectWikiGraph(await connected.graphOverview());
+    },
+
+    async wikiGroundedCode(entityId: string): Promise<WikiGroundedCodeResponse> {
+      const connected = requireWiki(wiki);
+      if (!connected.readGroundedCode) throw unavailableWikiGraph();
+      const result = await connected.readGroundedCode(entityId);
+      return {
+        indexedRevision: result.indexedRevision, observedAt: result.observedAt,
+        entityId: result.entityId, graphRevision: result.graphRevision,
+        groundings: result.groundings.map((grounding) => ({
+          requestedNode: boundedWikiText(grounding.requestedNode, 512, ""),
+          resolvedNode: grounding.resolvedNode === null ? null : boundedWikiText(grounding.resolvedNode, 512, ""),
+          health: grounding.health,
+          symbol: grounding.symbol === null ? null : projectGraphSymbol(grounding.symbol),
+        })),
+        truncated: result.truncated,
+      };
+    },
+
     async wikiEntities(request: WikiEntityListRequest): Promise<WikiEntityListResponse> {
       const connected = requireWiki(wiki);
       if (request.kind !== undefined && isTeamReadableEntityKind(request.kind)) {
@@ -1218,6 +1247,44 @@ function projectGraphImpact(impact: GraphImpactResult): CodeWorkspaceResponse["t
       || impact.impacted.length > 100
       || impact.relations.length > 500,
   };
+}
+
+function unavailableWikiGraph(): HubHttpError {
+  return new HubHttpError(503, "CAPABILITY_UNAVAILABLE", "Capability unavailable", "Context graph reads are not connected in this build.");
+}
+
+function projectWikiGraph(bundle: RepositoryWikiGraphOverview): WikiGraphResponse {
+  const result: WikiGraphResponse = {
+    indexedRevision: bundle.indexedRevision, observedAt: bundle.observedAt,
+    nodes: [], relations: [], coverage: { ...bundle.coverage },
+  };
+  let bytes = Buffer.byteLength(JSON.stringify(result), "utf8");
+  for (const entity of bundle.nodes) {
+    const node = projectWikiSummary(entity);
+    const cost = Buffer.byteLength(JSON.stringify(node), "utf8") + (result.nodes.length > 0 ? 1 : 0);
+    if (bytes + cost > HUB_LIMITS.maxJsonResponseBytes) {
+      result.coverage.nodesTruncated = true;
+      break;
+    }
+    bytes += cost;
+    result.nodes.push(node);
+  }
+  const included = new Set(result.nodes.map((node) => node.id));
+  for (const value of bundle.relations) {
+    if (!included.has(value.source.id) || !included.has(value.target.id)) {
+      result.coverage.relationsTruncated = true;
+      continue;
+    }
+    const relation = projectWikiRelation(value);
+    const cost = Buffer.byteLength(JSON.stringify(relation), "utf8") + (result.relations.length > 0 ? 1 : 0);
+    if (bytes + cost > HUB_LIMITS.maxJsonResponseBytes) {
+      result.coverage.relationsTruncated = true;
+      break;
+    }
+    bytes += cost;
+    result.relations.push(relation);
+  }
+  return result;
 }
 
 function projectWikiSummary(entity: WikiEntitySummary): HubWikiEntitySummary {

@@ -70,6 +70,8 @@ import {
   WikiEntityListResponseSchema,
   WikiRelationsRequestSchema,
   WikiRelationsResponseSchema,
+  WikiGraphResponseSchema,
+  WikiGroundedCodeResponseSchema,
   type HealthResponse,
   type CodeWorkspaceRequest,
   type CodeWorkspaceResponse,
@@ -126,6 +128,8 @@ import {
   type WikiEntityListResponse,
   type WikiRelationsRequest,
   type WikiRelationsResponse,
+  type WikiGraphResponse,
+  type WikiGroundedCodeResponse,
 } from "@mex/hub-contracts";
 import { OverviewResponseSchema } from "@mex/hub-contracts/overview";
 import { Hono, type Context } from "hono";
@@ -238,6 +242,8 @@ export interface HubReadServices {
   wikiEntities?(
     request: WikiEntityListRequest,
   ): Promise<WikiEntityListResponse> | WikiEntityListResponse;
+  wikiGraph?(): Promise<WikiGraphResponse> | WikiGraphResponse;
+  wikiGroundedCode?(entityId: string): Promise<WikiGroundedCodeResponse> | WikiGroundedCodeResponse;
   wikiEntity?(
     entityId: string,
   ): Promise<WikiEntityDetailResponse> | WikiEntityDetailResponse;
@@ -638,6 +644,19 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
       CodeKnowledgeResponseSchema,
       await options.services.codeKnowledge(symbolId, request),
     );
+  });
+
+  app.get("/api/v1/wiki/graph", async (context) => {
+    if (!options.services.wikiGraph) throw unavailable("Context graph reads are not connected in this build.");
+    graphInput(() => readStrictQuery(context.req.raw, []));
+    return resourceResponse(WikiGraphResponseSchema, await options.services.wikiGraph());
+  });
+
+  app.get("/api/v1/wiki/entities/:id/code", async (context) => {
+    if (!options.services.wikiGroundedCode) throw unavailable("Context code reads are not connected in this build.");
+    const entityId = graphInput(() => parseInput(WikiEntityIdSchema, context.req.param("id")));
+    graphInput(() => readStrictQuery(context.req.raw, []));
+    return resourceResponse(WikiGroundedCodeResponseSchema, await options.services.wikiGroundedCode(entityId));
   });
 
   app.get("/api/v1/wiki/entities", async (context) => {

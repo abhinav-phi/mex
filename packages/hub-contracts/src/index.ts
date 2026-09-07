@@ -2737,6 +2737,48 @@ export const WikiRelationSchema = z.object({
   note: wikiDisplayText(2_048, 0).nullable(),
 }).strict();
 
+/** A bounded whole-Context view, never a join of separately observed pages. */
+export const WikiGraphResponseSchema = z.object({
+  indexedRevision: revision,
+  observedAt: isoTimestamp,
+  nodes: z.array(WikiEntitySummarySchema).max(100),
+  relations: z.array(WikiRelationSchema).max(500),
+  coverage: z.object({
+    nodeLimit: z.literal(100),
+    relationLimit: z.literal(500),
+    nodesTruncated: z.boolean(),
+    relationsTruncated: z.boolean(),
+  }).strict(),
+}).strict().superRefine((value, context) => {
+  const ids = new Set(value.nodes.map((node) => node.id));
+  if (ids.size !== value.nodes.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["nodes"], message: "Context nodes must have distinct identities." });
+  }
+  if (value.relations.some((relation) => !ids.has(relation.source.id) || !ids.has(relation.target.id))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["relations"], message: "Context relationships must connect included nodes." });
+  }
+});
+
+export const WikiGroundedCodeResponseSchema = z.object({
+  indexedRevision: revision,
+  observedAt: isoTimestamp,
+  entityId: WikiEntityIdSchema,
+  graphRevision: revision.nullable(),
+  groundings: z.array(z.object({
+    requestedNode: wikiDisplayText(512),
+    resolvedNode: wikiDisplayText(512).nullable(),
+    health: WikiGroundingHealthSchema,
+    symbol: GraphSymbolSchema.nullable(),
+  }).strict()).max(50),
+  truncated: z.boolean(),
+}).strict().superRefine((value, context) => {
+  for (const grounding of value.groundings) {
+    if (grounding.symbol !== null && (value.graphRevision === null || grounding.symbol.id !== grounding.resolvedNode)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["groundings"], message: "A code symbol requires its matching resolved identity and Graph revision." });
+    }
+  }
+});
+
 export const WikiRelationHitSchema = z.object({
   direction: z.enum(["outgoing", "incoming"]),
   relation: WikiRelationSchema,
@@ -3253,6 +3295,8 @@ export type WikiRelationHit = z.infer<typeof WikiRelationHitSchema>;
 export type WikiRelationsRequest = z.infer<typeof WikiRelationsRequestSchema>;
 export type WikiBacklinksRequest = z.infer<typeof WikiBacklinksRequestSchema>;
 export type WikiRelationsResponse = z.infer<typeof WikiRelationsResponseSchema>;
+export type WikiGraphResponse = z.infer<typeof WikiGraphResponseSchema>;
+export type WikiGroundedCodeResponse = z.infer<typeof WikiGroundedCodeResponseSchema>;
 export type WikiBacklinksResponse = z.infer<typeof WikiBacklinksResponseSchema>;
 export type CodeKnowledgeRequest = z.infer<typeof CodeKnowledgeRequestSchema>;
 export type CodeKnowledgeHit = z.infer<typeof CodeKnowledgeHitSchema>;

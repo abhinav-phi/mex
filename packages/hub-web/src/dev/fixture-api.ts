@@ -60,6 +60,8 @@ import type {
   WikiBacklinksResponse,
   WikiEntityDetailResponse,
   WikiEntityListRequest,
+  WikiGraphResponse,
+  WikiGroundedCodeResponse,
   WikiEntityListResponse,
   WikiEntitySummary,
   WikiRelationsRequest,
@@ -3455,6 +3457,20 @@ class FixtureHubApi implements HubApi {
     } catch (error) {
       return Promise.reject(error);
     }
+  }
+  wikiGraph(): Promise<WikiGraphResponse> {
+    const relations = wikiEntities.flatMap((entity) => [...wikiRelations(entity.id).items.map((hit) => hit.relation), ...wikiBacklinks(entity.id).items]);
+    return Promise.resolve({ indexedRevision: wikiRevision, observedAt: timestamp(0), nodes: wikiEntities,
+      relations: [...new Map(relations.map((edge) => [`${edge.source.id}:${edge.target.id}:${edge.type}`, edge])).values()],
+      coverage: { nodeLimit: 100, relationLimit: 500, nodesTruncated: false, relationsTruncated: false } });
+  }
+  getWikiGroundedCode(id: string): Promise<WikiGroundedCodeResponse> {
+    const detail = wikiDetail(id);
+    return Promise.resolve({ indexedRevision: wikiRevision, observedAt: timestamp(0), entityId: id, graphRevision,
+      groundings: detail.groundings.items.flatMap((grounding) => grounding.requestedNode ? [{
+        requestedNode: grounding.requestedNode, resolvedNode: grounding.resolvedNode, health: grounding.health,
+        symbol: graphSymbols.find((symbol) => symbol.id === grounding.resolvedNode) ?? null,
+      }] : []), truncated: detail.groundings.truncated });
   }
   listWikiEntities(request: WikiEntityListRequest): Promise<WikiEntityListResponse> {
     const filtered = wikiEntities.filter((entity) => (

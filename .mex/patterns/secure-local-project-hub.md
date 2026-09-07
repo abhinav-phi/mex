@@ -11,12 +11,12 @@ edges:
     condition: "when persisting a Hub job or migrating team.db"
   - target: "context/architecture.md"
     condition: "when wiring a real Graph or Wiki adapter"
-last_updated: 2026-09-06
+last_updated: 2026-09-08
 mex:
   id: mx_01M1M0CJQ2BSV71G1C7TXZD9RH
   type: pattern
   status: promoted
-  revision: 3
+  revision: 4
   title: secure-local-project-hub
   grounds_to:
     - node: function:188820af31f0d74c6518f6926f559877
@@ -95,6 +95,13 @@ preview/apply services.
   trace, or origin fields. Hub read models must omit those fields and bound
   subject/message previews before response validation. Schema-v2 Activity
   workflow/custom origin and optional labels use their closed projections.
+
+- New read surfaces need successful-job cache invalidation as well as their
+  initial query. Context's graph, selected record, and compact code queries all
+  refresh after Graph/Wiki maintenance; the Wiki revision can stay unchanged
+  while code health or signatures change. Each code projection carries its own
+  Graph observation, so do not claim aggregate health across separately observed
+  panels is one shared Graph snapshot.
 
 ## Verify
 

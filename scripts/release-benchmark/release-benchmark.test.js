@@ -13,8 +13,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
-import { describe, expect, it } from "vitest";
-import { assertNoForbiddenWorkbench, evaluateAssetBudgets } from "./assets.mjs";
+import { describe, expect, it, vi } from "vitest";
+import { assertNoForbiddenWorkbench, evaluateAssetBudgets, measureBuiltAssets } from "./assets.mjs";
+import { assertReleaseRouteReady } from "./browser.mjs";
 import {
   releaseWorkbenchPaths,
   RELEASE_ROUTE_KEYS,
@@ -223,6 +224,7 @@ describe("release benchmark contract", () => {
       "relayDrafts",
       "relays",
     ]);
+    expect(releaseCommonReadPaths("symbol/release").knowledge).toBe("/api/v1/wiki/graph");
     expect(budgetsSchema.$defs.readBudgets.properties).toEqual(expect.objectContaining({
       inboxDrafts: { $ref: "#/$defs/nonNegativeNumber" },
       inboxProposals: { $ref: "#/$defs/nonNegativeNumber" },
@@ -232,6 +234,33 @@ describe("release benchmark contract", () => {
     const validateBudgets = new Ajv2020({ strict: true }).compile(budgetsSchema);
     expect(validateBudgets(budgets), JSON.stringify(validateBudgets.errors)).toBe(true);
   });
+
+  it.each(["ready", "canvas unavailable", "fixture node missing"])(
+    "accepts only a populated Context graph before heap measurement: %s",
+    async (state) => {
+      const waitForNode = vi.fn(async () => {
+        if (state === "fixture node missing") throw new Error("Fixture node is not visible.");
+      });
+      const graph = {
+        waitFor: vi.fn(async () => {
+          if (state === "canvas unavailable") throw new Error("Context graph is unavailable.");
+        }),
+        getByRole: vi.fn(() => ({ waitFor: waitForNode })),
+      };
+      const page = { getByLabel: vi.fn(() => graph) };
+      const ready = assertReleaseRouteReady(page, "knowledge", {});
+
+      if (state === "ready") {
+        await expect(ready).resolves.toBeUndefined();
+        expect(waitForNode).toHaveBeenCalledWith({ state: "visible", timeout: 30_000 });
+      } else {
+        await expect(ready).rejects.toThrow(state === "canvas unavailable"
+          ? "Context graph is unavailable." : "Fixture node is not visible.");
+      }
+      expect(page.getByLabel).toHaveBeenCalledWith("Context graph", { exact: true });
+      if (state === "canvas unavailable") expect(graph.getByRole).not.toHaveBeenCalled();
+    },
+  );
 
   it("uses nearest-rank p95 and rejects the wrong sample count", () => {
     expect(summarize([7, 1, 9, 4, 2, 10, 8, 6, 5, 3], 10)).toEqual({
@@ -439,6 +468,49 @@ describe("release benchmark contract", () => {
       budget: budgets.assets.routes.home.jsBytes,
       reason: "budget_exceeded",
     }]);
+  });
+
+  it("measures the default Context graph separately from its lazy knowledge list and detail", () => {
+    const output = mkdtempSync(join(tmpdir(), "mex-context-assets-"));
+    try {
+      mkdirSync(join(output, ".vite"));
+      mkdirSync(join(output, "assets"));
+      const pages = ["HomePage", "SearchPage", "ContextPage", "KnowledgePage", "SymbolPage",
+        "CapabilityPage", "WorkstreamsPage", "SpecsPage", "InboxPage", "RelayPage",
+        "MembersPage", "ActivityPage", "JobsPage", "HealthPage"];
+      const manifest = {
+        "index.html": { file: "assets/index.js", isEntry: true, dynamicImports: pages },
+        "graph-runtime": { file: "assets/graph.js" },
+        "record-runtime": { file: "assets/record.js" },
+      };
+      for (const page of pages) {
+        manifest[page] = {
+          file: `assets/${page}.js`,
+          src: `src/pages/${page}.tsx`,
+          isDynamicEntry: true,
+        };
+      }
+      manifest.ContextPage.imports = ["graph-runtime"];
+      manifest.ContextPage.dynamicImports = ["KnowledgePage"];
+      manifest.KnowledgePage.imports = ["record-runtime"];
+      writeFileSync(join(output, ".vite", "manifest.json"), JSON.stringify(manifest));
+      for (const record of Object.values(manifest)) {
+        writeFileSync(join(output, record.file), `// ${record.file}\n`);
+      }
+
+      const measurement = measureBuiltAssets(output, budgets.assets);
+
+      expect(measurement.routes.knowledge.files.map(({ file }) => file)).toEqual([
+        "assets/ContextPage.js", "assets/graph.js",
+      ]);
+      expect(measurement.routes.knowledgeDetail.files.map(({ file }) => file)).toEqual([
+        "assets/KnowledgePage.js", "assets/record.js",
+      ]);
+      expect(measurement.initial.files.map(({ file }) => file)).toEqual(["assets/index.js"]);
+      expect(measurement.routes.home.files.map(({ file }) => file)).toEqual(["assets/HomePage.js"]);
+    } finally {
+      rmSync(output, { recursive: true, force: true });
+    }
   });
 
   it("rejects forbidden workbench modules hidden behind opaque chunk keys", () => {

@@ -16,7 +16,7 @@ edges:
     condition: when starting a task — check the pattern index for a matching pattern file
   - target: patterns/release-readme-visuals.md
     condition: when refreshing the release README, badges, community links, or architecture illustrations
-last_updated: 2026-09-06
+last_updated: 2026-09-08
 ---
 
 # Session Bootstrap
@@ -65,12 +65,29 @@ Then read this file fully before doing anything else in this session.
 - Versioned graph snapshot provenance and read-only freshness inspection gate
   grounding in check, doctor, and dashboard flows without implicit graph sync.
 - Grounding carries its change signal in Markdown: `grounds_to[].bodyHash` is
-  optional and additive, written by the capture and MOVED-repair passes from the
-  graph's own hash, and backfilled for existing scaffolds on the next capture.
+  optional and additive, written during initial capture or an explicitly
+  accepted per-entry sync review from the graph's own hash. Legacy backfill
+  preserves an existing cached baseline, and MOVED repairs carry earlier change
+  evidence forward rather than accepting the new body.
   The `_mex_grounded_source` row remains as a cache of that canonical value. The
   drift checker prefers the committed hash, falls back to the cache for a
   grounding authored before the field, and resolves the `grounds_to` key path so
   migrated scaffolds under `mex.grounds_to` are checked rather than skipped.
+- The first 0.8.1 release phase is implemented on `codex/0.8.1`: successful
+  agent exit no longer authorizes baseline renewal. Interactive sync offers
+  bounded default-no review of individual groundings, releases the graph lease
+  before asking, and revalidates document bytes and graph facts before applying.
+  The remaining release phases, including logging cadence/retrieval, Windows
+  hardening, and separate final telemetry work, are tracked in
+  `docs/design/0.8.1-release-plan.md`.
+- Phase 2 adds a graph-first Context Hub at `/knowledge`, with every usual
+  Wiki entity (including unlinked sections), recorded relationships, and direct
+  code groundings expanding on selection. The list and full-record routes remain
+  readable. Bounded private graph/code projections never maintain indexes;
+  completed Graph/Wiki jobs invalidate the Context caches. Home and primary
+  navigation now emphasize Context, Code, Relays, and Activity while legacy
+  workflow routes remain readable. Local verification is recorded in the
+  same release plan; this is local implementation, not a published release.
 - Explicit graph status, refresh, and isolated rebuild/recovery commands preserve
   the last trustworthy index behind one cross-process maintenance lease.
 - Targeted graph get/query/impact consumers use one provenance-bound immutable

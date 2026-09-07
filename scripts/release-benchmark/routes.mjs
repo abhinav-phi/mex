@@ -8,7 +8,7 @@
 export const RELEASE_ROUTE_MANIFEST_HINTS = Object.freeze({
   home: Object.freeze(["HomePage", "hub-contracts/dist/overview"]),
   search: Object.freeze(["SearchPage"]),
-  knowledge: Object.freeze(["KnowledgePage"]),
+  knowledge: Object.freeze(["ContextPage"]),
   knowledgeDetail: Object.freeze(["KnowledgePage"]),
   code: Object.freeze(["SearchPage"]),
   codeSymbol: Object.freeze(["SymbolPage"]),

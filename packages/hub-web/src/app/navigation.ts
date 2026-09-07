@@ -1,30 +1,24 @@
 import {
   Activity,
-  BookOpenText,
   Code2,
-  FileCheck2,
   GitPullRequestArrow,
   HeartPulse,
-  History,
   House,
-  Inbox,
-  ListChecks,
+  Network,
   Search,
   Send,
   UsersRound,
-  Workflow,
   type LucideIcon,
 } from "lucide-react";
 import type { CapabilityName } from "../api/types";
 
-export type NavigationGroupId = "project-memory" | "teamwork" | "coming-soon" | "system";
+export type NavigationGroupId = "project-memory" | "teamwork" | "system";
 export type NavigationPlacement = "launcher" | "primary" | "footer";
-export type NavigationCountSource = "inbox" | "relays" | "active-jobs";
+export type NavigationCountSource = "relays" | "active-jobs";
 
 export type NavigationAvailability =
   | { kind: "always" }
-  | { kind: "runtime"; capability: CapabilityName }
-  | { kind: "coming-soon" };
+  | { kind: "runtime"; capability: CapabilityName };
 
 export interface NavigationItem {
   id: string;
@@ -48,7 +42,6 @@ export interface NavigationGroup {
 export const navigationGroups: readonly NavigationGroup[] = [
   { id: "project-memory", label: "Project Memory", placement: "primary", defaultExpanded: true },
   { id: "teamwork", label: "Teamwork", placement: "primary", defaultExpanded: true },
-  { id: "coming-soon", label: "Coming Soon", placement: "primary", defaultExpanded: false },
   { id: "system", label: "System", placement: "footer", defaultExpanded: false, countSource: "active-jobs" },
 ];
 
@@ -71,21 +64,12 @@ export const navigationItems: readonly NavigationItem[] = [
   },
   {
     id: "knowledge",
-    label: "Knowledge",
+    label: "Context",
     path: "/knowledge",
-    icon: BookOpenText,
+    icon: Network,
     group: "project-memory",
     placement: "primary",
     availability: { kind: "runtime", capability: "wiki" },
-  },
-  {
-    id: "specs",
-    label: "Specs",
-    path: "/specs",
-    icon: FileCheck2,
-    group: "project-memory",
-    placement: "primary",
-    availability: { kind: "runtime", capability: "specs" },
   },
   {
     id: "code",
@@ -95,25 +79,6 @@ export const navigationItems: readonly NavigationItem[] = [
     group: "project-memory",
     placement: "primary",
     availability: { kind: "runtime", capability: "graph" },
-  },
-  {
-    id: "workstreams",
-    label: "Workstreams",
-    path: "/workstreams",
-    icon: Workflow,
-    group: "teamwork",
-    placement: "primary",
-    availability: { kind: "runtime", capability: "workstreams" },
-  },
-  {
-    id: "inbox",
-    label: "Inbox",
-    path: "/inbox",
-    icon: Inbox,
-    group: "teamwork",
-    placement: "primary",
-    availability: { kind: "runtime", capability: "inbox" },
-    countSource: "inbox",
   },
   {
     id: "relays",
@@ -133,24 +98,6 @@ export const navigationItems: readonly NavigationItem[] = [
     group: "teamwork",
     placement: "primary",
     availability: { kind: "runtime", capability: "activity" },
-  },
-  {
-    id: "playbooks",
-    label: "Playbooks",
-    path: "/playbooks",
-    icon: ListChecks,
-    group: "coming-soon",
-    placement: "primary",
-    availability: { kind: "coming-soon" },
-  },
-  {
-    id: "catch-up",
-    label: "Catch Up",
-    path: "/catch-up",
-    icon: History,
-    group: "coming-soon",
-    placement: "primary",
-    availability: { kind: "coming-soon" },
   },
   {
     id: "team",

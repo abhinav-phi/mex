@@ -145,9 +145,10 @@ export async function measureCommonReads(server, auth, samples, teamFixture) {
   if (typeof symbol?.id !== "string") {
     throw new Error("The benchmark Graph fixture did not produce a searchable symbol.");
   }
-  await hubJson(server, `/api/v1/code/symbols/${encodeURIComponent(symbol.id)}?view=overview`, auth);
-  await hubJson(server, "/api/v1/wiki/entities?limit=25", auth);
-  await hubJson(server, "/api/v1/activity?limit=25", auth);
+  const paths = releaseCommonReadPaths(symbol.id);
+  await hubJson(server, paths.code, auth);
+  await hubJson(server, paths.knowledge, auth);
+  await hubJson(server, paths.activity, auth);
   const warmInboxDrafts = await hubJson(server, "/api/v1/inbox/drafts?limit=25", auth);
   const warmInboxProposals = await hubJson(
     server,
@@ -181,7 +182,6 @@ export async function measureCommonReads(server, auth, samples, teamFixture) {
     summary: teamFixture.relaySummary,
   });
 
-  const paths = releaseCommonReadPaths(symbol.id);
   const timings = Object.fromEntries(Object.keys(paths).map((name) => [name, []]));
   for (let sample = 0; sample < samples; sample += 1) {
     for (const [name, path] of Object.entries(paths)) {
@@ -197,7 +197,7 @@ export function releaseCommonReadPaths(codeSymbolId) {
   return {
     search: "/api/v1/search?q=releaseBenchmarkNeedle&limit=25",
     code: `/api/v1/code/symbols/${encodeURIComponent(codeSymbolId)}?view=overview`,
-    knowledge: "/api/v1/wiki/entities?limit=25",
+    knowledge: "/api/v1/wiki/graph",
     activity: "/api/v1/activity?limit=25",
     inboxDrafts: "/api/v1/inbox/drafts?limit=25",
     inboxProposals: "/api/v1/inbox/proposals?state=pending,stale&limit=25",
