@@ -71,3 +71,36 @@ describe("heartbeat", () => {
 function frontmatter(name: string, lastUpdated: string): string {
   return `---\nname: ${name}\nlast_updated: ${lastUpdated}\n---\n\n# ${name}\n`;
 }
+
+describe("zero-day heartbeat thresholds (#42)", () => {
+  let zeroTmp: string;
+  let zeroConfig: MexConfig;
+
+  beforeEach(() => {
+    zeroTmp = mkdtempSync(join(tmpdir(), "mex-heartbeat-zero-"));
+    mkdirSync(join(zeroTmp, ".mex/context"), { recursive: true });
+    zeroConfig = {
+      projectRoot: zeroTmp,
+      scaffoldRoot: join(zeroTmp, ".mex"),
+      aiTools: [],
+      heartbeat: { staleDays: 0, memoryCleanupDays: 0, dailyMemoryRetentionDays: 0 },
+    };
+  });
+
+  afterEach(() => {
+    rmSync(zeroTmp, { recursive: true, force: true });
+  });
+
+  it("flags a file dated yesterday as stale when staleDays is 0", () => {
+    writeFileSync(join(zeroTmp, ".mex/ROUTER.md"), frontmatter("router", "2026-05-13"));
+    const result = checkHeartbeat(zeroConfig, new Date("2026-05-14T00:00:00Z"));
+    expect(result.staleFiles.map((f) => f.file)).toContain("ROUTER.md");
+  });
+
+  it("does not flag a file dated today when staleDays is 0", () => {
+    writeFileSync(join(zeroTmp, ".mex/ROUTER.md"), frontmatter("router", "2026-05-14"));
+    const result = checkHeartbeat(zeroConfig, new Date("2026-05-14T00:00:00Z"));
+    expect(result.staleFiles).toEqual([]);
+    expect(result.ok).toBe(true);
+  });
+});
