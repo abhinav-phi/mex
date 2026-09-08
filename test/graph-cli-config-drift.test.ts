@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -193,6 +193,27 @@ describe("graph reads after a config-only change", () => {
     const records = await capture((deps) => runGraphQuery("who-calls", "normalizePath", root, deps, {}));
     expect(statusRecord(records)).toBeUndefined();
     expect(records.every((record) => record.stale === undefined)).toBe(true);
+  });
+
+  it("does not touch the store while reading it drifted", async () => {
+    const { root } = await fixture();
+    bumpDependency(root);
+    const mexDir = join(root, ".mex");
+    const before = readdirSync(mexDir).sort().map((name) => {
+      const path = join(mexDir, name);
+      return statSync(path).isFile()
+        ? { name, bytes: readFileSync(path).toString("base64") }
+        : { name, bytes: null };
+    });
+    await capture((deps) => runGraphQuery("who-calls", "normalizePath", root, deps, {}));
+    await capture((deps) => runGraphScope("normalize request path", root, deps, {}));
+    const after = readdirSync(mexDir).sort().map((name) => {
+      const path = join(mexDir, name);
+      return statSync(path).isFile()
+        ? { name, bytes: readFileSync(path).toString("base64") }
+        : { name, bytes: null };
+    });
+    expect(after).toEqual(before);
   });
 
   it("is byte-identical across repeated drifted reads", async () => {
