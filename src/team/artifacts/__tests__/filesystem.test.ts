@@ -282,25 +282,25 @@ describe("Git's checkout line-ending conversion", () => {
   const CANONICAL = "---\nschema_version: 1\nid: \"member_00000000000000000000000000\"\n---\n";
   const path = ".mex/team/members/member_00000000000000000000000000.md" as RepoRelativePath;
 
-  it("preserves exact bytes and revisions only when requested, including replacement checks", () => {
+  it("defaults to exact bytes and requires explicit canonical replacement checks", () => {
     const root = temporaryRoot();
     const crlf = CANONICAL.replaceAll("\n", "\r\n");
     atomicCreateArtifact(root, path, crlf);
-    const canonical = readContainedArtifact(root, path, 64 * 1024);
-    const exact = readContainedArtifact(root, path, 64 * 1024, "exact");
+    const canonical = readContainedArtifact(root, path, 64 * 1024, "canonical");
+    const exact = readContainedArtifact(root, path, 64 * 1024);
     expect(Buffer.from(canonical.bytes).toString("utf8")).toBe(CANONICAL);
     expect(canonical.revision).toBe(revisionOf(CANONICAL));
     expect(Buffer.from(exact.bytes).toString("utf8")).toBe(crlf);
     expect(exact.revision).toBe(revisionOf(crlf));
     expect(exact.revision).not.toBe(canonical.revision);
-    expect(tryReadContainedArtifact(root, path, 64 * 1024, "exact")).toEqual(exact);
-    expect(() => atomicReplaceArtifact(root, path, canonical.revision, "stale\n", 64 * 1024, "exact"))
+    expect(tryReadContainedArtifact(root, path, 64 * 1024)).toEqual(exact);
+    expect(() => atomicReplaceArtifact(root, path, canonical.revision, "stale\n", 64 * 1024))
       .toThrowError(expect.objectContaining({ problem: expect.objectContaining({ code: "REVISION_CONFLICT" }) }));
     expect(readFileSync(join(root, path), "utf8")).toBe(crlf);
     expect(atomicReplaceArtifact(root, path, exact.revision, crlf, 64 * 1024, "exact"))
       .toBe(revisionOf(crlf));
-    // Existing canonical callers still accept the committed LF revision of a CRLF checkout.
-    expect(atomicReplaceArtifact(root, path, canonical.revision, CANONICAL, 64 * 1024))
+    // Canonical callers explicitly accept the LF revision of a CRLF checkout.
+    expect(atomicReplaceArtifact(root, path, canonical.revision, CANONICAL, 64 * 1024, "canonical"))
       .toBe(revisionOf(CANONICAL));
   });
 
@@ -330,7 +330,7 @@ describe("Git's checkout line-ending conversion", () => {
     expect(onDisk.includes(Buffer.from("\r\n"))).toBe(true);
     expect(onDisk.equals(Buffer.from(CANONICAL, "utf8"))).toBe(false);
 
-    const read = readContainedArtifact(root, path, 64 * 1024);
+    const read = readContainedArtifact(root, path, 64 * 1024, "canonical");
     expect(Buffer.from(read.bytes).toString("utf8")).toBe(CANONICAL);
     // And the revision is the committed artifact's, not this platform's — the
     // same artifact hashed differently on Windows and macOS before this.
@@ -347,9 +347,21 @@ describe("Git's checkout line-ending conversion", () => {
     mkdirSync(dirname(join(root, ...path.split("/"))), { recursive: true });
     writeFileSync(join(root, ...path.split("/")), lone);
 
-    const read = readContainedArtifact(root, path, 64 * 1024);
+    const read = readContainedArtifact(root, path, 64 * 1024, "canonical");
     expect(Buffer.from(read.bytes).toString("utf8")).toBe(lone);
     expect(read.revision).toBe(revisionOf(lone));
+  });
+
+  it("does not turn mixed line endings into a canonical record or shrink the on-disk bound", () => {
+    const root = temporaryRoot();
+    const mixed = CANONICAL.replace("---\n", "---\r\n");
+    atomicCreateArtifact(root, path, mixed);
+    const read = readContainedArtifact(root, path, 64 * 1024, "canonical");
+    expect(Buffer.from(read.bytes).toString("utf8")).toBe(mixed);
+    expect(read.revision).toBe(revisionOf(mixed));
+    expect(() => readContainedArtifact(root, path, Buffer.byteLength(CANONICAL), "canonical"))
+      .toThrowError(expect.objectContaining({ problem: expect.objectContaining({ code: "VALIDATION_FAILED" }) }));
+    expect(readFileSync(join(root, path), "utf8")).toBe(mixed);
   });
 });
 

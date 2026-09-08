@@ -30,6 +30,7 @@ import {
   program,
 } from "../src/cli.js";
 import { createGraphEngine } from "../src/graph/engine-impl.js";
+import * as repositoryGit from "../src/team/git/git-port.js";
 import { GRAPH_CORPUS_LIMITS } from "../src/graph/corpus-policy.js";
 import { WIKI_CORPUS_LIMITS } from "../src/wiki/index/corpus-policy.js";
 import { rebuildWikiIndex } from "../src/wiki/index/rebuild.js";
@@ -1018,6 +1019,35 @@ describe("mex capabilities manifest", () => {
         availability: "available",
       });
     }
+  });
+
+  it("withholds Team capabilities after a CRLF-only config edit between exact reads", async () => {
+    const root = readyRoot();
+    execFileSync("git", ["config", "core.autocrlf", "true"], { cwd: root });
+    const path = join(root, ".mex/config.json");
+    const original = `${JSON.stringify({ scaffold_id: "capabilities-config-race" }, null, 2)}\n`;
+    writeFileSync(path, original);
+    execFileSync("git", ["add", ".mex/config.json"], { cwd: root });
+    execFileSync("git", ["commit", "--quiet", "-m", "track config"], { cwd: root });
+    const createGit = repositoryGit.createRepositoryGitPort;
+    vi.spyOn(repositoryGit, "createRepositoryGitPort").mockImplementation((...args) => {
+      const port = createGit(...args);
+      const read = port.readFileAtRevision.bind(port);
+      vi.spyOn(port, "readFileAtRevision").mockImplementation(async (request) => {
+        const result = await read(request);
+        writeFileSync(path, original.replaceAll("\n", "\r\n"));
+        return result;
+      });
+      return port;
+    });
+    const result = await inspectCapabilities(root, {
+      inspectGraphIndex: async () => inspection("fresh"),
+      inspectWikiIndex: async () => inspection("fresh"),
+    });
+    expect(result.data.capabilities.find((entry) => entry.id === "team_identity"))
+      .toMatchObject({ unavailableReason: { code: "TEAM_STATE_UNAVAILABLE" } });
+    expect(readFileSync(path, "utf8")).toBe(original.replaceAll("\n", "\r\n"));
+    expect(execFileSync("git", ["diff", "--name-only"], { cwd: root }).toString()).toBe("");
   });
 
   it("does not advertise Wiki rebuild for degraded, migration, corrupt, or unavailable states", async () => {

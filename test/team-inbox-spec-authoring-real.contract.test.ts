@@ -1677,6 +1677,64 @@ function fail(message: string): never {
 }
 
 describe("Knowledge Inbox real approval pipeline", () => {
+  it("approves and recovers exact CRLF Wiki bytes while keeping Team artifact revisions portable", async () => {
+    const harness = await RepositoryInboxSpecHarness.open("empty");
+    try {
+      let port = harness.port as unknown as KnowledgeInboxPort;
+      const path = join(harness.root, `.mex/context/${NON_SPEC_ID}.md`);
+      const original = `${readFileSync(path, "utf8")}\nLiteral \\r stays literal.\n`.replaceAll("\n", "\r\n");
+      writeFileSync(path, original);
+      const auditPath = join(harness.root, ".mex/events/operations.jsonl");
+      mkdirSync(dirname(auditPath), { recursive: true });
+      // An empty historical CRLF line is valid ledger text and remains part of
+      // the exact preview/recovery hash even though it has no operation record.
+      writeFileSync(auditPath, "\r\n");
+      await harness.refreshWikiIndex();
+      const wiki = createRepositoryWikiPort(harness.root);
+      const target = (await wiki.getEntity(NON_SPEC_ID))!;
+      expect(target.version.contentHash).toBe(hash(original));
+      const input: KnowledgeDraftInput = {
+        ...knowledgeInput("decision"),
+        evidence: [],
+        change: {
+          kind: "knowledge.update",
+          target: { id: target.ref.id, kind: "decision", title: target.title },
+          patch: { body: "Reviewed correction of CRLF context; literal \\r remains text." },
+        },
+        targetRevisions: [entityExpectation(target)],
+      };
+      const proposal = await publishKnowledge(port, input, "crlf_update");
+      const proposalPath = join(harness.root, proposal.sourcePath);
+      writeFileSync(proposalPath, readFileSync(proposalPath, "utf8").replaceAll("\n", "\r\n"));
+      expect((await port.getInboxProposal(proposal.ref.id))?.revision).toBe(proposal.revision);
+      const approval = await knowledgeApproval(port, proposal, "crlf_update_finish");
+      expect(Buffer.byteLength(JSON.stringify(approval), "utf8")).toBeLessThanOrEqual(64 * 1024);
+      const targetChange = approval.preview.changes.find((change) => change.path === target.location.path)!;
+      expect(targetChange.diff).toContain("Carriage returns are displayed as \\r; literal backslashes as \\\\ below.");
+      expect(targetChange.diff).toContain("Literal \\\\r stays literal.\\r");
+      expect(targetChange.diff).toContain("literal \\\\r remains text.");
+      expect(targetChange.diff).not.toContain("\r");
+      expect(approval.preview.changes.find((change) => change.path === target.location.path)?.beforeRevision)
+        .toBe(hash(original));
+      expect(approval.preview.changes.find((change) => change.path === ".mex/events/operations.jsonl")?.beforeRevision)
+        .toBe(hash("\r\n"));
+      await harness.armCrash("approve.after-wiki");
+      await expect(port.applyInbox(roundTrip(approval))).rejects.toBeDefined();
+      const published = readFileSync(path);
+      const publishedAudit = readFileSync(auditPath);
+      expect(published.toString("utf8")).toContain("Reviewed correction of CRLF context; literal \\r remains text.");
+      expect(approval.preview.changes.find((change) => change.path === target.location.path)?.afterRevision)
+        .toBe(hash(published));
+      expect(publishedAudit.subarray(0, 2).toString("utf8")).toBe("\r\n");
+      port = await harness.restart() as unknown as KnowledgeInboxPort;
+      expect((await port.applyInbox(roundTrip(approval))).applied).toBe(true);
+      expect((await port.applyInbox(roundTrip(approval))).idempotentReplay).toBe(true);
+      expect((await port.getInboxProposal(proposal.ref.id))?.state).toBe("approved");
+      expect(readFileSync(path)).toEqual(published);
+      expect(readFileSync(auditPath)).toEqual(publishedAudit);
+    } finally { await harness.close(); }
+  });
+
   it.each(TEAM_INBOX_KNOWLEDGE_KINDS)("creates a %s with proposal attribution and every evidence kind", async (entityKind) => {
     const harness = await RepositoryInboxSpecHarness.open("empty");
     try {

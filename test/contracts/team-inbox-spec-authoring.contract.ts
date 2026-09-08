@@ -1109,65 +1109,63 @@ export function defineTeamInboxSpecAuthoringContract(
       });
     });
 
-    it("makes approved, rejected, and withdrawn proposals terminal", async () => {
-      for (const terminal of ["approved", "rejected", "withdrawn"] as const) {
-        await withHarness(factory, "empty", async (harness) => {
-          const proposal = await createPendingProposal(
-            harness.port,
-            await harness.makeDraftInput(
-              terminal === "approved" ? "spec.update" : "spec.create",
-              "spec",
-            ),
-            `inbox_contract_terminal_${terminal}`,
-          );
-          const action: TeamInboxSpecAction = terminal === "approved"
-            ? { kind: "inbox.approve", proposalId: proposal.ref.id }
-            : terminal === "rejected"
-              ? {
-                  kind: "inbox.reject",
-                  proposalId: proposal.ref.id,
-                  rationale: "The proposal does not meet the reviewed requirement.",
-                }
-              : {
-                  kind: "inbox.withdraw",
-                  proposalId: proposal.ref.id,
-                  rationale: "The author is replacing this proposal.",
-                };
-          const terminalPreview = await harness.port.previewInbox(command(
-            `inbox_contract_terminal_${terminal}_apply`,
-            action,
-            [proposalExpectation(proposal)],
-          ));
-          expectPurposes(terminalPreview, ["activity"]);
-          const terminalResult = await harness.port.applyInbox(roundTrip(terminalPreview));
-          const terminalSubjects = (() => {
-            if (terminal !== "approved") return [proposal.ref];
-            if (proposal.change.kind !== "spec.update") {
-              throw new Error("Expected the terminal approval fixture to update one Spec.");
-            }
-            return [proposal.ref, proposal.change.target];
-          })();
-          expectCanonicalActivity(
-            terminalResult,
-            terminalPreview,
-            `inbox.${terminal}`,
-            terminalSubjects,
-          );
-          const stored = await requiredProposal(harness.port, proposal.ref.id);
-          expect(stored.state).toBe(terminal);
-          const before = await harness.snapshot();
-          await expect(harness.port.previewInbox(command(
-            `inbox_contract_terminal_${terminal}_reuse`,
-            {
-              kind: "inbox.mark-stale",
-              proposalId: stored.ref.id,
-              rationale: "Terminal records cannot be reopened.",
-            },
-            [proposalExpectation(stored)],
-          ))).rejects.toMatchObject({ problem: { code: "VALIDATION_FAILED" } });
-          expect(await harness.snapshot()).toEqual(before);
-        });
-      }
+    it.each(["approved", "rejected", "withdrawn"] as const)("makes %s proposals terminal", async (terminal) => {
+      await withHarness(factory, "empty", async (harness) => {
+        const proposal = await createPendingProposal(
+          harness.port,
+          await harness.makeDraftInput(
+            terminal === "approved" ? "spec.update" : "spec.create",
+            "spec",
+          ),
+          `inbox_contract_terminal_${terminal}`,
+        );
+        const action: TeamInboxSpecAction = terminal === "approved"
+          ? { kind: "inbox.approve", proposalId: proposal.ref.id }
+          : terminal === "rejected"
+            ? {
+                kind: "inbox.reject",
+                proposalId: proposal.ref.id,
+                rationale: "The proposal does not meet the reviewed requirement.",
+              }
+            : {
+                kind: "inbox.withdraw",
+                proposalId: proposal.ref.id,
+                rationale: "The author is replacing this proposal.",
+              };
+        const terminalPreview = await harness.port.previewInbox(command(
+          `inbox_contract_terminal_${terminal}_apply`,
+          action,
+          [proposalExpectation(proposal)],
+        ));
+        expectPurposes(terminalPreview, ["activity"]);
+        const terminalResult = await harness.port.applyInbox(roundTrip(terminalPreview));
+        const terminalSubjects = (() => {
+          if (terminal !== "approved") return [proposal.ref];
+          if (proposal.change.kind !== "spec.update") {
+            throw new Error("Expected the terminal approval fixture to update one Spec.");
+          }
+          return [proposal.ref, proposal.change.target];
+        })();
+        expectCanonicalActivity(
+          terminalResult,
+          terminalPreview,
+          `inbox.${terminal}`,
+          terminalSubjects,
+        );
+        const stored = await requiredProposal(harness.port, proposal.ref.id);
+        expect(stored.state).toBe(terminal);
+        const before = await harness.snapshot();
+        await expect(harness.port.previewInbox(command(
+          `inbox_contract_terminal_${terminal}_reuse`,
+          {
+            kind: "inbox.mark-stale",
+            proposalId: stored.ref.id,
+            rationale: "Terminal records cannot be reopened.",
+          },
+          [proposalExpectation(stored)],
+        ))).rejects.toMatchObject({ problem: { code: "VALIDATION_FAILED" } });
+        expect(await harness.snapshot()).toEqual(before);
+      });
     });
 
     it("rejects envelope tampering, expiry, and authority drift before any effect", async () => {

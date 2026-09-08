@@ -43,7 +43,7 @@ export interface ContainedArtifactRead {
   canonicalPath: string;
 }
 
-/** Canonical artifacts undo Git checkout conversion; local preferences retain exact bytes. */
+/** Only known canonical Team records opt into checkout-neutral bytes. */
 export type ArtifactByteMode = "canonical" | "exact";
 
 /** Resolve a caller-supplied root once so repositories cannot follow a later symlink swap. */
@@ -60,12 +60,12 @@ export function canonicalizeProjectRoot(projectRoot: string): string {
   return canonicalRoot;
 }
 
-/** Read one regular artifact without following its final path through a symlink. */
+/** Read exact regular-file bytes without following the final path through a symlink. */
 export function readContainedArtifact(
   projectRoot: string,
   path: RepoRelativePath,
   maxBytes: number,
-  byteMode: ArtifactByteMode = "canonical",
+  byteMode: ArtifactByteMode = "exact",
 ): ContainedArtifactRead {
   const { canonicalRoot, lexicalPath } = resolveArtifactPath(projectRoot, path);
   let descriptor: number | undefined;
@@ -120,10 +120,9 @@ export function readContainedArtifact(
         path,
       );
     }
-    // Git's checkout conversion is undone here, at the one boundary every
-    // canonical artifact is read through, so that parsing, the canonical-form
-    // assertion and the revision hash all see the bytes the author committed.
-    const revisionBytes = byteMode === "exact" ? bytes : undoCheckoutLineEndings(bytes);
+    // A caller that owns a canonical Team codec may opt into its LF identity.
+    // Wiki snapshots, local receipts, and other files retain their exact bytes.
+    const revisionBytes = byteMode === "exact" ? bytes : canonicalCheckoutBytes(bytes);
     return { bytes: revisionBytes, revision: revisionOf(revisionBytes), canonicalPath };
   } catch (error) {
     if (isNotFound(error)) {
@@ -139,7 +138,7 @@ export function tryReadContainedArtifact(
   projectRoot: string,
   path: RepoRelativePath,
   maxBytes: number,
-  byteMode: ArtifactByteMode = "canonical",
+  byteMode: ArtifactByteMode = "exact",
 ): ContainedArtifactRead | null {
   try {
     return readContainedArtifact(projectRoot, path, maxBytes, byteMode);
@@ -195,7 +194,7 @@ export function atomicReplaceArtifact(
   expectedRevision: Revision,
   bytes: string | Uint8Array,
   maxExistingBytes: number,
-  byteMode: ArtifactByteMode = "canonical",
+  byteMode: ArtifactByteMode = "exact",
 ): Revision {
   const { canonicalRoot, lexicalPath } = resolveArtifactPath(projectRoot, path);
   const parentRelative = dirname(path) as RepoRelativePath;
@@ -666,7 +665,7 @@ function assertExpectedRevision(
   path: RepoRelativePath,
   expectedRevision: Revision,
   maxBytes: number,
-  byteMode: ArtifactByteMode = "canonical",
+  byteMode: ArtifactByteMode = "exact",
 ): void {
   let current: ContainedArtifactRead;
   try {
@@ -901,56 +900,22 @@ const CARRIAGE_RETURN = 0x0d;
 const LINE_FEED = 0x0a;
 
 /**
- * Undo Git's checkout line-ending conversion on a canonical artifact.
+ * Undo Git checkout conversion only at an explicitly selected boundary.
  *
- * ## Why this exists
- *
- * Every `.mex/**` artifact is a byte-exact canonical document: it is written
- * with `\n`, its parser refuses any `\r`, and its revision is the SHA-256 of
- * its bytes. Git does not honour any of that. `core.autocrlf` defaults to true
- * on Windows, so a repository authored on macOS or Linux is checked out with
- * CRLF, and the result is a working tree that Git reports as **clean** while
- * every artifact in it fails to parse:
- *
- *     mex member list  →  VALIDATION_FAILED: Artifact must use LF line endings.
- *
- * Measured on a real cross-platform repository: the Hub started, and Members,
- * Activity and the Inbox were all empty or in error, because the Mac author's
- * artifacts could not be read at all on the Windows clone.
- *
- * ## Why a `.gitattributes` is not the fix on its own
- *
- * The obvious answer is `.mex/** text eol=lf`, and it is worth shipping — but
- * it is prevention, not a fix, and it does not reach the repositories that
- * already exist. The repository this was diagnosed on **already had that exact
- * line**, and was still entirely CRLF on disk: an attribute added after a
- * checkout does not rewrite the working tree, and because Git normalizes on
- * comparison, `git status` stays clean and nothing ever tells the user. A tool
- * that only works when every clone was made in the right order is not portable.
- *
- * ## Why normalizing here does not weaken the canonical guarantee
- *
- * The same reasoning as the scaffold-identity check: **Git's line-ending
- * conversion is a working-tree presentation, not a change to the content.** The
- * canonical form is a property of the committed artifact, and undoing the
- * conversion at the read boundary is what lets every platform see that one
- * canonical form. What mex writes is unchanged — still `\n`, still canonical —
- * and the parsers still reject genuinely non-canonical input, including a lone
- * `\r`, which Git never produces and which this deliberately leaves alone.
- *
- * It also removes a divergence that was there before any parse: `revisionOf` is
- * the hash of the exact bytes, so the same artifact hashed to **different
- * revisions on Windows and macOS**. Revisions travel between machines inside
- * other artifacts. They now agree.
- *
- * Byte-level on purpose: `0x0D` and `0x0A` cannot occur inside a multi-byte
- * UTF-8 sequence, so this is safe to do before decoding, and it runs before the
- * artifact is measured against its size bound rather than after.
+ * Canonical Team records are serialized as LF. Accept a uniform CRLF checkout
+ * at those explicit codec boundaries and the tracked-config comparison only.
+ * Mixed terminators and lone CR bytes remain unchanged for strict validation;
+ * arbitrary local files and Wiki byte revisions must not use this transform.
+ * Does not rewrite disk bytes or relax the original on-disk size bound.
  */
-function undoCheckoutLineEndings(bytes: Uint8Array): Uint8Array {
+export function canonicalCheckoutBytes(bytes: Uint8Array): Uint8Array {
   let converted = 0;
-  for (let index = 0; index + 1 < bytes.length; index += 1) {
-    if (bytes[index] === CARRIAGE_RETURN && bytes[index + 1] === LINE_FEED) converted += 1;
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (bytes[index] === CARRIAGE_RETURN && bytes[index + 1] !== LINE_FEED) return bytes;
+    if (bytes[index] === LINE_FEED) {
+      if (index === 0 || bytes[index - 1] !== CARRIAGE_RETURN) return bytes;
+      converted += 1;
+    }
   }
   if (converted === 0) return bytes;
   const canonical = new Uint8Array(bytes.length - converted);

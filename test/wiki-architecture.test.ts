@@ -736,8 +736,8 @@ describe("no unscoped scaffold writes", () => {
     //
     // `src/graph/runtime.ts` is the one that matters, and it is the reason this
     // rule exists: it writes into `.mex` Markdown files a human already wrote,
-    // twice — anchor reconciliation and grounding-baseline capture. Both go
-    // through the scoped splice since P2b, so neither is lossy, but both bypass
+    // during anchor reconciliation and grounding-baseline capture. Both use
+    // one staged publication helper and scoped splices, but both bypass
     // write-scope enforcement, the audit log and `wiki.readOnly`: a `mex ground`
     // run will happily write into `team/**`. Pinned rather than folded, because
     // routing `mex ground` through this pipeline changes shipped behaviour on a
@@ -767,6 +767,7 @@ describe("no unscoped scaffold writes", () => {
       "src/setup/population.ts": "writes and removes one ignored private prompt file for the interactive setup session",
       "src/team/artifacts/filesystem.ts": "atomically publishes bounded team-owned canonical artifacts",
       "src/team/local-state/receipt-signer.ts": "atomically provisions the bounded local-only C preview signing credential",
+      "src/team/relay/cli/local-preview.ts": "removes only the exact contained checkout-local Relay receipt after successful apply",
       "src/watch.ts": "installs and removes git hooks",
     };
 
@@ -776,10 +777,11 @@ describe("no unscoped scaffold writes", () => {
     // Vacuity guard: there were files outside the wiki engine to check.
     expect(outside.length).toBeGreaterThan(20);
 
-    // And exactly two sites inside the recorded exception, so a third added to
-    // the same file — the likelier way one appears — is caught as well.
-    const sites = [...withoutComments(read("src/graph/runtime.ts")).matchAll(/writeFileSync\s*\(/g)];
-    expect(sites).toHaveLength(2);
+    // Pin the shared exclusive staging write and rename publication, so a new
+    // direct writer in this existing exception is caught as well.
+    const runtime = withoutComments(read("src/graph/runtime.ts"));
+    expect([...runtime.matchAll(/writeFileSync\s*\(/g)]).toHaveLength(1);
+    expect([...runtime.matchAll(/renameSync\s*\(/g)]).toHaveLength(1);
   });
 
   it("does not constrain code outside the wiki engine", () => {

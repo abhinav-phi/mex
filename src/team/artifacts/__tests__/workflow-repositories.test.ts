@@ -40,6 +40,28 @@ afterEach(() => {
 });
 
 describe("canonical workflow repositories", () => {
+  it("preserves canonical revisions and update authority across CRLF checkouts", async () => {
+    const root = temporaryRoot();
+    const repository = new WorkstreamRepository(root);
+    const create = await repository.previewCreate(workstreamInput(WORKSTREAM, "First"));
+    const original = (await repository.apply(create, create.previewRevision)).artifact;
+    const file = join(root, original.sourcePath);
+    const crlf = readFileSync(file, "utf8").replaceAll("\n", "\r\n");
+    writeFileSync(file, crlf);
+    const before = statSync(file, { bigint: true });
+    expect(await repository.get(WORKSTREAM)).toEqual(original);
+    expect((await repository.list()).items).toEqual([original]);
+    const update = await repository.previewUpdate(WORKSTREAM, {
+      ...withoutId(workstreamInput(WORKSTREAM, "First active")), state: "active", updatedAt: LATER,
+    }, original.revision);
+    expect(readFileSync(file, "utf8")).toBe(crlf);
+    expect(statSync(file, { bigint: true }).mtimeNs).toBe(before.mtimeNs);
+    const updated = (await repository.apply(update, update.previewRevision)).artifact;
+    expect(updated).toMatchObject({ state: "active", entityRevision: 2 });
+    expect(readFileSync(file, "utf8")).toBe(update.document);
+    expect(readFileSync(file, "utf8")).not.toContain("\r");
+  });
+
   it("keeps preview non-mutating, applies exact bytes, increments semantic revision, and rejects stale pages", async () => {
     const root = temporaryRoot();
     const repository = new WorkstreamRepository(root);

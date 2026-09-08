@@ -120,8 +120,9 @@ import {
 import { artifactError } from "../artifacts/errors.js";
 import {
   assertContainedArtifactDirectory,
-  readContainedArtifact,
+  canonicalCheckoutBytes,
   tryReadContainedArtifact,
+  type ArtifactByteMode,
 } from "../artifacts/filesystem.js";
 import { revisionOf } from "../artifacts/revision.js";
 import { generateArtifactId, isArtifactId } from "../artifacts/ulid.js";
@@ -2644,6 +2645,7 @@ export class RepositoryTeamWorkflowPort<
           this.#root.path,
           expectation.target.path,
           recoveryFileByteLimit(expectation.target.path),
+          teamArtifactByteMode(expectation.target.path),
         );
         if ((artifact?.revision ?? null) !== expectation.revision) {
           throw targetRevisionChanged(expectation.target.path);
@@ -3342,6 +3344,7 @@ export class RepositoryTeamWorkflowPort<
         this.#root.path,
         change.path,
         recoveryFileByteLimit(change.path),
+        teamArtifactByteMode(change.path),
       );
       if ((observed?.revision ?? null) !== change.beforeRevision) {
         throw targetRevisionChanged(change.path);
@@ -3352,6 +3355,7 @@ export class RepositoryTeamWorkflowPort<
       this.#root.path,
       prepared.activity.sourcePath,
       ACTIVITY_ARTIFACT_MAX_BYTES,
+      "canonical",
     );
     if (observedActivity !== null) {
       throw targetRevisionChanged(prepared.activity.sourcePath);
@@ -3645,6 +3649,7 @@ export class RepositoryTeamWorkflowPort<
         this.#root.path,
         activity.path,
         ACTIVITY_ARTIFACT_MAX_BYTES,
+        "canonical",
       );
       if (occupied !== null) throw targetRevisionChanged(activity.path);
     }
@@ -3864,6 +3869,7 @@ export class RepositoryTeamWorkflowPort<
         this.#root.path,
         change.path,
         recoveryFileByteLimit(change.path),
+        "exact",
       );
       if ((observed?.revision ?? null) !== change.beforeRevision) {
         throw targetRevisionChanged(change.path);
@@ -3963,6 +3969,7 @@ export class RepositoryTeamWorkflowPort<
       this.#root.path,
       activity.path,
       ACTIVITY_ARTIFACT_MAX_BYTES,
+      "canonical",
     );
     if (stored?.revision !== activity.revision) throw incompleteRecovery();
   }
@@ -3979,6 +3986,7 @@ export class RepositoryTeamWorkflowPort<
       this.#root.path,
       activity.path,
       ACTIVITY_ARTIFACT_MAX_BYTES,
+      "canonical",
     )?.revision !== activity.revision;
   }
 
@@ -4093,6 +4101,7 @@ export class RepositoryTeamWorkflowPort<
         this.#root.path,
         effect.path,
         recoveryFileByteLimit(effect.path),
+        effect.namespace === "wiki" ? "exact" : teamArtifactByteMode(effect.path),
       );
       const revision = read?.revision ?? null;
       if (revision === effect.afterRevision) return "after";
@@ -4276,6 +4285,7 @@ export async function createRepositoryTeamWorkflowPort(
     root.path,
     ".mex/config.json",
     64 * 1024,
+    "exact",
   );
   if (config === null) {
     throw missingScaffoldIdentity();
@@ -4290,19 +4300,14 @@ export async function createRepositoryTeamWorkflowPort(
     path: ".mex/config.json",
     maxBytes: 64 * 1024,
   });
-  // Byte equality, deliberately: this attests the whole tracked config, not
-  // just its identity, and a local edit to any field means teammates are
-  // reading something this checkout is not.
-  //
-  // It compares cleanly across platforms because `tryReadContainedArtifact`
-  // undoes Git's checkout line-ending conversion — without that, `core.autocrlf`
-  // (true by default on Windows) made the working copy and its blob differ by
-  // one byte per line on a tree `git diff` calls clean, and the Hub refused to
-  // start for everyone who cloned.
+  // Compare the whole tracked config after undoing checkout CRLF conversion.
+  // Keep the observed file and revision exact so a concurrent line-ending edit
+  // still invalidates the second read below.
   if (
     trackedConfig === null
     || trackedConfig.truncated
-    || !Buffer.from(trackedConfig.content).equals(Buffer.from(config.bytes))
+    || !Buffer.from(canonicalCheckoutBytes(trackedConfig.content))
+      .equals(Buffer.from(canonicalCheckoutBytes(config.bytes)))
   ) {
     throw missingScaffoldIdentity();
   }
@@ -4312,6 +4317,7 @@ export async function createRepositoryTeamWorkflowPort(
     root.path,
     ".mex/config.json",
     64 * 1024,
+    "exact",
   );
   const confirmedAuthority = await git.getRepoState();
   if (
@@ -4391,10 +4397,19 @@ function inboxPublicPreviewFrom<TWikiPayload extends JsonValue>(
   return deepFreeze({
     valid: preview.valid,
     scope: preview.scope,
-    changes: preview.changes,
+    changes: preview.changes.map(inboxPresentationChange),
     localChanges: preview.localChanges as TeamInboxSpecPreviewEnvelope["preview"]["localChanges"],
     diagnostics: preview.diagnostics,
   });
+}
+
+/** Show CR unambiguously in the signed display; executable text and hashes stay exact. */
+function inboxPresentationChange(change: FileChange): FileChange {
+  if (!change.diff.includes("\r")) return change;
+  return {
+    ...change,
+    diff: `Carriage returns are displayed as \\r; literal backslashes as \\\\ below.\n${change.diff.replaceAll("\\", "\\\\").replaceAll("\r", "\\r")}`,
+  };
 }
 
 function relayPublicPreviewFrom<TWikiPayload extends JsonValue>(
@@ -6241,6 +6256,27 @@ function recoveryFileByteLimit(path: RepoRelativePath): number {
   return path === ".mex/events/operations.jsonl"
     ? MAX_WIKI_OPERATION_LOG_BYTES
     : MAX_WIKI_RECOVERY_FILE_BYTES;
+}
+
+/** Only serializer-owned Team records use portable LF revisions. */
+function teamArtifactByteMode(path: RepoRelativePath): ArtifactByteMode {
+  if (!path.endsWith(".md")) return "exact";
+  const id = path.slice(path.lastIndexOf("/") + 1, -3);
+  for (const [prefix, pathOf] of [
+    ["member", memberArtifactPath],
+    ["ws", workstreamArtifactPath],
+    ["proposal", inboxProposalArtifactPath],
+    ["relay", relayArtifactPath],
+    ["playbook", playbookArtifactPath],
+    ["run", playbookRunArtifactPath],
+  ] as const) {
+    if (isArtifactId(id, prefix) && pathOf(id) === path) return "canonical";
+  }
+  if (isArtifactId(id, "event")
+    && /^\.mex\/events\/activity\/\d{4}-(?:0[1-9]|1[0-2])\/[^/]+\.md$/u.test(path)) {
+    return "canonical";
+  }
+  return "exact";
 }
 
 function isWikiOperationLogEffect(effect: CanonicalWorkflowEffect): boolean {

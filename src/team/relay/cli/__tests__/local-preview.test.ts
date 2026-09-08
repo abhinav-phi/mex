@@ -189,6 +189,21 @@ describe("pending local Relay previews", () => {
     expect(readFileSync(path, "utf8")).toBe("replacement receipt\n");
   });
 
+  it("retains a receipt changed only by line endings while apply was running", async () => {
+    const root = fixture();
+    const command = request();
+    const path = receiptPath(root, command);
+    let changed = "";
+    const result = await withLocalRelayPreview(root, command, async () => preview(command), async () => {
+      changed = readFileSync(path, "utf8").replaceAll("\n", "\r\n");
+      writeFileSync(path, changed, { mode: 0o600 });
+      return { applied: true };
+    });
+    expect(result).toEqual({ applied: true });
+    expect(changed).toContain("\r\n");
+    expect(readFileSync(path, "utf8")).toBe(changed);
+  });
+
   it("bounds pending count without evicting receipts and still permits an existing retry", async () => {
     const root = fixture();
     const command = request();

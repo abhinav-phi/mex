@@ -2893,11 +2893,11 @@ async function inspectTeamAvailability(
   projectRoot: string,
 ): Promise<CapabilityUnavailableReason | null> {
   try {
-    const [{ createRepositoryGitPort }, { tryReadContainedArtifact }] = await Promise.all([
+    const [{ createRepositoryGitPort }, { tryReadContainedArtifact, canonicalCheckoutBytes }] = await Promise.all([
       import("./team/git/git-port.js"),
       import("./team/artifacts/filesystem.js"),
     ]);
-    const config = tryReadContainedArtifact(projectRoot, ".mex/config.json", MAX_CONFIG_BYTES);
+    const config = tryReadContainedArtifact(projectRoot, ".mex/config.json", MAX_CONFIG_BYTES, "exact");
     if (config === null) {
       return fixedReason(
         "TEAM_SCAFFOLD_IDENTITY_MISSING",
@@ -2924,17 +2924,10 @@ async function inspectTeamAvailability(
         "Team workflows require .mex/config.json to be tracked at the current repository HEAD.",
       );
     }
-    // Byte equality, deliberately: this attests the **whole** tracked config,
-    // not just its identity. A local edit to any field — `scaffold_name`, say —
-    // means teammates are reading something this checkout is not, and Team
-    // workflows are correctly unavailable until it is committed.
-    //
-    // This compares cleanly across platforms because `tryReadContainedArtifact`
-    // undoes Git's checkout line-ending conversion, so a CRLF working copy and
-    // its LF blob agree here. Comparing `scaffold_id` alone would also have
-    // survived that, and was tried — it silently dropped the attestation above,
-    // which `test/cli.test.ts` asserts and Windows could not have caught.
-    if (tracked.truncated || !Buffer.from(tracked.content).equals(Buffer.from(config.bytes))) {
+    // Attest the whole tracked config, allowing only checkout CRLF conversion.
+    // The stored bytes and revision stay exact for the second-read race check.
+    if (tracked.truncated || !Buffer.from(canonicalCheckoutBytes(tracked.content))
+      .equals(Buffer.from(canonicalCheckoutBytes(config.bytes)))) {
       return fixedReason(
         "TEAM_SCAFFOLD_IDENTITY_CHANGED",
         "Team workflows require the working .mex/config.json to match the current repository HEAD.",
@@ -2952,6 +2945,7 @@ async function inspectTeamAvailability(
       projectRoot,
       ".mex/config.json",
       MAX_CONFIG_BYTES,
+      "exact",
     );
     const after = await git.getRepoState();
     if (
