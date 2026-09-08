@@ -138,6 +138,31 @@ describe("graph reads after a config-only change", () => {
     expect(ofType(records, "result").every((record) => record.stale === undefined)).toBe(true);
   });
 
+  it("answers scope, labelled, on the same gate", async () => {
+    const { root } = await fixture();
+    bumpDependency(root);
+    const records = await capture((deps) => runGraphScope("normalize request path", root, deps, {}));
+    expect(errorRecord(records)).toBeUndefined();
+    expect(statusRecord(records)).toMatchObject({
+      graphStatus: "stale",
+      reason: "config-drift",
+      recoveryCommand: "mex graph refresh",
+    });
+    const summary = records.find((record) => record.type === "summary");
+    expect(summary?.warnings).toContainEqual(expect.stringContaining("build configuration changed"));
+  });
+
+  it("keeps answering scope when indexed source drifted, as it always did", async () => {
+    const { root } = await fixture();
+    writeFileSync(join(root, "packages", "api", "src", "index.ts"),
+      "export function normalizePath(path: string): string {\n  return path;\n}\n");
+    const records = await capture((deps) => runGraphScope("normalize request path", root, deps, {}));
+    expect(errorRecord(records)).toBeUndefined();
+    expect(statusRecord(records)).toBeUndefined();
+    const health = records.find((record) => record.type === "health");
+    expect(health?.staleFiles).toContain("packages/api/src/index.ts");
+  });
+
   it("still refuses every command when engine identity does not match", async () => {
     const { root, targetId } = await fixture();
     bumpDependency(root);

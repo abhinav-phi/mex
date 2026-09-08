@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { globSync } from "glob";
-import { graphManifest } from "./engine-impl.js";
+import { graphManifest, graphManifestDiffersOnlyByConfig } from "./engine-impl.js";
 import type { GraphEngine, GraphNeighbor, IndexedFileInfo } from "./engine.js";
 import type { SqliteDatabase } from "./db/sqlite.js";
 import { isSupportedSourceFile, SUPPORTED_SOURCE_GLOB } from "./extraction/index.js";
@@ -16,7 +16,6 @@ import {
   BudgetLedger, estimateTokens, resolveOptions, resolveScopeOptions, SCHEMA_VERSION, type AgentOptions,
 } from "./agent-protocol.js";
 import { identifierComponents, isLowValueGraphPath, planGraphQuery } from "./retrieval/query.js";
-import { GraphRebuildRequiredError } from "./errors.js";
 import {
   loadFreshGraphReadSession,
   openImmutableGraphReadSessionSync,
@@ -24,6 +23,7 @@ import {
   type GraphReadValidation,
   type LoadFreshGraphReadSessionOptions,
 } from "./read-session.js";
+import { GRAPH_SNAPSHOT_METADATA_KEY, parseGraphSnapshot } from "./snapshot.js";
 import type { GraphStatus } from "../team/contracts/graph.js";
 import type { ReadObservationClass } from "./status.js";
 
@@ -503,7 +503,9 @@ export function runGraphScope(
     // flow/fact capacity spill back into deferred source records.
     const plannedFlowRecords = trustworthyFlows.flatMap((flow) => {
       const record = scopeFlowRecord(flow, nodeById, opts.maxFlowSteps);
-      return record ? [record] : [];
+      // A flow is a chain of resolved edges, so drifted compiler inputs can
+      // change where it goes even when every file in it is current.
+      return record ? [markResolutionStale(session, record)] : [];
     });
     const summaryTokenReserve = estimateTokens(summarySkeleton([])) + RESERVE_PAD;
     const sourceRecords: Rec[] = [];
@@ -685,6 +687,9 @@ export function runGraphScope(
       ...(highPriorityEvidenceOmitted
         ? [`High-priority evidence omitted: ${omittedHighPrioritySourceFiles.length} source file(s), ${omittedHighPriorityFlowSteps} flow step(s).`]
         : []),
+      ...(isConfigDrifted(session)
+        ? ["Graph build configuration changed after this index was built; flows and other resolved relationships may be out of date."]
+        : []),
     ];
     const status = returnedFiles.length === 0 && facts.length === 0 && flowRecords.length === 0
       ? "no-match"
@@ -707,6 +712,7 @@ export function runGraphScope(
     }
 
     emitAll(write, meta, [
+      ...configDriftRecords(session),
       ...healthRecords,
       ...sourceRecords,
       ...flowRecords,
@@ -1895,7 +1901,7 @@ function withAgentGraphSession(
   // them synchronous so protocol goldens and deterministic unit harnesses do
   // not acquire filesystem/Git behavior they did not request.
   if (deps.open) return runInjectedAgentSession(rootDir, deps.open, write, task);
-  if (mode === "stable") return runStableAgentSession(rootDir, write, task);
+  if (mode === "stable") return runScopeAgentSession(rootDir, write, task);
   return runFreshAgentSession(rootDir, deps as AgentCommandInternalDeps, write, task);
 }
 
@@ -1918,7 +1924,24 @@ function runInjectedAgentSession(
   }
 }
 
-function runStableAgentSession(
+/**
+ * Scope's gate, which asks the same question as the targeted commands and
+ * tolerates a different answer.
+ *
+ * Scope owns a per-file freshness pass: it hashes every indexed file's live
+ * source, discards the graph-derived facts of the ones that moved, and
+ * re-admits them as text-only evidence. Drifted source is therefore something
+ * it handles rather than something it must refuse — which is why it does not
+ * adopt the exact-freshness handshake the targeted commands use. Binding it to
+ * that handshake would make one edited file refuse a whole retrieval that
+ * currently answers.
+ *
+ * What it could not do was tell a store built by other code apart from one
+ * whose build inputs moved underneath it. It now asks that question through the
+ * same classifier, and answers a config-drifted store labelled instead of
+ * demanding a rebuild.
+ */
+function runScopeAgentSession(
   rootDir: string,
   write: (line: string) => void,
   task: AgentSessionTask,
@@ -1933,11 +1956,14 @@ function runStableAgentSession(
     }
     const opened = openImmutableGraphReadSessionSync(rootDir, dbPath);
     session = { ...opened };
-    const storedManifest = session.db.prepare(
-      "SELECT value FROM project_metadata WHERE key = 'manifest_hash'",
-    ).get() as { value: string } | undefined;
-    if (storedManifest?.value !== graphManifest(resolve(rootDir)).manifestHash) {
-      throw new GraphRebuildRequiredError("The code graph build manifest is stale.");
+    const stored = storedManifestIdentity(session.db);
+    const current = graphManifest(resolve(rootDir));
+    if (stored.manifestHash !== current.manifestHash) {
+      if (!graphManifestDiffersOnlyByConfig(current, stored.manifestHash, stored.configHash)) {
+        manifestUnavailable(write);
+        return;
+      }
+      session = { ...session, observationClass: "config-drifted" };
     }
     task(session, (line) => pending.push(line));
     const validation = session.validate?.() ?? { valid: true };
@@ -2033,17 +2059,20 @@ function markResolutionStale(session: AgentGraphSession, record: Rec): Rec {
  * refusal used to carry, as a record rather than an exception.
  */
 function configDriftRecords(session: AgentGraphSession): Rec[] {
+  if (!isConfigDrifted(session)) return [];
+  // Scope classifies from the store's own manifest and has no inspection to
+  // quote, so the record degrades to its fixed half rather than disappearing.
   const status = session.graphStatus;
-  if (!isConfigDrifted(session) || !status) return [];
-  const drift = status.diagnostics.find((entry) => entry.code === "GRAPH_SEMANTIC_INPUTS_CHANGED")
-    ?? status.diagnostics.find((entry) => entry.code === "GRAPH_BUILD_MANIFEST_CHANGED");
-  const changedPaths = [...new Set(status.diagnostics
+  const drift = status?.diagnostics.find((entry) => entry.code === "GRAPH_SEMANTIC_INPUTS_CHANGED")
+    ?? status?.diagnostics.find((entry) => entry.code === "GRAPH_BUILD_MANIFEST_CHANGED");
+  const changedPaths = [...new Set((status?.diagnostics ?? [])
     .filter((entry) => entry.code === "GRAPH_SEMANTIC_INPUT_CHANGED")
     .map((entry) => (entry as { path?: unknown }).path)
     .filter((path): path is string => typeof path === "string"))].sort();
-  const recoveryCommand = status.diagnostics
+  const recoveryCommand = (status?.diagnostics ?? [])
     .flatMap((entry) => entry.remediation ?? [])
-    .find((entry) => entry.command)?.command;
+    .find((entry) => entry.command)?.command
+    ?? "mex graph refresh";
   return [{
     type: "status",
     graphStatus: "stale",
@@ -2058,6 +2087,39 @@ function configDriftRecords(session: AgentGraphSession): Rec[] {
     ...(changedPaths.length > 0 ? { changedInputs: changedPaths } : {}),
     ...(recoveryCommand ? { recoveryCommand } : {}),
   }];
+}
+
+/** The build identity a store recorded, preferring its snapshot over loose metadata. */
+function storedManifestIdentity(db: SqliteDatabase): {
+  manifestHash: string | undefined;
+  configHash: string | undefined;
+} {
+  const metadata = (key: string): string | undefined => {
+    const row = db.prepare("SELECT value FROM project_metadata WHERE key = ?").get(key) as
+      { value?: unknown } | undefined;
+    return typeof row?.value === "string" ? row.value : undefined;
+  };
+  const snapshot = parseGraphSnapshot(metadata(GRAPH_SNAPSHOT_METADATA_KEY) ?? null);
+  return {
+    manifestHash: snapshot?.manifestHash ?? metadata("manifest_hash"),
+    configHash: snapshot?.configHash ?? metadata("config_hash"),
+  };
+}
+
+/**
+ * One refusal shape for every command. Scope used to raise its own error code
+ * for the same condition the targeted commands reported as unavailable, which
+ * left two vocabularies for one state.
+ */
+function manifestUnavailable(write: (line: string) => void): void {
+  writeJson(write, {
+    type: "error",
+    code: "GRAPH_UNAVAILABLE",
+    graphStatus: "rebuild_required",
+    reasonCode: "GRAPH_BUILD_MANIFEST_CHANGED",
+    message: "The graph was built by a different indexing engine; no graph-derived result was returned.",
+    recoveryCommand: "mex graph rebuild",
+  });
 }
 
 function graphStatusUnavailable(
