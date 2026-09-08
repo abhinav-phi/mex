@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve, relative } from "node:path";
 import { globSync } from "glob";
 import chalk from "chalk";
@@ -105,14 +105,31 @@ function scaffoldHeartbeatFiles(
   scaffoldRoot: string,
   patterns: readonly string[] = DEFAULT_HEARTBEAT_PATTERNS,
 ): string[] {
-  return patterns.flatMap((pattern) =>
+  // follow: true supports symlinked scaffold content, and deduplicating by
+  // real path keeps a file reached through two links a single heartbeat
+  // entry; glob itself bounds symlink loops, so runaway scans stay off the
+  // table (#40).
+  const seen = new Set<string>();
+  const files: string[] = [];
+  for (const file of patterns.flatMap((pattern) =>
     globSync(pattern, {
       cwd: scaffoldRoot,
       absolute: true,
       follow: true,
       nodir: true,
     }),
-  );
+  )) {
+    let real: string;
+    try {
+      real = realpathSync(file);
+    } catch {
+      real = file;
+    }
+    if (seen.has(real)) continue;
+    seen.add(real);
+    files.push(file);
+  }
+  return files;
 }
 
 function isMemoryCleanupDue(projectRoot: string, thresholdDays: number, now: Date): boolean {

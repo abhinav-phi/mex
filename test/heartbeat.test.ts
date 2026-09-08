@@ -104,3 +104,31 @@ describe("zero-day heartbeat thresholds (#42)", () => {
     expect(result.ok).toBe(true);
   });
 });
+
+describe("symlinked scaffold files (#40)", () => {
+  it("counts a file reached through two glob paths exactly once", () => {
+    const root = mkdtempSync(join(tmpdir(), "mex-heartbeat-symlink-"));
+    try {
+      mkdirSync(join(root, ".mex/context"), { recursive: true });
+      mkdirSync(join(root, ".mex/extra"), { recursive: true });
+      const real = join(root, ".mex/context/architecture.md");
+      writeFileSync(real, frontmatter("architecture", "2026-05-01"));
+      // Same content reachable through a second pattern's directory.
+      let linked = true;
+      try {
+        symlinkSync(real, join(root, ".mex/extra/architecture.md"));
+      } catch {
+        linked = false; // Windows without symlink privilege: skip assert
+      }
+      const result = checkHeartbeat({
+        projectRoot: root,
+        scaffoldRoot: join(root, ".mex"),
+        aiTools: [],
+      }, new Date("2026-05-14T00:00:00Z"));
+      if (!linked) return;
+      expect(result.staleFiles.filter((f) => f.file.endsWith("architecture.md"))).toHaveLength(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
