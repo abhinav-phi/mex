@@ -127,6 +127,100 @@ legacy checks running” case in
 Unsupported source-language files are also skipped. A missing extractor does
 not make the rest of setup or drift checking fail.
 
+### Files the corpus policy will not index
+
+The graph applies a bounded per-file size ceiling (2 MB) so one pathological
+file cannot exhaust memory. A file over that ceiling is **skipped, not fatal**:
+the rest of the repository is indexed normally, and the skipped files are
+reported by name, size and limit in `mex graph` output and in the `skipped`
+array of its `--json` result.
+
+Corpus-*wide* ceilings still abort the run. They describe the whole build and
+there is no honest partial answer to "this repository is too large to index
+within the bounded policy".
+
+### Config inputs outside the project
+
+mex never reads a file outside the repository root, and a TypeScript config
+routinely points at one: `"extends": "some-package/tsconfig"` resolves through
+`node_modules`, which any hoisted pnpm/yarn layout — or a monorepo sub-package
+indexed on its own — places above the indexed root.
+
+Such an input is **declined, not fatal**. The build finishes, the affected
+project's type resolution is less complete than its config asks for, and the
+declined inputs are reported by dependency specifier (never by absolute path)
+in `mex graph` output and in the `declinedInputs` array of its `--json` result.
+The same applies to a `tsconfig` `include` or project `reference` that points
+above the root.
+
+The containment guard itself is unchanged: nothing outside the root is read,
+and nothing outside the root enters the graph's provenance.
+
+### Excluding paths from the graph
+
+`node_modules`, `.git`, `dist`, `build`, `.mex`, `coverage`, `.next` and `out`
+are always excluded. A repository can exclude more by listing globs under
+`graph.ignore` in `.mex/config.json`:
+
+```json
+{
+  "graph": {
+    "ignore": ["vendor/**", "**/*.generated.ts"]
+  }
+}
+```
+
+The list is **additive**: configured globs are appended to the built-in ones
+and cannot un-ignore them, so `node_modules` and `.mex` stay excluded whatever
+the configuration says. Globs are repository-relative; absolute paths and
+upward traversal are ignored, and the list is bounded. A missing or malformed
+config simply contributes no extra globs rather than failing a build.
+
+Changing this list changes which files the graph describes, so it changes the
+build manifest and the next `mex graph status` will report the index as stale
+until it is rebuilt.
+
+## Unresolved references
+
+Extraction records every reference it sees. The resolver then binds what it
+can to a declaration and emits an edge; what it cannot bind stays recorded as
+an unresolved reference. Those records are the graph being honest about its own
+blind spots: a name a file referenced, that the resolver could not decide the
+meaning of.
+
+They matter for `who-calls`. A dynamically generated method has real call sites
+and no literal declaration, so no node resolves and the structural answer is
+"not found" — accurate, and useless as a next step. When `who-calls` cannot
+resolve its target, it now looks the name up among the recorded unresolved
+references and reports those call sites:
+
+```bash
+mex graph query who-calls mark_failed
+```
+
+```json
+{"type":"unresolved-reference","relation":"who-calls","target":"mark_failed",
+ "name":"mark_failed","referenceKind":"calls","resolution":"unresolved",
+ "file":"app/models/job.rb","line":42,"col":8,"fromNode":"function:…",
+ "receiver":"job"}
+```
+
+Three properties of that output are deliberate:
+
+- **It is not a `result` record.** An unresolved reference is not a resolved
+  graph fact and an agent must not be able to confuse the two, so it carries
+  its own record type.
+- **It is capped and charged to the same output budget** as every other
+  response. Common names accumulate hundreds of unresolved references, and an
+  uncapped fallback on a hot name would flood the caller. The `summary` reports
+  the total that matched alongside what was returned.
+- **The response is a normal one**, with `meta` and `summary`, and a `summary`
+  whose `status` is `partial` and `evidenceStrength` is `weak`.
+
+A name with no declaration *and* no recorded reference still abstains with
+`TARGET_NOT_FOUND`. `where-defined` and `what-calls` are unchanged: they
+either resolve the requested declaration exactly or abstain.
+
 ## Known limitations
 
 - **Ambiguous references stay unresolved.** The base resolver prefers a
@@ -139,10 +233,9 @@ not make the rest of setup or drift checking fail.
   reflection, dependency injection, monkey-patching, or computed calls.
 - **Generated code is path-filtered, not identified semantically.** Common
   output trees such as `node_modules`, `dist`, `build`, `.next`, `out`,
-  `coverage`, and `.mex` are excluded by the source globs in
-  [`engine-impl.ts`](../src/graph/engine-impl.ts) and
-  [`runtime.ts`](../src/graph/runtime.ts). Generated files outside those paths
-  may still be indexed.
+  `coverage`, and `.mex` are excluded by the corpus policy in
+  [`corpus-policy.ts`](../src/graph/corpus-policy.ts). Generated files outside
+  those paths may still be indexed; add a `graph.ignore` glob to exclude them.
 - **Framework behavior is opt-in and narrow.** Express route-to-handler binding
   is the only framework fixture in v0.7.0. Other frameworks remain unsupported
   until their language extractor and resolver work merges.

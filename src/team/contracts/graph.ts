@@ -76,6 +76,21 @@ export interface GraphMaintenanceOptions {
   onProgress?: (progress: GraphMaintenanceProgress) => void;
 }
 
+/**
+ * One repository file the bounded corpus policy declined to index.
+ *
+ * Reported rather than fatal: the rest of the repository indexed normally,
+ * and this is how a user learns why a symbol is absent from the graph.
+ */
+export interface GraphSkippedSource {
+  filePath: RepoRelativePath;
+  reason: "corpus-limit";
+  limit: string;
+  limitBytes: number;
+  observedBytes?: number;
+  message: string;
+}
+
 /** Port mutations return only successful results; failures throw typed errors. */
 export interface GraphRefreshResult extends IndexJobResult {
   state: "succeeded";
@@ -83,6 +98,22 @@ export interface GraphRefreshResult extends IndexJobResult {
   filesIndexed: number;
   nodesCreated: number;
   edgesCreated: number;
+  /** Optional and additive; absent when every discovered file was indexed. */
+  skipped?: readonly GraphSkippedSource[];
+  /** Compiler config inputs outside the project corpus that were declined. */
+  declinedInputs?: readonly GraphDeclinedInput[];
+}
+
+/**
+ * A compiler config input the containment policy declined to read.
+ *
+ * No source file is missing from the graph, but the affected project's type
+ * resolution is less complete than it looks, so it is reported.
+ */
+export interface GraphDeclinedInput {
+  filePath: string;
+  reason: "outside-project-corpus";
+  message: string;
 }
 
 export interface GraphPage<T> extends Page<T> {

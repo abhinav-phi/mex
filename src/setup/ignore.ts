@@ -116,6 +116,30 @@ export function ensureSetupIgnoreProtection(
   return result;
 }
 
+/**
+ * Best-effort variant for the commands that create a local store outside
+ * `mex setup` — `mex graph rebuild/refresh/repair` and `mex wiki rebuild-index`.
+ *
+ * Issue #110 reported the consequence of not doing this: `mex graph` in a
+ * checkout that had never run setup left `graph.db`, `-wal` and `-shm`
+ * untracked, so the next `git add -A` committed a database. Setup writes these
+ * rules at step 2, long before it builds anything, but a store writer invoked
+ * on its own never passed through setup.
+ *
+ * Never throws. A store build must not fail because a `.gitignore` could not be
+ * written — the store is still valid, the user is merely unprotected — so the
+ * caller is handed the reason and decides how loudly to say so.
+ */
+export function tryEnsureSetupIgnoreProtection(
+  projectRoot: string,
+): { ok: true; result: SetupIgnoreProtectionResult } | { ok: false; reason: string } {
+  try {
+    return { ok: true, result: ensureSetupIgnoreProtection({ projectRoot }) };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 /** Render one concise setup status line without coupling the helper to the CLI. */
 export function renderSetupIgnoreProtection(result: SetupIgnoreProtectionResult): string {
   if (!result.changed) {

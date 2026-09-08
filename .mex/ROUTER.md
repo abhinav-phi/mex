@@ -126,6 +126,10 @@ Then read this file fully before doing anything else in this session.
   files during failure cleanup. The expanded Windows/macOS CI job supplies real
   platform verification; current results and remaining gates are in the release
   plan. Graph extraction, public exports, and on-disk schemas are unchanged.
+- The completed release phases are shared on `codex/0.8.1` in draft PR #176.
+  Main's subsequent Graph/FTS5 fixes are integrated; the release plan records
+  the import-only conflict resolution and distinguishes this main sync from
+  the isolated Windows changes. Runner verification is attached to the PR.
 - Explicit graph status, refresh, and isolated rebuild/recovery commands preserve
   the last trustworthy index behind one cross-process maintenance lease.
 - Targeted graph get/query/impact consumers use one provenance-bound immutable

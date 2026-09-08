@@ -155,21 +155,39 @@ describe("inspectGraphStatus", () => {
     expect(treeState(root)).toEqual(before);
   });
 
-  it("preserves a path-free corpus-limit diagnostic when changed-path output is disabled", async () => {
-    const root = temporaryRoot("mex-graph-status-corpus-limit-");
+  // One oversized file is a skipped file, not a corpus breach. This test used
+  // to assert the opposite — that a single oversized source raised the
+  // path-free GRAPH_SOURCE_CORPUS_LIMIT_EXCEEDED — which is the same defect
+  // that let one 34 MB generated file abort a 3,259-file build. The invariant
+  // that test actually guarded (a path-free corpus diagnostic survives when
+  // per-path diagnostics are suppressed) is covered by the config-corpus case
+  // immediately below, which still trips a genuine corpus-wide ceiling.
+  it("skips one oversized source file, as a bounded per-path diagnostic", async () => {
+    const root = temporaryRoot("mex-graph-status-oversized-file-");
+    source(root, "src/service.ts", "export const service = true;\n");
     source(
       root,
       "src/oversized.py",
       "x".repeat(GRAPH_CORPUS_LIMITS.maxSourceFileBytes + 1),
     );
 
-    const status = await inspect(root, 0);
+    const suppressed = await inspect(root, 0);
+    const reported = await inspect(root, 10);
 
-    expect(status.diagnostics).toContainEqual({
-      code: "GRAPH_SOURCE_CORPUS_LIMIT_EXCEEDED",
+    // The skip names a path, so it is bounded like every other path diagnostic.
+    expect(suppressed.diagnostics).not.toContainEqual(
+      expect.objectContaining({ code: "GRAPH_SOURCE_FILE_SKIPPED" }),
+    );
+    expect(suppressed.diagnostics).not.toContainEqual(
+      expect.objectContaining({ code: "GRAPH_SOURCE_CORPUS_LIMIT_EXCEEDED" }),
+    );
+    expect(reported.diagnostics).toContainEqual(expect.objectContaining({
+      code: "GRAPH_SOURCE_FILE_SKIPPED",
       severity: "warning",
-      message: "The supported source corpus exceeds MEX's bounded inspection policy.",
-    });
+      path: "src/oversized.py",
+    }));
+    // The rest of the repository is still observed: the walk did not stop.
+    expect(reported.changes.added).toEqual(["src/service.ts"]);
   });
 
   it("classifies a bounded manifest refusal separately from generic inspection failure", async () => {

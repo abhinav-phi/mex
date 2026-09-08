@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - `mex graph` now fails with an actionable message naming the running Node version when the built-in `node:sqlite` module lacks FTS5 support, instead of surfacing SQLite's raw `no such module: fts5` on the first schema statement that needs it. FTS5 availability is not guaranteed by every Node build/version inside the documented `engines` range (#110).
+- The FTS5 preflight now covers every consumer, not only `mex graph`'s writable open: read-only and immutable graph opens (`mex check`, `graph scope`/`query`/`get`, `impact`) and the wiki index, whose `wiki_fts` table has the same dependency. `mex wiki rebuild-index` reports the new `WIKI_INDEX_FTS5_UNAVAILABLE` diagnostic rather than `WIKI_INDEX_REBUILD_REQUIRED`, which would have sent users round a loop rebuilding an index no rebuild can fix (#110).
+- The wiki index's two direct read paths — contract status inspection and the read session — also preflight FTS5 now, instead of letting SQLite's raw error escape. Reachable by building the index on one Node and reading it on another (#110).
+- COMPATIBILITY.md documents the FTS5 requirement, a one-line command to check the Node you actually run, and that the v0.6.3 fallback predates the code graph. The preflight's error message pointed at a document that said nothing about FTS5 (#110).
+- `mex graph rebuild`/`refresh`/`repair` and `mex wiki rebuild-index` now ensure `.mex/.gitignore` exists before creating a store. Only `mex setup` did this, so building a store in a checkout that had never run setup left `graph.db`, `-wal` and `-shm` untracked, ready for the next `git add -A` to commit (#110).
+
+### Added
+- `mex telemetry disable` and `mex telemetry enable`, writing the same `~/.mex/config.json` key as `mex config set telemetry on|off`. `mex telemetry --help` and `mex telemetry status` now name the `DO_NOT_TRACK=1` and `MEX_TELEMETRY=0` env opt-outs and say which one is in effect; previously the only switch lived under `config` and the env vars appeared solely in the first-run notice (#110).
 
 ## [0.8.0] - 2026-09-02
 

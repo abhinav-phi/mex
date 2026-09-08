@@ -38,6 +38,7 @@
 import chalk from "chalk";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { tryEnsureSetupIgnoreProtection } from "../../setup/ignore.js";
 import type { WikiDiagnostic } from "../model/diagnostic.js";
 import { inspectDirectWikiSpecMutation } from "./spec-authoring-boundary.js";
 import {
@@ -312,6 +313,14 @@ export function runGraph(io: CommandIo, flags: CommandFlags): void {
 }
 
 export function runRebuildIndex(io: CommandIo, flags: CommandFlags): void {
+  // The only command that creates `wiki.db`, and it can run in a checkout that
+  // never went through `mex setup` — which is how issue #110's reporter ended
+  // up with an untracked database. Best effort: an unwritable `.gitignore` is
+  // worth a line of warning, not a failed rebuild.
+  const projectRoot = io.projectRoot ?? resolve(io.scaffoldRoot, "..");
+  const protection = tryEnsureSetupIgnoreProtection(projectRoot);
+  if (!protection.ok) io.write(chalk.dim(`could not ignore local MEX data: ${protection.reason}`));
+
   emit(io, wikiRebuildIndex(serviceOptions(io)), flags, (data) => {
     io.write(`Indexed ${data.entityCount} entities from ${data.fileCount} file(s) into ${data.indexPath}`);
     for (const swept of data.sweptTempFiles) io.write(chalk.dim(`removed a crashed build's temp index: ${swept}`));

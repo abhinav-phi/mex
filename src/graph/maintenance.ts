@@ -36,6 +36,7 @@ import {
   inspectGraphStatus,
 } from "./status.js";
 import { GRAPH_SNAPSHOT_METADATA_KEY } from "./snapshot.js";
+import { tryEnsureSetupIgnoreProtection } from "../setup/ignore.js";
 
 const LOCK_FILE = "graph.db.lock";
 const LOCK_GATE_FILE = "graph.db.lock.gate";
@@ -235,6 +236,22 @@ export function acquireGraphMaintenanceLease(
       "GRAPH_INDEX_MISSING",
       "The graph index does not exist. Run `mex graph rebuild` first.",
     );
+  }
+
+  // Every graph writer funnels through here, so this is the one place that can
+  // guarantee a store is ignored by Git before it exists — including the runs
+  // that never went through `mex setup` (issue #110). Deliberately after the
+  // missing-index refusal, so a mistyped `refresh` in an unindexed checkout
+  // leaves nothing behind.
+  const protection = tryEnsureSetupIgnoreProtection(projectRoot);
+  if (!protection.ok) {
+    // Reported, never fatal: the store is still valid, the checkout is merely
+    // unprotected. Emitted directly rather than through `progress` so it cannot
+    // turn an already-cancelled signal into a throw before the lease exists.
+    options.onProgress?.({
+      phase: "discover",
+      message: `Could not ignore local MEX data: ${protection.reason}`,
+    });
   }
   const lock = acquireMaintenanceLock(paths, internalOptions);
   let released = false;
@@ -1295,6 +1312,10 @@ function maintenanceResult(
     filesIndexed: build.filesIndexed,
     nodesCreated: build.nodesCreated,
     edgesCreated: build.edgesCreated,
+    ...(build.skipped && build.skipped.length > 0 ? { skipped: build.skipped } : {}),
+    ...(build.declinedInputs && build.declinedInputs.length > 0
+      ? { declinedInputs: build.declinedInputs }
+      : {}),
     ...(published.recoveryPath ? { recoveryPath: published.recoveryPath } : {}),
   };
 }

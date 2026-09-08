@@ -1069,7 +1069,74 @@ program
 // ── Telemetry ──
 const telemetryCmd = program
   .command("telemetry")
-  .description("Telemetry transparency commands");
+  .description("Telemetry transparency commands, including the opt-out")
+  .addHelpText(
+    "after",
+    "\nOpting out:\n"
+      + "  mex telemetry disable   Turn telemetry off for every project (~/.mex/config.json)\n"
+      + "  DO_NOT_TRACK=1          Standard cross-tool opt-out, honoured per invocation\n"
+      + "  MEX_TELEMETRY=0         mex-specific env opt-out, honoured per invocation\n"
+      + "\nEnvironment variables win over the stored setting. `mex telemetry status`\n"
+      + "reports which one is in effect.\n",
+  );
+
+/** Explain an opt-out reason in terms of the thing the user would have to change. */
+function describeTelemetryReason(reason: string | undefined): string {
+  switch (reason) {
+    case "DO_NOT_TRACK":
+      return "The DO_NOT_TRACK environment variable is set to 1.";
+    case "MEX_TELEMETRY":
+      return "The MEX_TELEMETRY environment variable is set to 0.";
+    case "dev":
+      return "This is a mex development checkout; telemetry never runs from one.";
+    case "config":
+      return "Stored in ~/.mex/config.json. Re-enable with `mex telemetry enable`.";
+    default:
+      return "";
+  }
+}
+
+/**
+ * `telemetry disable` / `enable` write the same `~/.mex/config.json` key as
+ * `mex config set telemetry off|on`.
+ *
+ * The duplication is the point. Issue #110 reported reaching for
+ * `mex telemetry disable`, getting `unknown command`, and then guessing at env
+ * var names — because the only switch lived under `config`, which is not where
+ * anyone looks for it. An alias costs nothing; a user who cannot find the
+ * opt-out costs trust.
+ */
+function setTelemetryEnabled(enabled: boolean): void {
+  try {
+    setGlobalConfigKey("telemetry", enabled ? "on" : "off");
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exit(1);
+  }
+  console.log(`Telemetry ${enabled ? "enabled" : "disabled"} in ~/.mex/config.json`);
+
+  // Never claim an outcome the next invocation will contradict: an env opt-out
+  // outranks the stored value, and a dev checkout outranks both.
+  const active = isEnabled();
+  if (active.enabled !== enabled) {
+    const detail = describeTelemetryReason(active.reason);
+    console.log(
+      active.enabled
+        ? "Telemetry is still on for this project."
+        : `Telemetry stays off regardless of this setting. ${detail}`.trim(),
+    );
+  }
+}
+
+telemetryCmd
+  .command("disable")
+  .description("Turn telemetry off for every project (writes ~/.mex/config.json)")
+  .action(() => setTelemetryEnabled(false));
+
+telemetryCmd
+  .command("enable")
+  .description("Turn telemetry back on for every project")
+  .action(() => setTelemetryEnabled(true));
 
 telemetryCmd
   .command("inspect")
@@ -1102,9 +1169,12 @@ telemetryCmd
     const result = isEnabled();
     if (result.enabled) {
       console.log("Telemetry: enabled");
-    } else {
-      console.log(`Telemetry: disabled (reason: ${result.reason})`);
+      console.log("Turn it off with `mex telemetry disable`, DO_NOT_TRACK=1, or MEX_TELEMETRY=0.");
+      return;
     }
+    console.log(`Telemetry: disabled (reason: ${result.reason})`);
+    const detail = describeTelemetryReason(result.reason);
+    if (detail) console.log(detail);
   });
 
 // ── Config ──
@@ -1204,6 +1274,7 @@ program
     console.log("  mex watch              Install post-commit hook for auto drift score");
     console.log("  mex watch --interval   Run heartbeat every 30 minutes (or config value)");
     console.log("  mex watch --uninstall  Remove the post-commit hook");
+    console.log("  mex telemetry disable  Turn telemetry off (or DO_NOT_TRACK=1 / MEX_TELEMETRY=0)");
     console.log("  mex telemetry inspect  Show the exact telemetry payload (without sending)");
     console.log("  mex telemetry status   Show telemetry enabled/disabled and reason");
     console.log("  mex config set <k> <v> Set a global config value (e.g. telemetry off)");

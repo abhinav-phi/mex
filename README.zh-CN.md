@@ -426,5 +426,6 @@ MEX 将团队记忆保存在仓库文件中，并提供本地检索和审阅工�
 - 查看[运行时与兼容性指南](https://github.com/mex-memory/mex/blob/v0.8.0/COMPATIBILITY.md)和[安全政策](https://github.com/mex-memory/mex/blob/v0.8.0/SECURITY.md)。
 - 查阅 [Code Graph 支持矩阵](https://github.com/mex-memory/mex/blob/v0.8.0/docs/code-graph-support.md)。
 - 了解[提取器模型和支持的关系](https://github.com/mex-memory/mex/blob/v0.8.0/docs/extractors.md)。
+- 阅读 [Code Graph 检索基准结果](https://github.com/mex-memory/mex/blob/v0.8.0/evaluate/RESULTS.md)，其中包含与普通文件搜索基线的盲评对比。
 - 在本地使用 `mex capabilities --json` 和 `mex commands` 检查 CLI。
 - 加入 [Discord 上的 MEX 社区](https://discord.gg/FEdNsQ4Qt4)，或访问 [mexmemory.com](https://mexmemory.com)。

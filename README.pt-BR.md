@@ -426,5 +426,6 @@ O MEX mantém a memória da equipe em arquivos do repositório e oferece fluxos 
 - Consulte o [guia de ambiente de execução e compatibilidade](https://github.com/mex-memory/mex/blob/v0.8.0/COMPATIBILITY.md) e a [política de segurança](https://github.com/mex-memory/mex/blob/v0.8.0/SECURITY.md).
 - Veja a [matriz de suporte do Code Graph](https://github.com/mex-memory/mex/blob/v0.8.0/docs/code-graph-support.md).
 - Consulte o [modelo dos extratores e as relações suportadas](https://github.com/mex-memory/mex/blob/v0.8.0/docs/extractors.md).
+- Leia os [resultados do benchmark de recuperação do Code Graph](https://github.com/mex-memory/mex/blob/v0.8.0/evaluate/RESULTS.md), incluindo a comparação avaliada às cegas com uma busca de arquivos comum.
 - Examine a CLI localmente com `mex capabilities --json` e `mex commands`.
 - Entre na [comunidade do MEX no Discord](https://discord.gg/FEdNsQ4Qt4) ou visite [mexmemory.com](https://mexmemory.com).

@@ -13,6 +13,10 @@ The older compactness and scripted-agent scripts remain available as historical 
 `npm run eval:legacy` and `npm run eval:e2e`. They are not evidence that natural-language graph
 retrieval works.
 
+Measured results from these harnesses are written up in
+[`RESULTS.md`](RESULTS.md), including the blind-graded headless comparison
+against an ordinary file-search baseline.
+
 ## Deterministic graph evaluation
 
 Build the CLI, then run the native MEX suite:

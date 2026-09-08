@@ -37,6 +37,7 @@ import {
 } from "../index/corpus-policy.js";
 import { readContainedSource } from "../index/source-read.js";
 import { WIKI_META_KEYS, WIKI_SCHEMA_VERSION, WIKI_TABLES } from "../index/schema.js";
+import { fts5UnavailableDiagnostic } from "../index/fts5.js";
 import { isTeamOwnedReadOnlyPath } from "../model/team-owned-paths.js";
 import { estimateTokens } from "./budget.js";
 import { healthRank, LIFECYCLE_RANK, MATCH_FIELD_RANK, type MatchField } from "./rank.js";
@@ -444,6 +445,13 @@ export function inspectWikiContractIndex(options: InspectWikiIndexOptions): Cont
         ),
       ]);
     }
+    // The index answers searches through `wiki_fts`, so a Node whose SQLite
+    // lacks FTS5 cannot read it even though the file is intact (issue #110).
+    // Degraded, not corrupt: nothing is wrong with the store, and no rebuild
+    // on this Node would improve matters.
+    const fts5 = fts5UnavailableDiagnostic(bound.path);
+    if (fts5) return status("degraded", observedAt, null, null, null, [fts5]);
+
     db = openSqlite(bound.path, { readOnly: true, immutable: true });
     const schemaVersion = readSchemaVersion(db);
     if (schemaVersion === null) {
@@ -568,6 +576,12 @@ export function openWikiContractReadSession(options: InspectWikiIndexOptions): W
       throw new WikiContractReadError("REVISION_CONFLICT", "Wiki index changed while the read session was opening.");
     }
     options.hooks?.beforeSessionImmutableOpen?.();
+    // Same FTS5 requirement as the status path, reported through the existing
+    // INDEX_UNAVAILABLE code: for a reader the index genuinely is unavailable
+    // on this Node, and the message says why and what to change.
+    const fts5 = fts5UnavailableDiagnostic(bound.path);
+    if (fts5) throw new WikiContractReadError("INDEX_UNAVAILABLE", fts5.message);
+
     db = openSqlite(bound.path, { readOnly: true, immutable: true });
     if (readSchemaVersion(db) !== WIKI_SCHEMA_VERSION
       || readMeta(db, WIKI_META_KEYS.indexedRevision) !== initial.indexedRevision

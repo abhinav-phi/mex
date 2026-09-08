@@ -57,6 +57,8 @@ import { parseWikiMarkdown } from "../markdown/codec.js";
 import type { ParsedEntity } from "../markdown/contract.js";
 import { detectRangeOverlaps } from "../index/write.js";
 import { openWikiIndex } from "../index/open.js";
+import { fts5UnavailableDiagnostic } from "../index/fts5.js";
+import { assertFts5Available, openSqlite } from "../../graph/db/sqlite.js";
 import { rebuildWikiIndex } from "../index/rebuild.js";
 import { getEntity } from "../query/get.js";
 import { escapedSymlinkDiagnostic } from "../index/discover.js";
@@ -330,6 +332,27 @@ status: promoted
       const opened = openWikiIndex(join(directory, "wiki.db"));
       return opened.ok ? [] : [opened.diagnostic];
     }),
+
+  WIKI_INDEX_FTS5_UNAVAILABLE: () => {
+    // No FTS5-less Node exists to reproduce this on, so the probe's SQLite
+    // opener is injected. Everything downstream of it — the actionable message
+    // and the mapping onto this code rather than WIKI_INDEX_REBUILD_REQUIRED —
+    // is the real production path.
+    const withoutFts5: typeof openSqlite = () => ({
+      prepare: () => {
+        throw new Error("not reached");
+      },
+      exec: () => {
+        throw new Error("no such module: fts5");
+      },
+      pragma: () => {},
+      transaction: (fn) => fn(),
+      close: () => {},
+      open: true,
+    });
+    const emitted = fts5UnavailableDiagnostic("wiki.db", () => assertFts5Available(withoutFts5));
+    return emitted ? [emitted] : [];
+  },
 
   WIKI_INDEX_REBUILD_REQUIRED: () =>
     inScratch((directory) => {

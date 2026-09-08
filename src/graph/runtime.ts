@@ -9,8 +9,8 @@ import { createGraphEngine } from "./engine-impl.js";
 import type { GraphEngine } from "./engine.js";
 import {
   GRAPH_CORPUS_GLOB_OPTIONS,
-  GRAPH_CORPUS_IGNORE_GLOBS,
   GRAPH_CORPUS_LIMITS,
+  graphCorpusIgnoreGlobs,
   GRAPH_SUPPORTED_SOURCE_GLOB,
 } from "./corpus-policy.js";
 import { openGraphDatabase } from "./db/database.js";
@@ -264,7 +264,7 @@ export function findChangedSourceFiles(projectRoot: string, db: SqliteDatabase):
   const current = globSync(GRAPH_SUPPORTED_SOURCE_GLOB, {
     ...GRAPH_CORPUS_GLOB_OPTIONS,
     cwd: projectRoot,
-    ignore: [...GRAPH_CORPUS_IGNORE_GLOBS],
+    ignore: graphCorpusIgnoreGlobs(projectRoot),
   })
     .map((path) => path.replaceAll("\\", "/"));
   const changed: string[] = [];

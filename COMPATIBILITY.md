@@ -2,7 +2,47 @@
 
 ## Runtime requirement
 
-mex 0.8.x requires Node.js 22.5 or newer. The code graph uses the built-in `node:sqlite` module; older Node releases are unsupported. Users who cannot upgrade Node can remain on mex v0.6.3, which supports Node.js 20 or newer.
+mex 0.8.x requires Node.js 22.5 or newer. The code graph and the wiki index use
+the built-in `node:sqlite` module; older Node releases are unsupported.
+
+Users who cannot upgrade Node can remain on mex v0.6.3, which supports Node.js
+20 or newer. Note what that costs: the code graph shipped in 0.7.0, so v0.6.3
+has no `mex graph`, no `mex impact`, and no code-node grounding. It is a
+scaffold-and-drift-checking release, not an older version of the same feature
+set.
+
+### SQLite FTS5
+
+**A supported Node version is necessary but not sufficient.** Both databases
+need SQLite's FTS5 full-text extension, and `node:sqlite` embeds whatever
+SQLite the Node binary was built with. FTS5 is a compile-time option that Node
+does not document or guarantee, so whether you have it depends on the *build*,
+not the version number alone — official builds, distro packages, and
+self-compiled Node can differ at the same version.
+
+Check the Node you actually run in one command:
+
+```console
+$ node --no-warnings -e "new (require('node:sqlite').DatabaseSync)(':memory:').exec('CREATE VIRTUAL TABLE t USING fts5(x)')" && echo "FTS5 ok"
+```
+
+Silence plus `FTS5 ok` means you are fine. `no such module: fts5` means that
+Node build cannot run the graph or the wiki index; install a different build or
+version of Node. mex preflights this itself, so `mex graph` and
+`mex wiki rebuild-index` name the problem and your Node version rather than
+failing with a bare SQLite error.
+
+Known data points, which are reports rather than a supported-range claim:
+
+| Node | Platform | FTS5 |
+|---|---|---|
+| 23.10.0 | Windows 11 | missing ([#110](https://github.com/mex-memory/mex/issues/110)) |
+| 24.11.0 | Windows 11 | present |
+
+`engines` stays at `>=22.5`: FTS5 does not track version order, so narrowing
+the range would lock out working builds without excluding broken ones. If you
+hit a build without it, please add it to the table via issue #110 — the sample
+is small, and that is the only thing that would justify a floor.
 
 This document defines `mex-agent`'s public contract: what's stable, what isn't,
 and what counts as a breaking change. It is intended for embedders — tools that

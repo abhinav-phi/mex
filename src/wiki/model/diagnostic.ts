@@ -238,6 +238,12 @@ export const WIKI_DIAGNOSTICS = {
     severity: "error",
     remediation: "The index was built by a different schema version. Run `mex wiki rebuild-index`.",
   },
+  WIKI_INDEX_FTS5_UNAVAILABLE: {
+    severity: "error",
+    remediation:
+      "The running Node build embeds a SQLite without FTS5, which the wiki index requires. "
+      + "Rebuilding cannot fix this — use a different Node build/version. See COMPATIBILITY.md.",
+  },
   WIKI_PARSE_ERROR: {
     severity: "error",
     remediation: "Fix the malformed Markdown or entity metadata block. Prose is never deleted to resolve this.",

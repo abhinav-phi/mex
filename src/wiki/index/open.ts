@@ -17,7 +17,8 @@
  */
 
 import { diagnostic, type WikiDiagnostic } from "../model/diagnostic.js";
-import { openSqlite, type SqliteDatabase } from "../../graph/db/sqlite.js";
+import { assertFts5Available, openSqlite, type SqliteDatabase } from "../../graph/db/sqlite.js";
+import { fts5UnavailableDiagnostic } from "./fts5.js";
 import { indexExists } from "./dbfile.js";
 import { WIKI_META_KEYS, WIKI_SCHEMA_SQL, WIKI_SCHEMA_VERSION } from "./schema.js";
 
@@ -94,6 +95,9 @@ export function openWikiIndex(path: string, options: OpenIndexOptions = {}): Ope
     };
   }
 
+  const fts5 = fts5UnavailableDiagnostic(path);
+  if (fts5) return { ok: false, diagnostic: fts5 };
+
   let db: SqliteDatabase;
   try {
     const readOnly = options.readOnly !== false;
@@ -151,6 +155,9 @@ export function openWikiIndex(path: string, options: OpenIndexOptions = {}): Ope
  * than seven that could drift apart.
  */
 export function createWikiIndex(path: string): WikiIndexHandle {
+  // Fail before the file is created, so a Node without FTS5 leaves no partial
+  // index behind for the next run to trip over.
+  assertFts5Available();
   const db = openSqlite(path);
   configureConnection(db);
   db.pragma("journal_mode = WAL");
