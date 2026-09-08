@@ -565,7 +565,7 @@ describe("graph construction integration", () => {
     db.close();
   });
 
-  it("forces a deterministic rebuild when compiler configuration changes without a source edit", async () => {
+  it("labels retrieval, and still re-stages, when compiler configuration changes without a source edit", async () => {
     const root = temporaryRoot("mex-graph-manifest-");
     mkdirSync(join(root, "src"), { recursive: true });
     writeFileSync(join(root, "package.json"), JSON.stringify({ name: "manifest-fixture", type: "module" }));
@@ -593,11 +593,19 @@ describe("graph construction integration", () => {
       compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext" },
       include: ["src/**/*.ts"],
     }));
+    // `moduleResolution` decides what a cross-file reference binds to, so this
+    // is a real change to the meaning of resolved edges. Retrieval says so and
+    // keeps answering from a store whose indexed source is still exact.
     const staleOutput: string[] = [];
     runGraphScope("manifestNeedle", root, { write: (line) => staleOutput.push(line) });
-    expect(staleOutput.map((line) => JSON.parse(line))).toEqual([
-      expect.objectContaining({ code: "GRAPH_REBUILD_REQUIRED", recoveryCommand: "mex graph" }),
-    ]);
+    const staleRecords = staleOutput.map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(staleRecords.some((record) => record.type === "error")).toBe(false);
+    expect(staleRecords).toContainEqual(expect.objectContaining({
+      type: "status",
+      graphStatus: "stale",
+      reason: "config-drift",
+      recoveryCommand: "mex graph refresh",
+    }));
     const refreshEngine = createGraphEngine({ rootDir: root });
     expect(await refreshEngine.sync(["tsconfig.json"])).toMatchObject({ filesIndexed: 1 });
     refreshEngine.close();
