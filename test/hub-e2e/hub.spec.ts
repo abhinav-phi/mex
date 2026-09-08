@@ -222,7 +222,8 @@ test.describe("populated development fixture", () => {
     await page.goto("/?fixture=populated&overviewFixture=partial");
     await expect(page.locator('[data-overview-workbench="ready"]')).toBeVisible();
     const focus = page.getByRole("region", { name: "Attention", exact: true });
-    await expect(focus.getByRole("heading", { name: "Review 2 proposed Spec changes" })).toBeVisible();
+    await expect(focus.getByRole("heading", { name: "Review local context health" })).toBeVisible();
+    await expect(focus.getByRole("button", { name: "Open Health" })).toHaveAttribute("href", "/health");
     await expect(focus.getByText("Relay focus unavailable", { exact: true })).toBeVisible();
     await expect(focus.getByRole("button", { name: "Try loading Relay focus again" })).toBeVisible();
 
@@ -1466,7 +1467,8 @@ test.describe("populated development fixture", () => {
     })).toBeVisible();
     await expect(detail.getByRole("button", { name: "Take handoff" })).toHaveCount(0);
     await expect(detail.getByText("This handoff is addressed to Grace Hopper.", { exact: true })).toBeVisible();
-    await expect(detail.getByText(/listed recipient can take it.*active team identity/i)).toBeVisible();
+    await expect(detail.getByText("Only the named recipients can take this handoff, while their Member records are active.", { exact: true })).toBeVisible();
+    await expect(detail.getByText(/MEX must resolve an eligible, active team identity before taking it/i)).toBeVisible();
     await expect(detail.getByText("Detached HEAD", { exact: true })).toBeVisible();
     await expect(detail.getByText("3456789a", { exact: true })).toBeVisible();
 

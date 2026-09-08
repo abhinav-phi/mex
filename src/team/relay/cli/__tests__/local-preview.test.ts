@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,12 +9,32 @@ import { normalizeTeamRelayCommand } from "../../handoff.js";
 import { readRelayPreviewFile } from "../request-file.js";
 import { withLocalRelayPreview } from "../local-preview.js";
 
+const directoryInodes = vi.hoisted(() => new Map<string, bigint>());
+
+// Keep real files and the live lock descriptor. Model only a directory's opaque
+// inode so every platform exercises replacement even when Windows refuses to
+// rename a directory containing an open lock file.
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  function identified<T extends { ino: number | bigint } | undefined>(stats: T, path: unknown): T {
+    const inode = directoryInodes.get(String(path));
+    if (stats === undefined || inode === undefined) return stats;
+    return Object.assign(stats, { ino: typeof stats.ino === "bigint" ? inode : Number(inode) });
+  }
+  return {
+    ...actual,
+    lstatSync: (...args: Parameters<typeof actual.lstatSync>) => identified(actual.lstatSync(...args), args[0]),
+    statSync: (...args: Parameters<typeof actual.statSync>) => identified(actual.statSync(...args), args[0]),
+  };
+});
+
 const roots: string[] = [];
 const DIRECTORY = ".mex/local/relay-previews";
 const NOW = "2026-09-08T10:00:00.000Z";
 
 afterEach(() => {
   vi.restoreAllMocks();
+  directoryInodes.clear();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -158,21 +178,34 @@ describe("pending local Relay previews", () => {
     }
   });
 
-  it("refuses root or pending-directory replacement while create is awaiting", async () => {
+  it.each(["identity", ...(process.platform === "win32" ? [] : ["rename"])])("refuses root or pending-directory replacement while create is awaiting (%s)", async (replacement) => {
     for (const replaceRoot of [true, false]) {
-      const root = fixture();
+      const root = realpathSync(fixture());
+      const path = replaceRoot ? root : join(root, DIRECTORY);
+      mkdirSync(join(root, DIRECTORY), { recursive: true });
       const moved = `${root}-original`;
-      if (replaceRoot) roots.push(moved);
+      if (replacement === "rename" && replaceRoot) roots.push(moved);
+      const inode = 9_007_199_254_740_992n;
+      if (replacement === "identity") directoryInodes.set(path, inode);
       const command = request();
       const apply = vi.fn(async () => true);
+      const foreign = join(path, "other-owner.txt");
       await expect(withLocalRelayPreview(root, command, async () => {
-        const path = replaceRoot ? root : join(root, DIRECTORY);
-        renameSync(path, replaceRoot ? moved : `${path}-original`);
-        mkdirSync(path, { recursive: true });
+        if (replacement === "identity") {
+          // The two IDs collide when rounded to Number; the guard must retain
+          // the full-width identity observed before the asynchronous callback.
+          expect(Number(inode + 1n)).toBe(Number(inode));
+          directoryInodes.set(path, inode + 1n);
+        } else {
+          renameSync(path, replaceRoot ? moved : `${path}-original`);
+          mkdirSync(path, { recursive: true });
+        }
+        writeFileSync(foreign, "another owner\n", { mode: 0o600 });
         return preview(command);
       }, apply)).rejects.toMatchObject({ problem: { code: "REVISION_CONFLICT" } });
       expect(apply).not.toHaveBeenCalled();
       expect(existsSync(receiptPath(root, command))).toBe(false);
+      expect(readFileSync(foreign, "utf8")).toBe("another owner\n");
     }
   });
 
