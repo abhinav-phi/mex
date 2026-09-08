@@ -23,6 +23,7 @@ import {
   type GraphSidecarProbe,
   type InternalGraphFreshObservationToken,
   type InternalGraphStatusInspection,
+  type ReadObservationClass,
 } from "./status.js";
 import {
   GRAPH_SNAPSHOT_METADATA_KEY,
@@ -54,6 +55,12 @@ export interface GraphFreshnessRevalidation extends GraphReadValidation {
 /** @internal A stable database session bound to one successful freshness observation. */
 export interface InternalFreshGraphReadSession extends InternalGraphReadSession {
   graphStatus: GraphStatus;
+  /**
+   * Why this session was allowed to open. `config-drifted` means the store is
+   * bound exactly and its indexed source is current, but the compiler inputs
+   * that produced its resolution have changed since it was built.
+   */
+  observationClass: ReadObservationClass;
   revalidateFreshness(): Promise<GraphFreshnessRevalidation>;
 }
 
@@ -73,6 +80,15 @@ interface ImmutableGraphReadHooks {
 export interface LoadFreshGraphReadSessionOptions {
   dbPath?: string;
   loadSession?: boolean;
+  /**
+   * Also adopt a store whose only unproven input is config content, reported
+   * as `config-drifted`.
+   *
+   * Opt-in, because the caller — not this loader — owns the obligation to say
+   * so in its output. A consumer that cannot label a degraded answer must not
+   * receive one.
+   */
+  allowConfigDrift?: boolean;
   inspectObservation?: typeof inspectGraphStatusWithFreshObservation;
   inspectSidecars?: typeof inspectGraphSidecars;
   afterStatusInspection?: (
@@ -342,8 +358,15 @@ export async function loadFreshGraphReadSession(
   const inspectObservation = options.inspectObservation ?? inspectGraphStatusWithFreshObservation;
   const inspection = await inspectObservation({ projectRoot, dbPath });
   await options.afterStatusInspection?.(inspection);
-  const { graphStatus, freshObservation } = inspection;
-  if (graphStatus.status !== "fresh" || options.loadSession === false) {
+  const { graphStatus } = inspection;
+  const configDrifted = graphStatus.status !== "fresh"
+    && options.allowConfigDrift === true
+    && (inspection.configDriftObservation ?? null) !== null;
+  const observationClass: ReadObservationClass = configDrifted ? "config-drifted" : "fresh";
+  const freshObservation = configDrifted
+    ? inspection.configDriftObservation!
+    : inspection.freshObservation;
+  if ((graphStatus.status !== "fresh" && !configDrifted) || options.loadSession === false) {
     return { graphStatus, session: null };
   }
   if (!freshObservation || sha256(freshObservation.snapshotRaw) !== freshObservation.snapshotHash) {
@@ -395,14 +418,25 @@ export async function loadFreshGraphReadSession(
     const session: InternalFreshGraphReadSession = {
       ...ownedBase,
       graphStatus: guardedStatus,
+      observationClass,
       validate: () => ownedBase.validate(),
       revalidateFreshness: async () => {
         const before = session.validate();
         const finalInspection = await inspectObservation({ projectRoot, dbPath });
-        if (finalInspection.graphStatus.status !== "fresh" || !finalInspection.freshObservation) {
+        // Output is committed under the class it was labelled with. A store
+        // that changed class mid-read — drifted while being read as fresh, or
+        // repaired while being read as drifted — carries a label the buffered
+        // records no longer earn, so the response is discarded rather than
+        // relabelled after the fact.
+        const finalObservation = observationClass === "config-drifted"
+          ? finalInspection.configDriftObservation ?? null
+          : finalInspection.graphStatus.status === "fresh"
+            ? finalInspection.freshObservation
+            : null;
+        if (!finalObservation) {
           return { valid: false, graphStatus: finalInspection.graphStatus };
         }
-        if (!sameObservation(freshObservation, finalInspection.freshObservation)) {
+        if (!sameObservation(freshObservation, finalObservation)) {
           const changed = unavailableStatus(
             finalInspection.graphStatus,
             "GRAPH_INDEX_READER_SNAPSHOT_CHANGED",
