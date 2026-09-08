@@ -149,6 +149,41 @@ established regression. A clean enforcing run on the corrected final head must
 apply the ordinary fresh-runner confirmation rule; calibration alone does not
 satisfy the release gate.
 
+### Accepted graph isolation timing tradeoff
+
+Corrected PR #180 run
+[`34288560611`](https://github.com/mex-memory/mex/actions/runs/34288560611)
+passed browser, Node 22/24, and Windows/macOS portability checks. Its two
+independently allocated pinned runners confirmed exactly five material Graph
+maintenance timing failures on PR head
+`4d6683eec1a0bdcafe99d7b431d84cde7f02864d`, synthetic merge
+`6d92bb04d757c8a00693ef679d1f4281669a9b57`. Repeated memory crossings remained
+advisory under the existing materiality/sample-support rules; no memory or
+other metric produced a final material failure.
+
+The product decision explicitly accepts disposable-worker startup latency for
+Hub responsiveness and compiler-memory release after each job. This is a real
+small-job regression. Only the five confirmed timing leaves are recalibrated
+from the first healthy corrected report using the existing `ceil(p95 * 1.15)`
+formula; the second allocation supplies independent confirmation.
+
+| Graph operation | Prior limit (ms) | First p95 (ms) | Confirmation p95 (ms) | New limit (ms) |
+|---|---:|---:|---:|---:|
+| Small refresh | 984 | 1420.610 | 1853.568 | 1634 |
+| Small rebuild | 496 | 1468.480 | 1608.501 | 1689 |
+| Medium refresh | 1237 | 1600.897 | 1714.770 | 1842 |
+| Medium rebuild | 743 | 1581.908 | 1550.249 | 1820 |
+| Large rebuild | 1229 | 1980.154 | 2074.786 | 2278 |
+
+The [calibration record](graph-maintenance-timing-calibration.json) retains
+runner identities, both raw-report hashes and samples, prior limits, and a hash
+guard for every unowned budget. Large refresh, all memory/asset/read/Wiki
+limits, fixtures, formulas, sample counts, and confirmation rules remain
+unchanged. The [local diagnostic](graph-isolation-diagnostic.json) attributes
+the fixed startup cost using identical optimized code and parent validation;
+its Mac timings are not calibration inputs. A clean enforcing CI run on the
+new calibrated head remains required before release.
+
 ## Runner contract
 
 `npm run benchmark:release` builds the package and writes the bounded JSON

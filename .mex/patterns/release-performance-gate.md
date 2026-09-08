@@ -16,7 +16,7 @@ mex:
   id: mx_01M1M0CJNG4SW0WCJF3NB547HE
   type: pattern
   status: promoted
-  revision: 5
+  revision: 6
   title: release-performance-gate
   grounds_to:
     - node: function:5f86a557c717597b411a71a82c000ded
@@ -127,6 +127,16 @@ calibration environment.
   enforcement again after calibration instead of widening existing budgets or
   treating the completed measurement as a green gate. PR #180's Settings-only
   correction is recorded in `docs/design/settings-heap-calibration.json`.
+- Process isolation can deliberately trade small-job latency for responsiveness
+  and shorter compiler-memory lifetime. Confirm the regression on independent
+  pinned runners, distinguish peak aggregate RSS from surviving-parent RSS, and
+  record explicit acceptance of the product tradeoff before recalibration.
+  Use the first healthy report and existing formula for only the accepted,
+  confirmed timing leaves; restore their old values in the frozen-budget hash
+  projection so every unrelated limit stays protected. A local same-code
+  comparison explains the cost but never supplies release calibration numbers.
+  PR #180 retains both runner attempts in
+  `docs/design/graph-maintenance-timing-calibration.json`.
 
 ## Verify
 
@@ -149,9 +159,9 @@ raw samples show a real regression or stable shift.
 
 ## Update Scaffold
 
-The 2026-09-09 revision records the distinction between valid calibration
-measurements and successful enforcement. Existing grounding fingerprints and
-`bodyHash` baselines are retained unchanged.
+The 2026-09-09 revision records valid calibration versus successful enforcement,
+and the explicitly accepted startup cost of graph process isolation. Existing
+grounding fingerprints and `bodyHash` baselines are retained unchanged.
 
 - [ ] Update `.mex/ROUTER.md` when the benchmark surface or pinned runner changes
 - [ ] Update `docs/design/release-performance-baseline.md` with the retained calibration

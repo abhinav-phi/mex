@@ -74,8 +74,9 @@ Initial checks and parent validation/publication still perform synchronous work.
 The Hub can pause at those boundaries, and cancellation there waits for the Hub
 to handle the request. Cross-platform cleanup and lifecycle cases are included
 in the existing macOS/Windows storage-portability matrix without changing its
-pinned runners, Node version, or frozen release budgets. Local macOS results do
-not establish Windows behavior; platform CI remains required evidence.
+pinned runners or Node version. The accepted five-leaf timing calibration is
+recorded below; memory limits remain unchanged. Local macOS results do not
+establish Windows behavior; platform CI remains required evidence.
 
 ## Matched engine comparison
 
@@ -234,8 +235,8 @@ passed the Node 22/24 jobs and both Windows/macOS storage-portability jobs. This
 supplies platform evidence for that tested head, including the new graph
 lifecycle and storage suites. The workflow was not green: the browser job
 failed two outdated graph progress assertions, and the final performance job
-failed on three missing Settings heap budgets from Phase 4. Browser assertion
-corrections are underway; their final verification is not claimed here.
+failed on three missing Settings heap budgets from Phase 4. The subsequent
+browser correction and its CI verification are recorded below.
 
 The pinned Linux measurement completed and validated against the report schema,
 but the deterministic `budget_missing` failure prevented runtime confirmation.
@@ -267,32 +268,74 @@ kinds through the event-stream observer. These are integration checks, not new
 calibration measurements. The earlier 723-file measurements describe `6e12e6d`;
 this correction does not replace that evidence with unmeasured speedup claims.
 
-### Current Verify Checklist for the CI correction
+### Confirmed timing tradeoff and scoped calibration
+
+[Corrected CI run `34288560611`](https://github.com/mex-memory/mex/actions/runs/34288560611)
+passed both Node versions, browser checks, and Windows/macOS portability at
+`4d6683e`. Two independent pinned runners confirmed five material maintenance
+timing failures: small/medium Graph refresh and small/medium/large rebuild.
+No memory or other metric produced a final material failure, although some
+repeated memory crossings remained advisory under the existing rules.
+
+The product decision accepts the small-job latency cost of a disposable worker
+for Hub responsiveness and release of the compiler's address space afterward.
+Only those five timing limits now use the first healthy corrected report's
+`ceil(p95 * 1.15)` candidates: 1634/1689 ms for small refresh/rebuild,
+1842/1820 ms for medium refresh/rebuild, and 2278 ms for large rebuild.
+Large refresh and all memory, asset, read, Wiki, fixture, sample-count, and
+confirmation constraints stay unchanged. The
+[calibration record](graph-maintenance-timing-calibration.json) retains both
+runner allocations and samples plus the prior values and unowned-budget hash.
+A clean enforcing run on the new calibrated head remains required.
+
+Local calibration verification passed 46 release-budget tests, 14 CI
+orchestration/workflow tests, 11 measurement tests, and all typechecks. Six
+measurement cases initially hit sandbox process/listener restrictions and
+passed when rerun with those permissions. Independent review verified the
+exact five numeric changes, every retained sample/hash, and restoration of the
+complete prior budget object. Both historical reports pass when replayed with
+the accepted limits; that replay does not replace fresh enforcing CI.
+
+The [same-code local diagnostic](graph-isolation-diagnostic.json) ran two
+warmups and three measured four-file rebuilds per execution mode, with the same
+parent validation. Median elapsed time was 879.5 ms in a disposable process
+versus 220.2 ms in a warm parent. Validation took about 19–21 ms in both modes;
+process spawn to parsing took 490–494 ms in measured runs. All ten graph core
+digests and counts matched. There was no fixed success-path cancellation wait.
+
+Isolation alone raised sampled aggregate peak RSS in that diagnostic from
+320.6 to 403.7 MiB, while the surviving parent's final RSS fell from 320.5 to
+164.0 MiB. The compiler process exists only during construction and exits before
+parent validation/publication. Each process has its own runtime/heap; a child
+watchdog thread observes parent death while compilation is synchronous. This
+is a bounded Mac comparison in fixed mode order, not a universal peak-memory
+reduction, pinned calibration, or proof about every possible memory leak.
+
+### Current Verify Checklist for the CI correction and calibration
 
 1. **The public `src/index.ts` surface and emitted declarations changed only if compatibility work explicitly requires it.**
-   **Pass:** no public exports or declaration shapes changed; typecheck and build
-   pass. The grammar initialization guard is internal.
+   **Pass:** no public exports or declaration shapes changed; the correction's
+   declaration comparison passed. Calibration changes only evidence and limits.
 2. **Ordinary reads remain non-mutating; writes have explicit authority, containment, revision, and failure-atomicity checks.**
-   **Pass:** Node/platform CI covered publication and rollback on the initial
-   head. This correction leaves those authorities intact; the temporary Hub
-   integration exercised the existing maintenance write paths successfully.
+   **Pass:** corrected-head Node/platform CI covered publication and rollback.
+   Calibration leaves those authorities and all production write paths intact.
 3. **Inputs, scans, output, diagnostics, and retained local state remain deterministically bounded.**
-   **Qualified:** prior bounds stay enforced, and only the three missing Settings
-   limits are calibrated. No peak-RSS quota or globally bounded fatal-parent
-   artifact accumulation is claimed. Initial Windows/macOS lifecycle suites
-   passed; runtime release enforcement remains unresolved.
+   **Qualified:** only the five explicitly accepted timing limits change after
+   independent confirmation. All memory and other limits remain guarded. No
+   peak-RSS quota or globally bounded fatal-parent artifact accumulation is
+   claimed. Corrected Windows/macOS suites pass; final enforcement is pending.
 4. **Focused tests for the changed boundary pass, followed by `npm run typecheck`; run `npm test` without a concurrent build when full coverage is warranted.**
-   **Pass locally:** focused correction results and typecheck are recorded
-   above. The new CI run must verify the complete suite on the corrected head.
+   **Pass locally:** 71 focused budget, orchestration, workflow, and measurement
+   tests pass, followed by all typechecks. Corrected-head full Node suites pass;
+   final calibrated-head CI remains required.
 5. **Run `npm run build` for packaging/Hub/asset changes and `npm run eval:test` for graph evaluator or protocol changes.**
-   **Pass locally:** build and real Hub maintenance integration pass. Evaluator
-   and Graph/Wiki protocol shapes are unchanged. The initial pinned gate failed
-   hard and obtained no confirmation; clean enforcement is still required.
+   **Pass for unchanged production:** corrected-head CI builds and evaluator
+   checks pass; this calibration changes no packaging or protocol. A clean
+   enforcing run with the accepted limits remains required.
 6. **`git diff --check` passes and only intended tracked paths changed; generated `.mex/*.db*`, `.mex/local/`, `dist/`, and unrelated worktree files remain unstaged.**
-   **Pass at scoped review:** whitespace checks pass; calibration evidence,
-   owned leaves, browser assertions, the grammar guard, and measurement fixes
-   remain scoped. Grounding baselines and generated state remain unchanged.
+   **Pass at scoped review:** whitespace and exact five-leaf ownership checks
+   pass; only budgets/tests and retained documentation/evidence changed. Existing
+   grounding baselines and generated state remain unstaged and unchanged.
 7. **Graph/Wiki protocol shapes, stable error codes, ordering, cursors, and non-mutation contracts remain covered when affected.**
-   **Pass:** browser assertions match the accepted phase/count UI; existing
-   compiler/extractor tests pass, and the observer validates the existing Hub
-   snapshot schema, job identity, kind, and event revision without new protocol.
+   **Pass:** corrected-head browser, compiler, and protocol checks pass. This
+   calibration changes no protocol, ranking, cursor, or read behavior.

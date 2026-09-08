@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "provisional": false,
   "calibration": {
-    "status": "pinned-checkpoints-A-G-and-Settings-34286120355",
+    "status": "pinned-A-G-Settings-34286120355-Graph-timing-34288560611",
     "runtimeFormula": "ceil(measured p95 * 1.15)",
     "assetFormula": "ceil(built bytes * 1.05)"
   },
@@ -55,9 +55,9 @@
       "large": { "search": 342, "code": 142, "knowledge": 215, "activity": 58, "inboxDrafts": 7, "inboxProposals": 6, "relayDrafts": 4, "relays": 13 }
     },
     "maintenanceMs": {
-      "small": { "graph_refresh": 984, "graph_rebuild": 496, "wiki_refresh": 186, "wiki_rebuild": 181 },
-      "medium": { "graph_refresh": 1237, "graph_rebuild": 743, "wiki_refresh": 262, "wiki_rebuild": 301 },
-      "large": { "graph_refresh": 1812, "graph_rebuild": 1229, "wiki_refresh": 418, "wiki_rebuild": 617 }
+      "small": { "graph_refresh": 1634, "graph_rebuild": 1689, "wiki_refresh": 186, "wiki_rebuild": 181 },
+      "medium": { "graph_refresh": 1842, "graph_rebuild": 1820, "wiki_refresh": 262, "wiki_rebuild": 301 },
+      "large": { "graph_refresh": 1812, "graph_rebuild": 2278, "wiki_refresh": 418, "wiki_rebuild": 617 }
     },
     "maintenancePeakRssBytes": {
       "small": { "graph_refresh": 470639616, "graph_rebuild": 518977741, "wiki_refresh": 512307815, "wiki_rebuild": 512604570 },
