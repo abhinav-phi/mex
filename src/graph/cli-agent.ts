@@ -25,12 +25,17 @@ import {
   type LoadFreshGraphReadSessionOptions,
 } from "./read-session.js";
 import type { GraphStatus } from "../team/contracts/graph.js";
+import type { ReadObservationClass } from "./status.js";
 
 type QueryRelation = "who-calls" | "what-calls" | "where-defined";
 
 interface AgentGraphSession {
   graph: GraphEngine;
   db: SqliteDatabase;
+  /** Absent for caller-injected sessions, which make no freshness claim. */
+  observationClass?: ReadObservationClass;
+  /** The status a degraded answer must declare; present only when drifted. */
+  graphStatus?: GraphStatus;
   readIndexedSource?: (filePath: string) => string;
   validate?: () => GraphReadValidation;
   revalidateFreshness?: () => Promise<GraphFreshnessRevalidation>;
@@ -119,7 +124,10 @@ export function runImpact(
       if (emittedNodes.length >= opts.maxNodes) { truncated = true; break; }
       const fact = factFor(session, entry.node.id, opts.detail, opts.fingerprint);
       if (!fact) continue;
-      const record: Rec = { type: "caller", depth: entry.depth, root: entry.root, ...agentFactFields(fact, opts) };
+      // Reached by following call edges, which is exactly what drifted
+      // resolution can get wrong.
+      const record: Rec = markResolutionStale(session,
+        { type: "caller", depth: entry.depth, root: entry.root, ...agentFactFields(fact, opts) });
       if (!ledger.tryAdd(record)) { truncated = true; break; }
       factRecords.push(record);
       emittedNodes.push(entry.node);
@@ -134,7 +142,10 @@ export function runImpact(
       if (ledger.tryAdd(record)) groundingRecords.push(record); else truncated = true;
     }
 
-    emitAll(write, meta, [...headRecords, ...factRecords, ...sourceRecords, ...groundingRecords]);
+    emitAll(write, meta, [
+      ...configDriftRecords(session),
+      ...headRecords, ...factRecords, ...sourceRecords, ...groundingRecords,
+    ]);
     write(JSON.stringify(summaryRecord(ctx, {
       matchedNodes: roots.length + impacted.size,
       returnedNodes: emittedNodes.length,
@@ -193,14 +204,20 @@ export function runGraphQuery(
       if (entries.length >= opts.maxNodes) { truncated = true; break; }
       const fact = factFor(session, pair.node.id, opts.detail, opts.fingerprint);
       if (!fact) continue;
-      const record: Rec = { type: "result", relation, target: pair.targetId, ...agentFactFields(fact, opts) };
+      // `where-defined` returns the declaration itself and is independent of
+      // resolution; the call relations are edges and are not.
+      const base: Rec = { type: "result", relation, target: pair.targetId, ...agentFactFields(fact, opts) };
+      const record: Rec = relation === "where-defined" ? base : markResolutionStale(session, base);
       if (!ledger.tryAdd(record)) { truncated = true; break; }
       entries.push({ record, node: pair.node });
     }
 
     const sourceRecords = planSource(session, ledger, entries.map((e) => e.node), rootDir, opts);
 
-    emitAll(write, meta, [...entries.map((e) => e.record), ...sourceRecords]);
+    emitAll(write, meta, [
+      ...configDriftRecords(session),
+      ...entries.map((e) => e.record), ...sourceRecords,
+    ]);
     write(JSON.stringify(summaryRecord(ctx, {
       matchedNodes: pairs.length,
       returnedNodes: entries.length,
@@ -743,7 +760,9 @@ export function runGraphGet(
       sourceRecords.flatMap((record) => (record.ranges as SourceRange[]).flatMap((range) => range.nodeIds)),
     );
 
-    emitAll(write, meta, [...errorRecords, ...sourceRecords]);
+    // `get` returns declarations and their proven source bytes only, so the
+    // drift declaration appears without any record being marked stale.
+    emitAll(write, meta, [...configDriftRecords(session), ...errorRecords, ...sourceRecords]);
     write(JSON.stringify(summaryRecord(ctx, {
       matchedNodes: ids.length,
       returnedNodes: sourcedIds.size,
@@ -1951,12 +1970,17 @@ async function runFreshAgentSession(
       ...deps.__internal?.freshRead,
       dbPath,
       loadSession: true,
+      allowConfigDrift: true,
     });
     if (!loaded.session) {
       graphStatusUnavailable(write, loaded.graphStatus);
       return;
     }
-    session = { ...loaded.session };
+    session = {
+      ...loaded.session,
+      observationClass: loaded.session.observationClass,
+      graphStatus: loaded.graphStatus,
+    };
     try {
       task(session, (line) => pending.push(line));
     } catch (error) {
@@ -1979,6 +2003,61 @@ async function runFreshAgentSession(
   } finally {
     try { session?.close(); } catch { /* best-effort degradation cleanup */ }
   }
+}
+
+/**
+ * True when this session's structural facts describe compiler inputs that have
+ * since changed.
+ *
+ * Definition and containment facts survive that — a symbol's file, range and
+ * body text are read from the file itself, and the source bytes returned with
+ * them are proven byte-identical to what was indexed. What does not survive is
+ * resolution: `paths`, `moduleResolution`, `references` and a package's `type`
+ * decide which declaration a reference binds to, so any fact reached by
+ * following an edge may name the wrong target.
+ */
+function isConfigDrifted(session: AgentGraphSession): boolean {
+  return session.observationClass === "config-drifted";
+}
+
+/** Mark one record as resolution-derived under config drift; otherwise unchanged. */
+function markResolutionStale(session: AgentGraphSession, record: Rec): Rec {
+  return isConfigDrifted(session) ? { ...record, stale: true } : record;
+}
+
+/**
+ * The response-level declaration that this answer came from a drifted store.
+ *
+ * Emitted only when drifted, so a fresh response is byte-identical to what it
+ * was before degraded reads existed. It carries the same recovery command the
+ * refusal used to carry, as a record rather than an exception.
+ */
+function configDriftRecords(session: AgentGraphSession): Rec[] {
+  const status = session.graphStatus;
+  if (!isConfigDrifted(session) || !status) return [];
+  const drift = status.diagnostics.find((entry) => entry.code === "GRAPH_SEMANTIC_INPUTS_CHANGED")
+    ?? status.diagnostics.find((entry) => entry.code === "GRAPH_BUILD_MANIFEST_CHANGED");
+  const changedPaths = [...new Set(status.diagnostics
+    .filter((entry) => entry.code === "GRAPH_SEMANTIC_INPUT_CHANGED")
+    .map((entry) => (entry as { path?: unknown }).path)
+    .filter((path): path is string => typeof path === "string"))].sort();
+  const recoveryCommand = status.diagnostics
+    .flatMap((entry) => entry.remediation ?? [])
+    .find((entry) => entry.command)?.command;
+  return [{
+    type: "status",
+    graphStatus: "stale",
+    reason: "config-drift",
+    ...(drift?.code ? { reasonCode: drift.code } : {}),
+    message: drift?.message
+      ?? "Graph build configuration changed after this index was built.",
+    // Say which half of the answer the label applies to, rather than leaving
+    // the reader to guess how much of it to discard.
+    trusted: ["definitions", "containment", "source"],
+    stale: ["resolution", "edges"],
+    ...(changedPaths.length > 0 ? { changedInputs: changedPaths } : {}),
+    ...(recoveryCommand ? { recoveryCommand } : {}),
+  }];
 }
 
 function graphStatusUnavailable(
@@ -2145,12 +2224,15 @@ function emitUnresolvedCallers(
       fromNode: row.from_node_id,
       ...(row.receiver === null ? {} : { receiver: row.receiver }),
       ...(row.qualifier === null ? {} : { qualifier: row.qualifier }),
+      // An unresolved reference is a resolution outcome, so drifted compiler
+      // inputs are the most likely reason this row exists at all.
+      ...(isConfigDrifted(session) ? { stale: true } : {}),
     };
     if (!ctx.ledger.tryAdd(record)) { truncated = true; break; }
     records.push(record);
   }
 
-  emitAll(write, ctx.meta, records);
+  emitAll(write, ctx.meta, [...configDriftRecords(session), ...records]);
   write(JSON.stringify(summaryRecord(ctx, {
     matchedNodes: matched,
     // No node was returned: these are call sites, not declarations.
