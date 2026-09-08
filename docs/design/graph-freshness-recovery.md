@@ -26,8 +26,8 @@ database is retained locally as `.mex/graph.db.recovery-*`.
 
 ## Targeted retrieval handshake
 
-`graph get`, `graph query`, and `impact` first require a stable `fresh` status
-observation. They then adopt one immutable SQLite connection for graph and
+`graph get`, `graph query`, and `impact` first require a stable status
+observation that is either `fresh` or config-drifted (below). They then adopt one immutable SQLite connection for graph and
 grounding reads, bind it to the inspected inode and exact `graph_snapshot_v1`
 bytes, and buffer the complete JSONL response. Source ranges come from one
 contained, fd-stable byte buffer whose UTF-8 decoded hash matches the indexed
@@ -36,9 +36,43 @@ validation; any mismatch discards the whole response and emits one bounded
 `GRAPH_UNAVAILABLE` record.
 
 `graph scope` deliberately retains its existing stale-file text-only fallback.
-It now uses a single stable immutable database snapshot, but it does not claim
-that stale live text is an indexed graph fact. Retrieval ranking and successful
-protocol-v3 records remain unchanged.
+It uses a single stable immutable database snapshot, but it does not claim
+that stale live text is an indexed graph fact. It is not bound to the exact
+freshness handshake: that fallback is what lets it answer while source files
+are being edited, and binding it would turn one edited file into a refused
+retrieval. It classifies build identity through the same predicate as the
+targeted commands and refuses through the same record. Retrieval ranking and
+successful protocol-v3 records remain unchanged.
+
+## Config drift
+
+The build manifest folds seven inputs. Six are engine identity — schema,
+compiler, extractor and resolver versions, grammar, and corpus policy — and a
+difference in any of them means the store was written by code that is no longer
+here. The seventh is the content of every `package.json`, `tsconfig*.json` and
+`jsconfig*.json` in the repository, which moves for reasons that change nothing
+about the graph: a dependency version, a script, a reformat.
+
+Collapsing all seven into one comparison made a dependency bump indistinguishable
+from an incompatible store, and both refused every structural read until a full
+rebuild. A store is now classified as config-drifted when it would read `fresh`
+except that its config inputs moved: engine identity reproduces from the current
+inputs and that store's recorded config hash, the indexed corpus, branch, corpus
+digest and grammar all still match, parse health is clean, and every inspection
+completed. Anything short of that still refuses.
+
+A config-drifted store is bound and read exactly like a fresh one, and the
+response says so. Definitions, containment and returned source are unlabelled:
+they do not depend on compiler configuration, and the source bytes are already
+proven identical to what was indexed. Resolution does depend on it — `paths`,
+`moduleResolution`, `references` and a package `type` decide what a reference
+binds to — so callers, call relations, flows and unresolved references carry
+`stale: true`, and the response opens with a `status` record naming the drift
+and the recovery command. Every one of those fields is absent while the graph is
+fresh.
+
+Reading a drifted store writes nothing to it. The label is not a substitute for
+`mex graph refresh`; it is what the graph can honestly say until then.
 
 ## Evaluator identity
 

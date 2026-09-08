@@ -12,7 +12,7 @@ edges:
     condition: "when changing the graph data plane or its consumers"
   - target: "context/conventions.md"
     condition: "when verifying a graph implementation change"
-last_updated: 2026-09-07
+last_updated: 2026-09-09
 mex:
   id: mx_01M1M0CJP81C590FCKTSN5HA3Q
   type: pattern
@@ -128,6 +128,32 @@ only to explicit maintenance workflows.
   enter the corpus policy hash, or changing it leaves a stale index silently
   describing files that are no longer in the corpus. Hash to the existing
   constant when nothing is configured, so existing indexes stay valid.
+- A freshness input is not one kind of thing. Engine identity — schema,
+  compiler, extractor, resolver, grammar, corpus policy — says the store was
+  written by code that is gone, and must fail closed. Config content says the
+  build inputs moved under a store that still describes its source exactly.
+  Folding both into one hash means the second is served the punishment of the
+  first, and a dependency bump takes every structural read with it.
+- Prove identity by reconstruction, not by a new stored field. Re-folding the
+  current inputs with a store's recorded config hash classifies stores written
+  before the check existed — which are exactly the stores that need it — and
+  covers inputs no snapshot records at all.
+- Separate the race check from the freshness check inside one validation. Two
+  observations disagreeing with each other is a race; either of them disagreeing
+  with the stored snapshot is the question the caller already answered. Mixing
+  them reports a race that did not happen and refuses a read that was safe.
+- A degraded answer must say which half of itself is degraded. Definitions,
+  containment and verified source bytes survive a config change; anything
+  reached by following an edge does not. Labelling everything is honest but
+  wastes a trustworthy answer; labelling nothing is a lie.
+- Commit output under the class it was labelled with. If the store changes class
+  between opening and output, discard the response rather than relabelling it —
+  the records were built under a claim they no longer earn.
+- Do not unify two gates by giving both the stricter one. Scope tolerates
+  drifted source because it re-admits a moved file as text-only evidence; the
+  targeted commands cannot, because they return exact node coordinates. One
+  vocabulary and one classifier is the unification; one tolerance is a
+  regression wearing its clothes.
 - Wall-clock status timings vary by machine and process-start overhead. Keep
   the benchmark non-gating, record its environment, and protect correctness
   with deterministic race, non-mutation, and bounded-work tests.
