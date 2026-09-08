@@ -17,7 +17,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   TEAM_INBOX_KNOWLEDGE_KINDS,
   type TeamInboxSpecAuthoringPort as KnowledgeInboxPort,
@@ -79,6 +79,11 @@ import {
   type RepositoryWikiPort,
 } from "../src/wiki/application-adapter.js";
 import { assertNoDirectWikiSpecMutation } from "../src/wiki/cli/spec-authoring-boundary.js";
+
+// Real Git/Wiki workflows showed intermittent Windows runner stalls in different
+// cases. This file-only hang guard leaves the shared contract and other test
+// files unchanged; timing budgets belong to the pinned release benchmark.
+if (process.platform === "win32") vi.setConfig({ testTimeout: 30_000 });
 
 const NOW = "2026-08-28T04:05:06.000Z";
 const SCAFFOLD_ID = "team_inbox_spec_authoring_v1";
