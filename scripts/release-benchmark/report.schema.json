@@ -10,7 +10,7 @@
     "benchmark": { "const": "mex-release-performance" },
     "generatedAt": { "type": "string", "format": "date-time", "maxLength": 40 },
     "environment": { "type": "object", "maxProperties": 5 },
-    "configuration": { "type": "object", "maxProperties": 6 },
+    "configuration": { "type": "object", "maxProperties": 7 },
     "assets": { "$ref": "#/$defs/assets" },
     "profiles": {
       "type": "object",

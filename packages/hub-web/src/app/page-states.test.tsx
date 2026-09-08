@@ -264,6 +264,7 @@ describe("Home states", () => {
     const determinateProgress = within(await screen.findByRole("region", { name: "Active operation" })).getByRole("progressbar");
     expect(determinateProgress).toHaveAccessibleName("Graph refresh · Parse");
     expect(determinateProgress).toHaveAttribute("aria-valuenow", "68");
+    expect(screen.getByText("124 / 183 files parsed")).toBeVisible();
     determinate.unmount();
 
     renderRoute("/", createFixtureApi({ overviewFixture: "job-indeterminate" }));
@@ -271,6 +272,25 @@ describe("Home states", () => {
     expect(progress).toHaveAccessibleName("Wiki refresh · Discover");
     expect(progress).not.toHaveAttribute("aria-valuenow");
     expect(screen.getByText("37 completed")).toBeVisible();
+  });
+
+  it.each(["resolve", "validate", "publish"] as const)("keeps Overview indeterminate after parsing during %s", async (phase) => {
+    const fixture = createFixtureApi({ overviewFixture: "job-determinate" });
+    const overview = await fixture.getOverview();
+    if (overview.operation.availability !== "available" || !overview.operation.active) {
+      throw new Error("The determinate fixture must supply an active graph operation.");
+    }
+    overview.operation.active = {
+      ...overview.operation.active,
+      phase,
+      progress: { completed: 183, total: 183 },
+    };
+    renderRoute("/", apiWith({ getOverview: async () => overview }));
+    const operation = within(await screen.findByRole("region", { name: "Active operation" }));
+    expect(operation.getByText("183 / 183 files parsed")).toBeVisible();
+    const progress = operation.getByRole("progressbar");
+    expect(progress).toHaveAccessibleName(`Graph refresh · ${phase[0].toUpperCase()}${phase.slice(1)}`);
+    expect(progress).not.toHaveAttribute("aria-valuenow");
   });
 
   it("shows only the bounded relevant failed operation when no newer success supersedes it", async () => {

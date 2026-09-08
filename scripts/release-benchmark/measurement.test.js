@@ -138,17 +138,22 @@ describe("bounded benchmark HTTP", () => {
     });
   });
 
-  it("shares one job deadline across creation and a stalled status body", async () => {
+  it("shares one job deadline across creation and a stalled event stream", async () => {
     let requests = 0;
     let startedAt;
     await withServer((request, response) => {
       requests += 1;
       if (request.method === "POST") {
         startedAt = performance.now();
-        setTimeout(() => response.end('{"id":"test-job","state":"queued"}'), 40);
+        setTimeout(() => response.end(JSON.stringify({
+          id: "job_01ARZ3NDEKTSV4RRFFQ69G5FAV", scaffoldId: "test", kind: "graph_rebuild",
+          generation: 1, phase: "queued", progress: null, state: "queued", cancelRequested: false,
+          createdAt: "2026-08-23T00:00:00.000Z", revision: "a".repeat(64),
+        })), 40);
       } else {
-        response.writeHead(200, { "content-type": "application/json" });
-        response.write('{"id":"test-job","state":');
+        expect(request.url).toBe("/api/v1/jobs/job_01ARZ3NDEKTSV4RRFFQ69G5FAV/events");
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(": heartbeat\n\n");
       }
     }, async (origin) => {
       await expect(runMaintenanceJob({ origin, child: { pid: process.pid } }, { csrfToken: "test" }, "graph_rebuild", { timeoutMs: 150 }))

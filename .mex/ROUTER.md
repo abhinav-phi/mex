@@ -116,8 +116,10 @@ Then read this file fully before doing anything else in this session.
   Ordinary Wiki creation/synthesis retain explicit provenance or capture the
   operation actor/time/session; completed plain creates replay without duplicate
   records. Legacy Team/Spec recovery bytes stay unchanged. This is local
-  implementation on `codex/0.8.1`; Settings heap calibration on the pinned runner remains an
-  explicit release gate alongside the existing release requirements.
+  implementation on `codex/0.8.1`. The three missing Settings heap limits are now
+  calibrated from retained pinned Linux run `34286120355`; a clean enforcing
+  run after correction remains a release gate. Evidence is in
+  `docs/design/settings-heap-calibration.json`; all earlier limits stay frozen.
 - Phase 5 narrows shared artifact I/O to exact bytes by default, with explicit
   checkout-neutral reads for canonical Team records. Wiki/local revisions remain
   exact through Inbox preview and recovery; legacy Timeline IDs remain stable
@@ -140,6 +142,12 @@ Then read this file fully before doing anything else in this session.
   and actual Hub measurements are in
   `docs/design/code-graph-performance-implementation.md`. This targets the
   release branch and is not a published release.
+- Initial graph performance PR #180 run `34286120355` passed Node 22/24 and
+  Windows/macOS storage-portability jobs. Two outdated browser progress
+  assertions and the three previously missing Settings heap budgets failed
+  the remaining gates. The Settings-only calibration and browser correction
+  require final checks; first-pass Graph performance crossings remain
+  unconfirmed because the hard missing-budget failure suppressed confirmation.
 - Targeted graph get/query/impact consumers use one provenance-bound immutable
   snapshot and discard output if graph or exact source identity changes.
 - The graph half of Checkpoint 2 is working in the Project Hub: grouped symbol
@@ -243,8 +251,9 @@ Then read this file fully before doing anything else in this session.
   Fatal parent exit may leave owned temporary artifacts. The historical
   `docs/design/code-graph-resource-investigation.md` explains the bottleneck and
   retained-memory experiments; neither it nor the implementation rules out all
-  native, slow, or repository-specific leaks. Windows lifecycle verification
-  still requires platform CI evidence.
+  native, slow, or repository-specific leaks. Initial PR #180 platform lifecycle
+  suites passed; browser and runtime release gates remain unresolved until the
+  corrected head is verified.
 - Graph schema v4 is operational in this checkout, with two partially parsed
   source files and no failed files. Treat partial graph evidence as degraded and
   narrow or fall back to source discovery when needed.

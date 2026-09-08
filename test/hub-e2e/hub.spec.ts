@@ -204,7 +204,8 @@ test.describe("populated development fixture", () => {
     const determinate = page.getByRole("region", { name: "Active operation" });
     const determinateProgress = determinate.getByRole("progressbar");
     await expect(determinateProgress).toHaveAttribute("aria-valuenow", "68");
-    await expect(determinate.getByText("124 / 183", { exact: true })).toBeVisible();
+    await expect(determinateProgress).toHaveAccessibleName("Graph refresh · Parse");
+    await expect(determinate.getByText("124 / 183 files parsed", { exact: true })).toBeVisible();
     await expect(determinate.getByRole("button", { name: "View operation" })).toHaveAttribute(
       "href",
       `/jobs?job=${runningJobId}`,
@@ -214,6 +215,7 @@ test.describe("populated development fixture", () => {
     await expect(page.locator('[data-overview-workbench="ready"]')).toBeVisible();
     const indeterminate = page.getByRole("region", { name: "Active operation" });
     const indeterminateProgress = indeterminate.getByRole("progressbar");
+    await expect(indeterminateProgress).toHaveAccessibleName("Wiki refresh · Discover");
     await expect(indeterminateProgress).not.toHaveAttribute("aria-valuenow");
     await expect(indeterminate.getByText("37 completed", { exact: true })).toBeVisible();
   });
@@ -587,7 +589,9 @@ test.describe("populated development fixture", () => {
     await page.goto(`/jobs?fixture=populated&job=${runningJobId}`);
     await expect(page.getByRole("heading", { name: "Jobs", exact: true })).toBeVisible();
     await expect(page.getByRole("complementary", { name: "Job detail" })).toBeVisible();
-    await expect(page.getByRole("complementary", { name: "Job detail" }).getByRole("progressbar", { name: "68% complete" })).toBeVisible();
+    const detail = page.getByRole("complementary", { name: "Job detail" });
+    await expect(detail.getByRole("progressbar", { name: "68% of files parsed" })).toHaveAttribute("aria-valuenow", "68");
+    await expect(detail.getByText("124 / 183 files parsed", { exact: true })).toBeVisible();
     await expect(page.getByLabel("Graph operation phases").getByText("Parse", { exact: true })).toHaveAttribute("aria-current", "step");
     await expect(page.getByRole("button", { name: /^Refresh graph/ })).toBeDisabled();
     await expect(page.getByRole("button", { name: /^Rebuild graph/ })).toBeDisabled();

@@ -165,7 +165,7 @@ This single local run establishes Hub behavior, not a Hub speedup percentage or
 a portable resource budget. The matched engine comparison above measures a
 different scope. Pinned release results remain separate evidence.
 
-## Verification
+## Verification before PR #180
 
 Focused regressions cover fingerprint output parity and full-width references,
 foreign-key and partial bucket-write failures, catch-and-continue batch rollback,
@@ -189,13 +189,14 @@ match the prior surface apart from comments.
 Final package smoke passed, including refresh/rebuild through the packed graph
 entrypoint. The asset-only release gate passed. Rebuilt public declarations
 again matched apart from comments, and the real checkout's graph SHA-256 stayed
-unchanged. Windows lifecycle and pinned runtime release CI remain pending the PR;
-the local runs above do not replace those gates.
+unchanged. At this local checkpoint, Windows lifecycle and pinned runtime release
+CI were still pending the PR; the local runs did not replace those gates. The
+subsequent CI result and correction are recorded below.
 
 ## Verify Checklist
 
-These are the seven exact items from `.mex/context/conventions.md`, with current
-status and evidence.
+These are the seven exact items from `.mex/context/conventions.md`, with status
+and evidence at the pre-PR local checkpoint. Current correction status follows.
 
 1. **The public `src/index.ts` surface and emitted declarations changed only if compatibility work explicitly requires it.**
    **Pass:** `src/index.ts` is unchanged; emitted declarations differ only in
@@ -225,3 +226,73 @@ status and evidence.
    **Pass:** existing protocol/integrity/evaluator tests, adapter/maintenance
    regressions, full Hub web tests, and normalized graph/FTS parity cover these
    boundaries.
+
+## PR #180 initial CI and correction, 2026-09-09
+
+[CI run `34286120355`](https://github.com/mex-memory/mex/actions/runs/34286120355)
+passed the Node 22/24 jobs and both Windows/macOS storage-portability jobs. This
+supplies platform evidence for that tested head, including the new graph
+lifecycle and storage suites. The workflow was not green: the browser job
+failed two outdated graph progress assertions, and the final performance job
+failed on three missing Settings heap budgets from Phase 4. Browser assertion
+corrections are underway; their final verification is not claimed here.
+
+The pinned Linux measurement completed and validated against the report schema,
+but the deterministic `budget_missing` failure prevented runtime confirmation.
+Its Graph maintenance crossings remain first-pass observations, not a confirmed
+regression or a runtime pass. Existing Graph budgets remain unchanged.
+
+The Settings correction uses only the three missing heap leaves and
+calibration-status metadata, with the existing `ceil(p95 * 1.15)` formula. Small,
+medium, and large limits are 6,302,493, 6,304,420, and 6,308,933 bytes. The
+[retained calibration record](settings-heap-calibration.json) identifies the
+schema-valid Ubuntu 24.04 x64 / Node 22.22.0 report, all five raw samples, the
+verified raw-report SHA-256, and the unchanged unowned-budget hash. All prior
+asset/runtime limits, material thresholds, and confirmation rules remain
+frozen. A clean enforcing CI result on the corrected head remains required.
+
+The correction also skips tree-sitter runtime initialization when there are no
+uncached supported grammars to load. Explicit initialization, Python/Rust, and
+compiler fallback retain their existing behavior. The benchmark now observes
+the same job event stream as the Hub UI instead of making a status/database read
+every 20 ms. Its report records that observation method; POST-to-terminal timing
+and complete Hub/child resource sampling remain included. Stream frames, total
+bytes, event count, and the original absolute deadline are bounded.
+
+Local correction verification passed: two affected browser cases, eight UI phase
+cases, 48 grammar/extractor cases, 17 compiler/containment/Python/Rust engine cases,
+70 release-gate/engine cases, and 70 event-stream/measurement/gate cases. Typecheck
+and build passed. A real temporary Hub completed all four Graph/Wiki maintenance
+kinds through the event-stream observer. These are integration checks, not new
+calibration measurements. The earlier 723-file measurements describe `6e12e6d`;
+this correction does not replace that evidence with unmeasured speedup claims.
+
+### Current Verify Checklist for the CI correction
+
+1. **The public `src/index.ts` surface and emitted declarations changed only if compatibility work explicitly requires it.**
+   **Pass:** no public exports or declaration shapes changed; typecheck and build
+   pass. The grammar initialization guard is internal.
+2. **Ordinary reads remain non-mutating; writes have explicit authority, containment, revision, and failure-atomicity checks.**
+   **Pass:** Node/platform CI covered publication and rollback on the initial
+   head. This correction leaves those authorities intact; the temporary Hub
+   integration exercised the existing maintenance write paths successfully.
+3. **Inputs, scans, output, diagnostics, and retained local state remain deterministically bounded.**
+   **Qualified:** prior bounds stay enforced, and only the three missing Settings
+   limits are calibrated. No peak-RSS quota or globally bounded fatal-parent
+   artifact accumulation is claimed. Initial Windows/macOS lifecycle suites
+   passed; runtime release enforcement remains unresolved.
+4. **Focused tests for the changed boundary pass, followed by `npm run typecheck`; run `npm test` without a concurrent build when full coverage is warranted.**
+   **Pass locally:** focused correction results and typecheck are recorded
+   above. The new CI run must verify the complete suite on the corrected head.
+5. **Run `npm run build` for packaging/Hub/asset changes and `npm run eval:test` for graph evaluator or protocol changes.**
+   **Pass locally:** build and real Hub maintenance integration pass. Evaluator
+   and Graph/Wiki protocol shapes are unchanged. The initial pinned gate failed
+   hard and obtained no confirmation; clean enforcement is still required.
+6. **`git diff --check` passes and only intended tracked paths changed; generated `.mex/*.db*`, `.mex/local/`, `dist/`, and unrelated worktree files remain unstaged.**
+   **Pass at scoped review:** whitespace checks pass; calibration evidence,
+   owned leaves, browser assertions, the grammar guard, and measurement fixes
+   remain scoped. Grounding baselines and generated state remain unchanged.
+7. **Graph/Wiki protocol shapes, stable error codes, ordering, cursors, and non-mutation contracts remain covered when affected.**
+   **Pass:** browser assertions match the accepted phase/count UI; existing
+   compiler/extractor tests pass, and the observer validates the existing Hub
+   snapshot schema, job identity, kind, and event revision without new protocol.

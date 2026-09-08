@@ -116,8 +116,8 @@ describe("release benchmark contract", () => {
       medium: { sourceFiles: 16, wikiEntities: 16, workstreams: 1, inboxDrafts: 1, inboxProposals: 1, members: 2, relayDrafts: 1, relays: 1, activityEvents: 16 },
       large: { sourceFiles: 48, wikiEntities: 48, workstreams: 1, inboxDrafts: 1, inboxProposals: 1, members: 2, relayDrafts: 1, relays: 1, activityEvents: 48 },
     });
-    // Settings assets use the deterministic build; its heap limits remain
-    // absent until pinned calibration rather than inventing a local limit.
+    // Settings assets use the deterministic build; heap limits come from the
+    // retained pinned Linux report, with every unrelated limit still frozen.
     expect(Object.keys(budgets.assets.routes)).toEqual(RELEASE_ROUTE_KEYS);
     expect(budgets.assets.routes.settings).toEqual({ jsBytes: 8035, cssBytes: 2910, fontBytes: 0 });
     expect(Object.keys(releaseWorkbenchPaths({
@@ -134,7 +134,7 @@ describe("release benchmark contract", () => {
     expect(registeredPatterns).toEqual(Object.values(RELEASE_ROUTE_PATTERNS));
     for (const profile of ["small", "medium", "large"]) {
       expect(Object.keys(budgets.runtime.browserHeapBytes[profile]))
-        .toEqual(RELEASE_ROUTE_KEYS.filter((route) => route !== "settings"));
+        .toEqual(RELEASE_ROUTE_KEYS);
     }
     expect({
       small: {
@@ -186,7 +186,7 @@ describe("release benchmark contract", () => {
     }
     expect(budgets.provisional).toBe(false);
     expect(budgets.calibration).toEqual({
-      status: "calibrated-from-pinned-runs-33005876613-33083122092-33117048710-E33169865368-F33249296778-Goverview",
+      status: "pinned-checkpoints-A-G-and-Settings-34286120355",
       runtimeFormula: "ceil(measured p95 * 1.15)",
       assetFormula: "ceil(built bytes * 1.05)",
     });
@@ -293,12 +293,32 @@ describe("release benchmark contract", () => {
     },
   );
 
-  it("records Settings without pretending its missing heap calibration is a passing budget", () => {
+  it("pins Settings heap to retained runner samples without changing existing budgets", () => {
+    const evidence = JSON.parse(readFileSync(new URL("../../docs/design/settings-heap-calibration.json", import.meta.url), "utf8"));
+    expect(evidence.environment).toEqual({ ...budgets.environment, pinnedBudgetEnvironment: true });
+    expect(evidence.formula).toBe(budgets.calibration.runtimeFormula);
+    expect(evidence.sampleCount).toBe(budgets.samples.idleMemory);
+    const beforeSettings = structuredClone(budgets);
+    beforeSettings.calibration.status = evidence.previousCalibrationStatus;
+    for (const profile of ["small", "medium", "large"]) {
+      const measured = evidence.profiles[profile];
+      expect(summarize(measured.samples, evidence.sampleCount).p95).toBe(measured.p95);
+      expect(runtimeBudgetCandidate(measured.p95)).toBe(measured.budgetBytes);
+      expect(budgets.runtime.browserHeapBytes[profile].settings).toBe(measured.budgetBytes);
+      delete beforeSettings.runtime.browserHeapBytes[profile].settings;
+    }
+    expect(createHash("sha256").update(JSON.stringify(beforeSettings)).digest("hex"))
+      .toBe(evidence.unownedBudgetSha256);
+  });
+
+  it("still fails closed if a Settings heap budget is missing", () => {
     const profiles = Object.fromEntries(["small", "medium", "large"].map((profile) => [
       profile,
       { ...runtimeProfile(100), browserHeap: { outboundRequestCount: 0, routes: { settings: { p95: 123 } } } },
     ]));
-    const violations = evaluateRuntimeBudgets(profiles, budgets.runtime)
+    const missing = structuredClone(budgets.runtime);
+    for (const profile of ["small", "medium", "large"]) delete missing.browserHeapBytes[profile].settings;
+    const violations = evaluateRuntimeBudgets(profiles, missing)
       .filter(({ metric }) => metric.endsWith(".settings"));
     expect(violations).toEqual(["small", "medium", "large"].map((profile) => ({
       metric: `runtime.browserHeapBytes.${profile}.settings`, measured: 123, budget: null, reason: "budget_missing",
@@ -972,7 +992,7 @@ describe("release benchmark contract", () => {
     }
 
     const exactMetrics = committedConfirmableRuntimeMetrics();
-    expect(exactMetrics).toHaveLength(111);
+    expect(exactMetrics).toHaveLength(114);
     for (const metric of exactMetrics) {
       expect(runtimeMaterialityPolicy(metric)).not.toBeNull();
       const violation = runtimeViolation(metric);

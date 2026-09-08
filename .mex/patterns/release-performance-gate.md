@@ -16,7 +16,7 @@ mex:
   id: mx_01M1M0CJNG4SW0WCJF3NB547HE
   type: pattern
   status: promoted
-  revision: 4
+  revision: 5
   title: release-performance-gate
   grounds_to:
     - node: function:5f86a557c717597b411a71a82c000ded
@@ -105,6 +105,11 @@ calibration environment.
   work. The separate graph characterization exercises overlapping projects,
   installed declarations, inferred JavaScript and actual executable edits;
   it does not recalibrate the frozen release gate.
+- Observe maintenance completion through the same bounded event subscription as
+  the Hub UI. Aggressive status polling opens extra SQLite readers once process
+  isolation makes the Hub responsive, adding observer work to the operation.
+  Keep POST-to-terminal elapsed time and child CPU/RSS included, retain the
+  absolute deadline, and record the observation method in report provenance.
 - Back-to-back confirmation processes on one hosted VM share CPU steal,
   throttling, and I/O contention. Keep the raw reports as artifacts, pass only
   a bounded retry decision between jobs, and make missing or same-allocation
@@ -113,6 +118,15 @@ calibration environment.
   budget. Replacing it with a real lazy workbench should initially fail only
   that route's owned leaves; do not reinterpret the placeholder budget as a
   calibration result.
+- A schema-valid pinned measurement report can fail enforcement because a new
+  route's owned budget leaves are missing. Verify its exact raw-report hash,
+  runner, commit, schema, and samples before using it to calibrate only those
+  leaves with the frozen formula; an operationally invalid report is not
+  calibration evidence. A hard `budget_missing` failure suppresses runtime
+  confirmation, so other first-pass crossings remain unconfirmed. Run ordinary
+  enforcement again after calibration instead of widening existing budgets or
+  treating the completed measurement as a green gate. PR #180's Settings-only
+  correction is recorded in `docs/design/settings-heap-calibration.json`.
 
 ## Verify
 
@@ -134,6 +148,10 @@ and distinct hosted-job allocations; do not widen a budget until the retained
 raw samples show a real regression or stable shift.
 
 ## Update Scaffold
+
+The 2026-09-09 revision records the distinction between valid calibration
+measurements and successful enforcement. Existing grounding fingerprints and
+`bodyHash` baselines are retained unchanged.
 
 - [ ] Update `.mex/ROUTER.md` when the benchmark surface or pinned runner changes
 - [ ] Update `docs/design/release-performance-baseline.md` with the retained calibration

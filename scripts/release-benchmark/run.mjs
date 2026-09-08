@@ -77,6 +77,7 @@ const report = {
   configuration: {
     fixtureProfiles: RELEASE_FIXTURE_PROFILES,
     processMeasurement: PROCESS_MEASUREMENT,
+    maintenanceObservation: "job-event-stream",
     samples: budgets.samples,
     runtimeBudgetsEnforced: enforceRuntime,
     assetBudgetsEnforced: true,

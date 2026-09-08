@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { requestJson } from "./http.mjs";
 import { startProcessTreeSampler } from "./process-tree.mjs";
+import { validateBenchmarkJob, waitForHubJobTerminal } from "./job-events.mjs";
 
 const MAX_CHILD_OUTPUT_BYTES = 128 * 1024;
 const HUB_START_TIMEOUT_MS = 30_000;
@@ -322,7 +323,7 @@ export async function runMaintenanceJob(server, auth, kind, { timeoutMs = JOB_TI
   let measured;
   let completedAt;
   try {
-    const job = await hubJson(server, "/api/v1/jobs", auth, {
+    const job = validateBenchmarkJob(await hubJson(server, "/api/v1/jobs", auth, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -330,13 +331,10 @@ export async function runMaintenanceJob(server, auth, kind, { timeoutMs = JOB_TI
         "x-mex-csrf": auth.csrfToken,
       },
       body: JSON.stringify({ kind }),
-    }, requestOptions());
-    if (typeof job.id !== "string") throw new Error(`${kind} did not return a job ID.`);
-    let terminal = job;
-    while (!TERMINAL_JOB_STATES.has(terminal.state)) {
-      await delay(Math.min(20, Math.max(0, deadline - performance.now())));
-      terminal = await hubJson(server, `/api/v1/jobs/${encodeURIComponent(job.id)}`, auth, {}, requestOptions());
-    }
+    }, requestOptions()), { kind });
+    const terminal = TERMINAL_JOB_STATES.has(job.state)
+      ? job
+      : await waitForHubJobTerminal(server, auth, { id: job.id, kind, deadline });
     if (terminal.state !== "succeeded") {
       throw new Error(`${kind} settled as ${String(terminal.state)} (${String(terminal.problem?.code ?? "unknown")}).`);
     }

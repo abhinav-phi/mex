@@ -16,9 +16,16 @@ errors fail the run instead of becoming zero usage. Windows/macOS measurement
 support does not establish a second calibration platform.
 
 HTTP deadlines cover headers and bounded streamed bodies, including job
-creation. Each request is limited to five seconds or the remaining overall job
-deadline, whichever is smaller. A blocked Hub therefore fails the measurement
-instead of leaving the polling loop stuck indefinitely.
+creation. Ordinary requests and stream headers are limited to five seconds or
+the remaining job deadline, whichever is smaller. Maintenance then waits for a
+terminal snapshot on the same SSE route as the production UI, retaining the
+absolute job deadline through stream consumption. Events, event count, and
+total stream bytes are bounded. This avoids adding repeated SQLite status reads
+while the candidate works; no retry hides stream failures. Elapsed time still
+covers job creation through terminal delivery, and child resource sampling
+continues throughout. New reports identify this method with
+`configuration.maintenanceObservation: "job-event-stream"`; earlier reports
+without that field used repeated job-status polling.
 
 ## Separate graph characterization
 
