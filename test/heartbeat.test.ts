@@ -46,6 +46,26 @@ describe("heartbeat", () => {
     expect(result.memoryCleanupDue).toBe(true);
     expect(result.oldDailyMemoryFiles).toEqual(["memory/2026-04-20.md"]);
   });
+
+  it("reports zero participating files when no scaffold file opts into staleness (#41)", () => {
+    rmSync(join(tmpDir, ".mex/ROUTER.md"));
+    writeFileSync(join(tmpDir, ".mex/ROUTER.md"), "---\nname: router\n---\n\n# Router\n");
+    const result = checkHeartbeat(config, new Date("2026-05-14T00:00:00Z"));
+    expect(result.ok).toBe(true);
+    expect(result.filesWithoutLastUpdated).toBe(1);
+  });
+
+  it("omits filesWithoutLastUpdated once any file opts in", () => {
+    writeFileSync(join(tmpDir, ".mex/context/architecture.md"), "---\nname: architecture\n---\n\nno date here\n");
+    const result = checkHeartbeat(config, new Date("2026-05-14T00:00:00Z"));
+    expect(result.filesWithoutLastUpdated).toBeUndefined();
+  });
+
+  it("keeps staleness active and the field absent when files carry dates", () => {
+    const result = checkHeartbeat(config, new Date("2026-05-14T00:00:00Z"));
+    expect(result.filesWithoutLastUpdated).toBeUndefined();
+    expect(result.staleFiles).toEqual([]);
+  });
 });
 
 function frontmatter(name: string, lastUpdated: string): string {
