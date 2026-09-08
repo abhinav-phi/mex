@@ -35,7 +35,7 @@ import {
   createGraphSemanticInputLedger,
   discoverBoundedGraphPaths,
 } from "./corpus-policy.js";
-import { graphManifest } from "./engine-impl.js";
+import { graphManifest, graphManifestDiffersOnlyByConfig } from "./engine-impl.js";
 import { isSupportedSourceFile } from "./extraction/grammars.js";
 import { bandHashInts, decodeMinhash } from "./fingerprint.js";
 import type { Fingerprint } from "./reconcile.js";
@@ -244,6 +244,15 @@ export interface InternalGraphFreshObservationToken {
 export interface InternalGraphStatusInspection {
   readonly graphStatus: GraphStatus;
   readonly freshObservation: InternalGraphFreshObservationToken | null;
+  /**
+   * @internal Exact identity for a store that would read `fresh` if its config
+   * inputs had not drifted.
+   *
+   * Optional so a caller-supplied status function, which cannot prove the
+   * distinction, keeps abstaining. Present only alongside a `stale` status:
+   * the store is bindable, but what it says about resolution is not current.
+   */
+  readonly configDriftObservation?: InternalGraphFreshObservationToken | null;
 }
 
 interface FileRow {
@@ -297,6 +306,9 @@ interface InspectionContext {
   maxChangedPaths: number;
 }
 
+/** @internal Why a store may be bound for reading: proven fresh, or config-drifted. */
+export type ReadObservationClass = "fresh" | "config-drifted";
+
 interface FreshObservation {
   repo: RepoObservation;
   live: LiveSources;
@@ -320,6 +332,7 @@ interface InspectionAttempt {
   status: GraphStatus;
   retry: boolean;
   freshObservation?: InternalGraphFreshObservationToken;
+  configDriftObservation?: InternalGraphFreshObservationToken;
 }
 
 interface ClassifiedError {
@@ -369,12 +382,14 @@ export async function inspectGraphStatusWithFreshObservation(
       return {
         graphStatus: inspected.status,
         freshObservation: inspected.freshObservation ?? null,
+        configDriftObservation: inspected.configDriftObservation ?? null,
       };
     }
   }
   return {
     graphStatus: lastAttempt!.status,
     freshObservation: null,
+    configDriftObservation: null,
   };
 }
 
@@ -913,7 +928,29 @@ async function inspectGraphStatusAttempt(
       changes: sourceChanges.changes,
       diagnostics,
     });
-    if (status !== "fresh" || !snapshot || !snapshotRaw || !manifest) {
+    // A store whose only unproven input is config content is still an exact
+    // description of the source it indexed. Bind it like a fresh one so a
+    // reader can serve it labelled, and keep every other reason to distrust it
+    // — engine identity, source drift, branch, corpus digest, parse health,
+    // incomplete inspection — refusing exactly as before.
+    const driftClass: ReadObservationClass | null = status === "fresh"
+      ? "fresh"
+      : status === "stale"
+        && snapshot !== undefined
+        && manifest !== null
+        && !rebuildRequired
+        && !freshnessUnproven
+        && !parseDegraded
+        && sourceChanges.changes.configChanged
+        && sourceChanges.changes.total === 0
+        && !sourceChanges.changes.branchChanged
+        && !sourceChanges.digestChanged
+        && !sourceChanges.changes.grammarChanged
+        && (snapshot.manifestHash === manifest.manifestHash
+          || graphManifestDiffersOnlyByConfig(manifest, snapshot.manifestHash, snapshot.configHash))
+        ? "config-drifted"
+        : null;
+    if (driftClass === null || !snapshot || !snapshotRaw || !manifest) {
       return finishDatabaseResult(result);
     }
 
@@ -927,12 +964,14 @@ async function inspectGraphStatusAttempt(
       snapshotRaw,
       database,
       databaseIdentity: databaseFileIdentity(fileStat),
-    });
+    }, driftClass);
     if (validation.stable) {
       return {
         retry: false,
         status: result,
-        freshObservation: validation.freshObservation,
+        ...(driftClass === "fresh"
+          ? { freshObservation: validation.freshObservation }
+          : { configDriftObservation: validation.freshObservation }),
       };
     }
     const unstable = {
@@ -1209,6 +1248,7 @@ function stabilizeDatabaseResult(
 async function validateFreshObservation(
   context: InspectionContext,
   before: FreshObservation,
+  driftClass: ReadObservationClass = "fresh",
 ): Promise<FreshValidation> {
   const firstSidecars = inspectGraphSidecars(before.database.canonicalPath);
   if (firstSidecars.state !== "clear") {
@@ -1324,8 +1364,15 @@ async function validateFreshObservation(
   const changed: string[] = [];
   if (!sameRepoState(before.repo.state, repo.state)) changed.push("Git state");
   if (liveSourceIdentity(before.live) !== liveSourceIdentity(live)) changed.push("source corpus");
+  // Two comparisons live here. Whether the two observations agree with each
+  // other is a race check and always applies. Whether they agree with the
+  // stored snapshot is a freshness check, already decided by the caller — for
+  // a config-drifted read it is the very condition being served, so repeating
+  // it here would report a race that did not happen.
   if (semanticInputIdentity(before.semantic) !== semanticInputIdentity(semantic)
-    || semantic.changedPaths.length > 0) changed.push("compiler semantic inputs");
+    || (driftClass === "fresh" && semantic.changedPaths.length > 0)) {
+    changed.push("compiler semantic inputs");
+  }
   if (!sameManifest(before.manifest, manifest)) changed.push("graph manifest");
   if (before.snapshotRaw !== snapshotRaw || before.databaseIdentity !== identity) changed.push("graph snapshot");
   if (finalContained.database.canonicalPath !== contained.database.canonicalPath
