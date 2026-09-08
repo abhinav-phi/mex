@@ -20,6 +20,28 @@ interface FingerprintRow {
   token_count: number;
 }
 
+/**
+ * Full graph publication only: the caller owns the encompassing transaction
+ * and MUST roll it back if this function throws. This deliberately omits a
+ * corpus-sized nested savepoint, whose SQLite memory journal can make each
+ * bucket write revisit an increasingly large retained journal prefix.
+ *
+ * Do not select this path merely because a transaction is active. A caller
+ * that catches a write failure and continues must use FingerprintStore.upsertMany.
+ * Kept outside the class so it cannot leak through the public grounding types.
+ * @internal
+ */
+export function upsertFingerprintsInOwnedTransaction(
+  db: SqliteDatabase,
+  entries: Iterable<{ nodeId: string; fingerprint: Fingerprint }>,
+): void {
+  writeFingerprints(db, entries, false);
+}
+
+// One fixed synchronous read statement per connection; weak ownership does not
+// retain closed/discarded databases, and no caller-owned iterator is reused.
+const fingerprintReadStatements = new WeakMap<SqliteDatabase, ReturnType<SqliteDatabase["prepare"]>>();
+
 export class FingerprintStore {
   constructor(private readonly db: SqliteDatabase) {}
 
@@ -28,84 +50,15 @@ export class FingerprintStore {
   }
 
   /**
-   * Persist a corpus of fingerprints with one savepoint and one set of
-   * prepared statements. Each node still replaces exactly the same fingerprint
-   * and LSH rows as {@link upsert}; batching only removes statement preparation,
-   * savepoint, and per-band insert overhead from full graph builds.
+   * Atomically replace a batch, including when an enclosing transaction catches
+   * the failure and continues. The last entry for each node wins.
    */
   upsertMany(entries: Iterable<{ nodeId: string; fingerprint: Fingerprint }>): void {
-    const latestByNode = new Map<string, { nodeId: string; fingerprint: Fingerprint }>();
-    for (const entry of entries) latestByNode.set(entry.nodeId, entry);
-    const ordered = [...latestByNode.values()].sort((left, right) => left.nodeId.localeCompare(right.nodeId));
-    if (ordered.length === 0) return;
-
-    const upsertFingerprint = this.db.prepare(
-      `INSERT INTO node_fingerprints (node_id, minhash, neighbors, token_count)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT(node_id) DO UPDATE SET minhash=excluded.minhash,
-         neighbors=excluded.neighbors, token_count=excluded.token_count`,
-    );
-    // ON CONFLICT DO UPDATE keeps the existing row, so `ref` is stable across
-    // re-upserts of the same node — stale LSH rows are deleted by ref below.
-    const selectRef = this.db.prepare(
-      "SELECT CAST(ref AS TEXT) AS ref FROM node_fingerprints WHERE node_id = ?",
-    );
-    const bucketCount = bandHashInts(ordered[0]!.fingerprint).length;
-    const insertBuckets = this.db.prepare(
-      `INSERT INTO lsh_buckets (band, band_hash, ref) VALUES ${
-        Array.from({ length: bucketCount }, () => "(?, ?, ?)").join(", ")
-      }`,
-    );
-
-    this.db.exec("SAVEPOINT mex_fingerprint_upsert_many");
-    try {
-      // Delete prior buckets before inserting any replacements. Chunked IN
-      // deletes over the ref subquery scan the table a bounded number of times
-      // and produce the identical final rows (the last duplicate entry wins).
-      const deleteChunkSize = 500;
-      for (let offset = 0; offset < ordered.length; offset += deleteChunkSize) {
-        const nodeIds = ordered.slice(offset, offset + deleteChunkSize).map((entry) => entry.nodeId);
-        this.db.prepare(
-          `DELETE FROM lsh_buckets WHERE ref IN (
-             SELECT ref FROM node_fingerprints WHERE node_id IN (${nodeIds.map(() => "?").join(",")})
-           )`,
-        ).run(...nodeIds);
-      }
-      for (const { nodeId, fingerprint } of ordered) {
-        const buckets = bandHashInts(fingerprint);
-        if (buckets.length !== bucketCount) {
-          throw new Error(`Inconsistent fingerprint band count for ${nodeId}.`);
-        }
-        upsertFingerprint.run(
-          nodeId,
-          encodeMinhash(fingerprint.minhash),
-          JSON.stringify(fingerprint.neighbors),
-          fingerprint.tokenCount,
-        );
-        const row = selectRef.get(nodeId) as { ref: string } | undefined;
-        if (!row) throw new Error(`Fingerprint upsert failed for ${nodeId}.`);
-        const ref = BigInt(row.ref);
-        insertBuckets.run(...buckets.flatMap((bandHash, band) => [band, bandHash, ref]));
-      }
-      this.db.exec("RELEASE mex_fingerprint_upsert_many");
-    } catch (error) {
-      this.db.exec("ROLLBACK TO mex_fingerprint_upsert_many");
-      this.db.exec("RELEASE mex_fingerprint_upsert_many");
-      throw error;
-    }
+    writeFingerprints(this.db, entries, true);
   }
 
   get(nodeId: string): Fingerprint | null {
-    const row = this.db.prepare(
-      `SELECT node_id, minhash, neighbors, token_count
-       FROM node_fingerprints WHERE node_id = ?
-       UNION ALL
-       SELECT fingerprints.node_id, fingerprints.minhash, fingerprints.neighbors, fingerprints.token_count
-       FROM node_aliases aliases
-       JOIN node_fingerprints fingerprints ON fingerprints.node_id = aliases.canonical_node_id
-       WHERE aliases.alias_id = ?
-       LIMIT 1`,
-    ).get(nodeId, nodeId) as FingerprintRow | undefined;
+    const row = fingerprintReadStatement(this.db).get(nodeId, nodeId) as FingerprintRow | undefined;
     return row ? decodeRow(row) : null;
   }
 
@@ -208,6 +161,91 @@ export class FingerprintStore {
   deleteGroundedSource(scaffoldFile: string, nodeId: string): void {
     this.deleteBaseline({ kind: "scaffold", id: scaffoldFile }, nodeId);
   }
+}
+
+function writeFingerprints(
+  db: SqliteDatabase,
+  entries: Iterable<{ nodeId: string; fingerprint: Fingerprint }>,
+  independentRollback: boolean,
+): void {
+  const latestByNode = new Map<string, { nodeId: string; fingerprint: Fingerprint }>();
+  for (const entry of entries) latestByNode.set(entry.nodeId, entry);
+  const ordered = [...latestByNode.values()].sort((left, right) => left.nodeId.localeCompare(right.nodeId));
+  if (ordered.length === 0) return;
+
+  const upsertFingerprint = db.prepare(
+    `INSERT INTO node_fingerprints (node_id, minhash, neighbors, token_count)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(node_id) DO UPDATE SET minhash=excluded.minhash,
+       neighbors=excluded.neighbors, token_count=excluded.token_count`,
+  );
+  // ON CONFLICT DO UPDATE keeps the existing row, so `ref` is stable across
+  // re-upserts of the same node — stale LSH rows are deleted by ref below.
+  const selectRef = db.prepare(
+    "SELECT CAST(ref AS TEXT) AS ref FROM node_fingerprints WHERE node_id = ?",
+  );
+  const bucketCount = bandHashInts(ordered[0]!.fingerprint).length;
+  const insertBuckets = db.prepare(
+    `INSERT INTO lsh_buckets (band, band_hash, ref) VALUES ${
+      Array.from({ length: bucketCount }, () => "(?, ?, ?)").join(", ")
+    }`,
+  );
+
+  if (independentRollback) db.exec("SAVEPOINT mex_fingerprint_upsert_many");
+  try {
+    // Delete prior buckets before inserting any replacements. Chunked IN
+    // deletes over the ref subquery scan the table a bounded number of times
+    // and produce the identical final rows (the last duplicate entry wins).
+    const deleteChunkSize = 500;
+    for (let offset = 0; offset < ordered.length; offset += deleteChunkSize) {
+      const nodeIds = ordered.slice(offset, offset + deleteChunkSize).map((entry) => entry.nodeId);
+      db.prepare(
+        `DELETE FROM lsh_buckets WHERE ref IN (
+           SELECT ref FROM node_fingerprints WHERE node_id IN (${nodeIds.map(() => "?").join(",")})
+         )`,
+      ).run(...nodeIds);
+    }
+    for (const { nodeId, fingerprint } of ordered) {
+      const buckets = bandHashInts(fingerprint);
+      if (buckets.length !== bucketCount) {
+        throw new Error(`Inconsistent fingerprint band count for ${nodeId}.`);
+      }
+      upsertFingerprint.run(
+        nodeId,
+        encodeMinhash(fingerprint.minhash),
+        JSON.stringify(fingerprint.neighbors),
+        fingerprint.tokenCount,
+      );
+      const row = selectRef.get(nodeId) as { ref: string } | undefined;
+      if (!row) throw new Error(`Fingerprint upsert failed for ${nodeId}.`);
+      const ref = BigInt(row.ref);
+      insertBuckets.run(...buckets.flatMap((bandHash, band) => [band, bandHash, ref]));
+    }
+    if (independentRollback) db.exec("RELEASE mex_fingerprint_upsert_many");
+  } catch (error) {
+    if (independentRollback) {
+      db.exec("ROLLBACK TO mex_fingerprint_upsert_many");
+      db.exec("RELEASE mex_fingerprint_upsert_many");
+    }
+    throw error;
+  }
+}
+
+function fingerprintReadStatement(db: SqliteDatabase): ReturnType<SqliteDatabase["prepare"]> {
+  const existing = fingerprintReadStatements.get(db);
+  if (existing) return existing;
+  const statement = db.prepare(
+    `SELECT node_id, minhash, neighbors, token_count
+     FROM node_fingerprints WHERE node_id = ?
+     UNION ALL
+     SELECT fingerprints.node_id, fingerprints.minhash, fingerprints.neighbors, fingerprints.token_count
+     FROM node_aliases aliases
+     JOIN node_fingerprints fingerprints ON fingerprints.node_id = aliases.canonical_node_id
+     WHERE aliases.alias_id = ?
+     LIMIT 1`,
+  );
+  fingerprintReadStatements.set(db, statement);
+  return statement;
 }
 
 interface BaselineRow {

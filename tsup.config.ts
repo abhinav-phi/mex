@@ -2,12 +2,12 @@ import { defineConfig } from "tsup";
 
 /**
  * Two-config build:
- *  - cli  → dist/cli.js   (shebang banner, no .d.ts; consumed by `bin`)
+ *  - cli + private graph candidate → executable bundles, no public declarations
  *  - index → dist/index.js + dist/index.d.ts (library entry consumed via `exports`)
  */
 export default defineConfig([
   {
-    entry: { cli: "src/cli.ts" },
+    entry: { cli: "src/cli.ts", "graph-candidate": "src/graph/candidate-entry.ts" },
     format: ["esm"],
     target: "node20",
     outDir: "dist",

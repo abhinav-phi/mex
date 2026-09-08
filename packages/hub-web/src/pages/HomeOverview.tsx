@@ -878,7 +878,8 @@ function OperationCard({ operation }: { operation: OverviewResponse["operation"]
   const job = operation.active ?? operation.latestRelevantFailure;
   if (job === null) return null;
   const isActive = operation.active !== null;
-  const percent = job.progress?.total === undefined
+  const graph = job.kind === "graph_refresh" || job.kind === "graph_rebuild";
+  const percent = job.progress?.total === undefined || (graph && job.phase !== "parse")
     ? null
     : Math.round((job.progress.completed / job.progress.total) * 100);
   return (
@@ -906,7 +907,9 @@ function OperationCard({ operation }: { operation: OverviewResponse["operation"]
             <Progress value={percent}>
               <ProgressLabel>{sentenceCase(job.kind)} · {sentenceCase(job.phase)}</ProgressLabel>
               <ProgressValue>
-                {() => percent !== null
+                {() => graph && job.progress
+                  ? `${job.progress.completed}${job.progress.total === undefined ? "" : ` / ${job.progress.total}`} files parsed`
+                  : percent !== null
                   ? `${job.progress!.completed} / ${job.progress!.total}`
                   : job.progress ? `${job.progress.completed} completed` : "In progress"}
               </ProgressValue>

@@ -7,7 +7,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { MexPortError } from "../../team/contracts/shared.js";
 import {
   createRepositoryGraphPort,
@@ -91,6 +91,24 @@ function expectPortCode(error: unknown, code: string): void {
 }
 
 describe("RepositoryGraphPort", () => {
+  it.each([undefined, "process"] as const)("forwards maintenance authority with execution mode %s", async (candidateExecution) => {
+    const root = temporaryRoot();
+    const refresh = vi.fn(async () => { throw new Error("injected stop"); });
+    const rebuild = vi.fn(async () => { throw new Error("injected stop"); });
+    const port = createRepositoryGraphPort(root, {
+      candidateExecution,
+      __internal: { refresh, rebuild },
+    });
+    const controller = new AbortController();
+    const onProgress = vi.fn();
+    const options = { signal: controller.signal, onProgress };
+    await expect(port.refresh(options)).rejects.toBeInstanceOf(MexPortError);
+    await expect(port.rebuild(options)).rejects.toBeInstanceOf(MexPortError);
+    const forwarded = candidateExecution ? { ...options, candidateExecution } : options;
+    expect(refresh).toHaveBeenCalledExactlyOnceWith(root, forwarded);
+    expect(rebuild).toHaveBeenCalledExactlyOnceWith(root, forwarded);
+  });
+
   it("maps a non-lossless repair state to sanitized rebuild guidance", async () => {
     const root = temporaryRoot();
     source(root, "src/service.ts", "export const service = true;\n");

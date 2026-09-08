@@ -36,7 +36,7 @@ export async function runHubCommand(options: RunHubCommandOptions): Promise<void
     projectRoot: options.projectRoot,
     scaffoldId: options.scaffoldId,
   });
-  const graph = createRepositoryGraphPort(options.projectRoot);
+  const graph = createRepositoryGraphPort(options.projectRoot, { candidateExecution: "process" });
   const wiki = createRepositoryWikiPort(options.projectRoot, {
     groundingBridge: graph,
     ...(options.wikiExclude === undefined ? {} : { exclude: options.wikiExclude }),

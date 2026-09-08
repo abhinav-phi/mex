@@ -11,12 +11,12 @@ edges:
     condition: "when the regression involves Hub routes, browser sessions, or jobs"
   - target: "patterns/safe-graph-snapshot-evolution.md"
     condition: "when changing Graph maintenance or corpus inspection"
-last_updated: 2026-09-03
+last_updated: 2026-09-09
 mex:
   id: mx_01M1M0CJNG4SW0WCJF3NB547HE
   type: pattern
   status: promoted
-  revision: 3
+  revision: 4
   title: release-performance-gate
   grounds_to:
     - node: function:5f86a557c717597b411a71a82c000ded
@@ -87,9 +87,24 @@ calibration environment.
   pagination.
 - Cross-tab job discovery must be event-driven. Do not restore continuous
   polling to repair cache invalidation.
-- Corpus byte caps prevent runaway allocation, but maintenance should also
-  release source bodies and parser state as each file or bounded compiler batch
-  completes.
+- Corpus byte caps bound admitted input, not process RAM. Compiler dependencies,
+  AST/checker state, graph materialization and native storage can amplify that
+  input; measure peak working set separately from post-cleanup retained memory.
+  A low heap cap can abort extraction rather than make it memory-efficient.
+- Synthetic fixture size is not repository scale. The current 48-file largest
+  fixture missed a real 708-file fingerprint write dominated by SQLite nested
+  savepoint bookkeeping. Separate fingerprint computation from persistence,
+  inspect native stacks, and verify both output equality and failure rollback.
+  See the [2026-09-09 investigation](../../docs/design/code-graph-resource-investigation.md).
+- A maintenance child must be included in aggregate CPU/RSS measurements.
+  Measure real HTTP/cancel responsiveness and parent-owned temporary cleanup;
+  fatal heap exhaustion bypasses JavaScript `finally` blocks. Process isolation
+  alone is not a reduction in total work or peak memory.
+  The release sampler now sums Hub and observed descendants. RSS can count
+  shared pages twice; sampled CPU can miss short-lived children and final exit
+  work. The separate graph characterization exercises overlapping projects,
+  installed declarations, inferred JavaScript and actual executable edits;
+  it does not recalibrate the frozen release gate.
 - Back-to-back confirmation processes on one hosted VM share CPU steal,
   throttling, and I/O contention. Keep the raw reports as artifacts, pass only
   a bounded retry decision between jobs, and make missing or same-allocation

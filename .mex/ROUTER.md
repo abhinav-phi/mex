@@ -16,7 +16,7 @@ edges:
     condition: when starting a task — check the pattern index for a matching pattern file
   - target: patterns/release-readme-visuals.md
     condition: when refreshing the release README, badges, community links, or architecture illustrations
-last_updated: 2026-09-08
+last_updated: 2026-09-09
 ---
 
 # Session Bootstrap
@@ -132,6 +132,14 @@ Then read this file fully before doing anything else in this session.
   the isolated Windows changes. Runner verification is attached to the PR.
 - Explicit graph status, refresh, and isolated rebuild/recovery commands preserve
   the last trustworthy index behind one cross-process maintenance lease.
+- Graph performance work is implemented separately on
+  `codex/0.8.1-graph-performance`: outer-owned fingerprint publication, fixed
+  statement reuse, smaller continuity/reference staging, and disposable Hub
+  candidate construction. The parent retains validation and publication;
+  ordinary CLI construction remains in process. Implementation, verification,
+  and actual Hub measurements are in
+  `docs/design/code-graph-performance-implementation.md`. This targets the
+  release branch and is not a published release.
 - Targeted graph get/query/impact consumers use one provenance-bound immutable
   snapshot and discard output if graph or exact source identity changes.
 - The graph half of Checkpoint 2 is working in the Project Hub: grouped symbol
@@ -228,6 +236,15 @@ Then read this file fully before doing anything else in this session.
 - Public package-root exports for the provisional team contracts.
 
 **Known Issues:**
+- Graph construction still rebuilds the full eligible corpus after source
+  changes and has no peak-memory quota. The branch's actual Hub probe peaked at
+  about 1,963 MiB combined RSS and retained multi-second pauses around initial
+  checks and validation/publication despite responsive compiler-phase polling.
+  Fatal parent exit may leave owned temporary artifacts. The historical
+  `docs/design/code-graph-resource-investigation.md` explains the bottleneck and
+  retained-memory experiments; neither it nor the implementation rules out all
+  native, slow, or repository-specific leaks. Windows lifecycle verification
+  still requires platform CI evidence.
 - Graph schema v4 is operational in this checkout, with two partially parsed
   source files and no failed files. Treat partial graph evidence as degraded and
   narrow or fall back to source discovery when needed.

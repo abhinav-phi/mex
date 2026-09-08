@@ -188,6 +188,8 @@ interface AdapterDependencies {
 
 export interface RepositoryGraphPortOptions {
   dbPath?: string;
+  /** Hub construction runs separately; ordinary readers and CLI keep their defaults. */
+  candidateExecution?: "process";
   /** @internal Deterministic dependency seams for adapter conformance tests. */
   __internal?: Partial<AdapterDependencies>;
 }
@@ -203,10 +205,12 @@ export class RepositoryGraphPort implements GraphPort {
   readonly #projectRoot: string;
   readonly #dbPath: string;
   readonly #deps: AdapterDependencies;
+  readonly #candidateExecution?: "process";
 
   constructor(projectRoot: string, options: RepositoryGraphPortOptions = {}) {
     this.#projectRoot = resolve(projectRoot);
     this.#dbPath = options.dbPath ?? resolve(this.#projectRoot, ".mex", "graph.db");
+    this.#candidateExecution = options.candidateExecution;
     this.#deps = {
       inspectStatus: options.__internal?.inspectStatus ?? inspectGraphStatus,
       loadFresh: options.__internal?.loadFresh ?? loadFreshGraphReadSession,
@@ -486,10 +490,13 @@ export class RepositoryGraphPort implements GraphPort {
     operation: "refresh" | "rebuild",
     options: GraphMaintenanceOptions,
   ): Promise<GraphRefreshResult> {
+    const executionOptions = this.#candidateExecution
+      ? { ...options, candidateExecution: this.#candidateExecution }
+      : options;
     try {
       return operation === "refresh"
-        ? await this.#deps.refresh(this.#projectRoot, options)
-        : await this.#deps.rebuild(this.#projectRoot, options);
+        ? await this.#deps.refresh(this.#projectRoot, executionOptions)
+        : await this.#deps.rebuild(this.#projectRoot, executionOptions);
     } catch (error) {
       throw translateMaintenanceError(error);
     }

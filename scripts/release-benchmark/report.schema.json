@@ -231,7 +231,8 @@
       "required": ["elapsedMs", "peakRssBytes"],
       "properties": {
         "elapsedMs": { "$ref": "#/$defs/summary10" },
-        "peakRssBytes": { "$ref": "#/$defs/summary5" }
+        "peakRssBytes": { "$ref": "#/$defs/summary5" },
+        "cpuMs": { "$ref": "#/$defs/summary10" }
       }
     },
     "maintenanceSummaries": {

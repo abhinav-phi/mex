@@ -107,6 +107,10 @@ jobs:
           src/wiki/operations/__tests__/identity-precision.test.ts
           src/wiki/operations/__tests__/integrity.test.ts
           src/wiki/index/__tests__/maintenance.test.ts
+          src/graph/__tests__/candidate-process.test.ts
+          src/graph/__tests__/fingerprint-store-transactions.test.ts
+          src/graph/__tests__/store-statements.test.ts
+          src/graph/__tests__/engine-continuity-resources.test.ts
       - run: npm run build
       - name: Smoke test the packed install
         run: npm run test:hub:package
