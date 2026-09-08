@@ -23,6 +23,7 @@ const InboxPage = lazy(async () => ({ default: (await import("../pages/InboxPage
 const RelayPage = lazy(async () => ({ default: (await import("../pages/RelayPage")).RelayPage }));
 const JobsPage = lazy(async () => ({ default: (await import("../pages/JobsPage")).JobsPage }));
 const HealthPage = lazy(async () => ({ default: (await import("../pages/HealthPage")).HealthPage }));
+const SettingsPage = lazy(async () => ({ default: (await import("../pages/SettingsPage")).SettingsPage }));
 
 function SessionBoundary() {
   const session = useSession();
@@ -103,6 +104,7 @@ export function AppRoutes() {
         <Route path="activity" element={<ActivityPage />} />
         <Route path="jobs" element={<JobsPage />} />
         <Route path="health" element={<HealthPage />} />
+        <Route path="settings" element={<SettingsPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

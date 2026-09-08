@@ -110,6 +110,22 @@ changes only confirmation allocation and provenance: `budgets.json`, sample
 counts, material thresholds, category floors, and calibration formulas remain
 byte-for-byte unchanged.
 
+The 0.8.1 Settings route is included in the route manifest, isolated asset
+closures, and per-profile browser heap measurement. Its readiness check waits
+for the loaded logging preference form and current selection, so a loading or
+unavailable page cannot satisfy measurement. Settings must remain outside the
+initial shell and Home closures. Only its additive asset limits may be copied
+from the final deterministic build using `ceil(bytes * 1.05)`.
+
+Settings heap calibration is pending: the three Settings heap budget leaves
+remain absent until a retained Ubuntu 24.04/Node 22 report supplies the usual
+`ceil(p95 * 1.15)` candidates. Measurement therefore emits `budget_missing`
+and blocks release; missing calibration is not a zero-cost or passing route.
+The schemas accept Settings as an additive optional field so historical
+reports stay valid. Every previously frozen budget and formula remains
+unchanged. A clean enforcing pinned run on the final exact head is still
+required after calibration.
+
 ## Runner contract
 
 `npm run benchmark:release` builds the package and writes the bounded JSON
@@ -150,7 +166,7 @@ Each profile records:
 Every profile additionally records five Chromium heap samples after every
 registered Hub route: Home, Search, Knowledge browse/detail, Code search/symbol,
 Workstreams, Specs browse/detail, Inbox, Relay, the honest unavailable Playbooks
-route, Members, Activity, Jobs, Health, and the wildcard not-found route.
+route, Members, Activity, Jobs, Health, Settings, and the wildcard not-found route.
 Every browser context begins empty. Its request audit fails if a route contacts
 any origin other than the exact loopback Hub origin.
 
@@ -159,7 +175,7 @@ initial static import closure and the incremental JavaScript, CSS, and font
 bytes for every registered route. Fonts referenced from global CSS are counted
 as initial assets even when Vite does not attach them to a manifest entry.
 The initial shell and Home must not statically close over Code, Knowledge,
-Workstreams, Specs, Inbox, Relay, Members, Activity, or setup code, and the
+Workstreams, Specs, Inbox, Relay, Members, Activity, Settings, or setup code, and the
 largest JavaScript chunk is checked explicitly. The Activity route is a
 read-only workbench and has no nested manual-recorder chunk. Its source
 controls, default feed, and accessible shadcn Collapsible controls remain in

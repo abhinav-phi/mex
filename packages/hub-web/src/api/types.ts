@@ -1,4 +1,7 @@
 export type {
+  AgentLoggingMode,
+  AgentLoggingPolicy,
+  AgentLoggingUpdateRequest,
   ActivityActor,
   ActivityDiagnostic,
   ActivityItem,

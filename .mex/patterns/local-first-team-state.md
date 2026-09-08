@@ -17,7 +17,7 @@ mex:
   id: mx_01M1M0CJMRWZY5TZCEBSFJPAHT
   type: pattern
   status: promoted
-  revision: 6
+  revision: 7
   title: local-first-team-state
   grounds_to:
     - node: function:ecf1fb45ac2910d02bc78f6f761c0145
@@ -132,6 +132,19 @@ under `.mex/local/`. When present, the legacy decision-event JSONL stays byte-fo
   interrupted same-operation retry, and remove only its exact bytes after success.
   Bound pending count and bytes; never replace a conflicting receipt, silently
   evict pending operations, or put draft content into the metadata-only journal.
+- Checkout-local preferences need exact raw-byte revision checks. Canonical
+  Git checkout line-ending normalization can hide a local edit; use the exact
+  read/replace mode for those preferences while preserving existing canonical
+  artifact behavior. Reading an absent preference must not initialize local
+  state or silently replace a malformed file with a default.
+- Optional agent logging is advisory and separate from mandatory workflow
+  Activity. Read the current policy dynamically instead of rewriting agent
+  instructions on every preference change. Retrieve bounded historical notes
+  by subject or recorded file, and report incomplete history honestly.
+- Capture new Wiki creation provenance from explicit operation authority, while
+  retaining supplied attribution. Keep the capture opt-in at ordinary authoring
+  boundaries so legacy signed Team/Spec plans and recovery bytes stay stable;
+  adopting older prose must not claim its importer wrote it.
 
 ## Verify
 

@@ -108,6 +108,16 @@ Then read this file fully before doing anything else in this session.
   so an interrupted save can resume exactly. Explicit Member reactivation
   preserves the original identity and older handoffs. This is local
   implementation on `codex/0.8.1`; release gates remain in the release plan.
+- Phase 4 adds checkout-local agent logging preferences through `mex logging`
+  and Hub Settings, with a quiet significant-events default and managed
+  instructions for relevant bounded Timeline retrieval. Timeline filters now
+  honor type, message, and recorded files without initializing project/global
+  identity. Unknown untyped context files abstain during Wiki migration.
+  Ordinary Wiki creation/synthesis retain explicit provenance or capture the
+  operation actor/time/session; completed plain creates replay without duplicate
+  records. Legacy Team/Spec recovery bytes stay unchanged. This is local
+  implementation on `codex/0.8.1`; Settings heap calibration on the pinned runner remains an
+  explicit release gate alongside the existing release requirements.
 - Explicit graph status, refresh, and isolated rebuild/recovery commands preserve
   the last trustworthy index behind one cross-process maintenance lease.
 - Targeted graph get/query/impact consumers use one provenance-bound immutable

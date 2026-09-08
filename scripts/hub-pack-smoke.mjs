@@ -155,6 +155,22 @@ try {
   }
 
   const cli = join(installed, "dist", "cli.js");
+  const beforeLoggingRead = snapshotProtectedProjectState(project);
+  const localBeforeLoggingRead = existsSync(join(project, ".mex", "local"));
+  const defaultLogging = JSON.parse(run(process.execPath, [cli, "logging", "--json"], project));
+  if (
+    defaultLogging?.schemaVersion !== 1
+    || defaultLogging?.command !== "logging"
+    || defaultLogging?.ok !== true
+    || defaultLogging?.scope !== "checkout"
+    || defaultLogging?.problem !== null
+    || JSON.stringify(defaultLogging?.data) !== JSON.stringify({ mode: "significant", revision: null, source: "default" })
+    || existsSync(join(project, ".mex", "local", "agent-preferences.json"))
+    || existsSync(join(project, ".mex", "local")) !== localBeforeLoggingRead
+    || JSON.stringify(snapshotProtectedProjectState(project)) !== JSON.stringify(beforeLoggingRead)
+  ) {
+    throw new Error("The packed logging getter did not return the quiet default without initializing state.");
+  }
   const cliHelp = run(process.execPath, [cli, "--help"], project);
   const skillSyncHelp = run(process.execPath, [cli, "skills", "sync", "--help"], project);
   if (
@@ -402,6 +418,12 @@ try {
   const sessionBody = await session.json();
   if (!session.ok || typeof sessionBody.csrfToken !== "string") {
     throw new Error("The packaged Hub session API did not load.");
+  }
+  const logging = await fetch(`${url.origin}/api/v1/settings/logging`, {
+    headers: { cookie }, redirect: "error",
+  });
+  if (!logging.ok || JSON.stringify(await logging.json()) !== JSON.stringify(defaultLogging.data)) {
+    throw new Error("The packaged Hub logging read did not share the CLI's checkout default.");
   }
   const capabilities = await fetch(`${url.origin}/api/v1/capabilities`, {
     headers: { cookie },
@@ -831,6 +853,62 @@ try {
   });
   if (JSON.stringify(afterWikiMaintenance) !== JSON.stringify(beforeWikiMaintenance)) {
     throw new Error("Packaged Wiki maintenance mutated canonical Wiki, Graph, Activity, members, source, or Git state.");
+  }
+
+  // Preference changes are checkout-only. Exercise both surfaces with exact
+  // revisions after ordinary-read/maintenance assertions, before stopping Hub.
+  const beforeLoggingUpdate = snapshotProtectedProjectState(project, {
+    includeRuntimeState: false, includeGraphIndex: true,
+  });
+  const settingsHeaders = {
+    cookie, origin: url.origin, "content-type": "application/json", "x-mex-csrf": sessionBody.csrfToken,
+  };
+  const savedLogging = await fetch(`${url.origin}/api/v1/settings/logging`, {
+    method: "POST", headers: settingsHeaders, redirect: "error",
+    body: JSON.stringify({ mode: "manual", expectedRevision: null }),
+  });
+  const savedLoggingBody = await savedLogging.json();
+  const cliLogging = JSON.parse(run(process.execPath, [cli, "logging", "--json"], project));
+  if (
+    savedLogging.status !== 200
+    || savedLoggingBody?.mode !== "manual"
+    || savedLoggingBody?.source !== "local"
+    || !/^[a-f0-9]{64}$/u.test(savedLoggingBody?.revision ?? "")
+    || cliLogging?.ok !== true
+    || JSON.stringify(cliLogging.data) !== JSON.stringify(savedLoggingBody)
+  ) {
+    throw new Error("The packaged Hub did not persist the same exact logging preference read by the CLI.");
+  }
+  const changedLogging = JSON.parse(run(process.execPath, [
+    cli, "logging", "checkpoints", "--expected-revision", savedLoggingBody.revision, "--json",
+  ], project));
+  if (
+    changedLogging?.ok !== true
+    || changedLogging?.scope !== "checkout"
+    || changedLogging?.data?.mode !== "checkpoints"
+    || changedLogging?.data?.source !== "local"
+    || !/^[a-f0-9]{64}$/u.test(changedLogging?.data?.revision ?? "")
+    || changedLogging.data.revision === savedLoggingBody.revision
+  ) {
+    throw new Error("The packed CLI did not update logging with the exact Hub revision.");
+  }
+  const staleLogging = await fetch(`${url.origin}/api/v1/settings/logging`, {
+    method: "POST", headers: settingsHeaders, redirect: "error",
+    body: JSON.stringify({ mode: "manual", expectedRevision: savedLoggingBody.revision }),
+  });
+  const currentLogging = await fetch(`${url.origin}/api/v1/settings/logging`, {
+    headers: { cookie }, redirect: "error",
+  });
+  if (
+    staleLogging.status !== 409
+    || (await staleLogging.json())?.code !== "REVISION_CONFLICT"
+    || !currentLogging.ok
+    || JSON.stringify(await currentLogging.json()) !== JSON.stringify(changedLogging.data)
+    || JSON.stringify(snapshotProtectedProjectState(project, {
+      includeRuntimeState: false, includeGraphIndex: true,
+    })) !== JSON.stringify(beforeLoggingUpdate)
+  ) {
+    throw new Error("Packaged logging lost a concurrent preference or changed canonical, index, Activity, or Git state.");
   }
 
   child.kill("SIGTERM");
@@ -1371,6 +1449,10 @@ function verifyInstalledAgentAssets(project, installed, packageVersion) {
       || client.foreignExplicit.some((invocation) => instructions.includes(invocation))
       || !instructions.includes("MEX context used: <specific records/files/entities consulted>.")
       || !instructions.includes("Skill activation is not approval for canonical actions.")
+      || !instructions.includes("mex logging --json")
+      || !instructions.includes('mex timeline --query "subject phrase" --file src/example.ts --limit 10 --json')
+      || !["significant", "checkpoints", "manual"].every((mode) => instructions.includes(mode))
+      || !instructions.includes("historical evidence")
     ) {
       throw new Error(`The ${client.name} setup instruction block was missing or not client-specific.`);
     }

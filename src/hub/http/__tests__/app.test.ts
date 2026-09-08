@@ -1038,7 +1038,6 @@ describe("Project Hub HTTP application", () => {
     };
     for (const [label, expectedRevisions] of [
       ["missing local draft", [memberExpectation]],
-      ["missing recipient", [draftExpectation]],
       ["legacy Workstream dependency", [draftExpectation, memberExpectation, workstreamExpectation]],
       ["unrelated artifact", [draftExpectation, memberExpectation, {
         target: { kind: "artifact" as const, path: "README.md" },
@@ -1089,6 +1088,16 @@ describe("Project Hub HTTP application", () => {
         }],
       },
     });
+    previewRelayOperation.mockClear();
+
+    // Open-to-team publication has only a local draft expectation. Recipient
+    // requirements for named drafts are checked against the stored audience.
+    const teamPublish = { ...publishRequest, expectedRevisions: [draftExpectation] };
+    const teamPublishResponse = await app.request(`${ORIGIN}/api/v1/relays/operations/preview`, {
+      method: "POST", headers: mutationRequestHeaders, body: JSON.stringify(teamPublish),
+    });
+    expect(teamPublishResponse.status).toBe(200);
+    expect(previewRelayOperation).toHaveBeenCalledWith(teamPublish);
     previewRelayOperation.mockClear();
 
     const preview = await app.request(`${ORIGIN}/api/v1/relays/operations/preview`, {

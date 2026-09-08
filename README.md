@@ -169,6 +169,8 @@ The team's memory is shared; the machinery that retrieves it stays local. MEX se
 
 Canonical knowledge is structured Markdown with metadata, relations, sources, provenance, and code groundings; accepted Wiki writes append audit records. The Code Graph and Wiki search index are rebuildable local SQLite views, not shared sources of truth.
 
+In 0.8.1, ordinary Wiki creation and synthesis capture the operation's recorded actor, time, and session as creation provenance while preserving any supplied original attribution. Migration leaves unknown, untyped `context/*.md` files untouched; supply an explicit entity type before migrating them instead of relying on an architecture default.
+
 | Commit and push to share | Keep local or ephemeral; never commit |
 | --- | --- |
 | `.mex/config.json`, `.mex/.gitignore` | `.mex/graph.db*` |
@@ -277,21 +279,21 @@ These workflows help a team decide what becomes durable knowledge and preserve e
 | **Members** | Stable contributor records plus a checkout-local “current member” for attribution | Member records use Git; current selection stays local |
 | **Workstreams** | Durable context around an area of work and its state | Canonical Markdown through Git |
 | **Specs** | Structured product requirements, constraints, and acceptance criteria | Canonical Markdown through Git |
-| **Inbox** | Governed proposals for one bounded Spec-family create or update | Draft local; published proposal and decisions through Git |
+| **Inbox** | Proposals for one project-knowledge addition or correction; existing Spec proposals remain supported | Draft local; published proposal and decisions through Git |
 | **Relays** | Agent-prepared, human-published context handoffs | Draft local; published/taken/closed record through Git |
 | **Activity** | Accepted MEX workflow history and custom records | Canonical records through Git |
 
 Members provide attribution and provenance. They are **not** accounts, authentication, role-based access control, or repository permissions.
 
-### Inbox: propose before changing durable Specs
+### Inbox: contribute to project knowledge
 
-The Inbox skill prepares exactly one bounded `spec.create` or `spec.update` proposal for a Spec, requirement, constraint, or acceptance criterion. A local draft can be previewed before it becomes a repository record, and approval applies the reviewed operation to canonical knowledge.
+In 0.8.1, the Inbox skill captures one durable conclusion from a discussion as an addition or correction to architecture, components, conventions, decisions, patterns, or guides. It searches existing knowledge first, saves a local draft, and publishes a Markdown proposal for review. Approval changes the existing knowledge area and retains the proposal's source evidence. Existing `spec.create` and `spec.update` proposals remain supported.
 
 ![An Inbox draft stays local until publication. Human review and explicit approval turn the proposal into a canonical Spec.](docs/diagrams/readme/inbox.svg)
 
 Every canonical proposal transition still needs ordinary commit/push/pull to reach another checkout. Approval, rejection, and withdrawal are terminal; a stale proposal can be repaired back to pending. An author can use the exceptional self-approval flow, so Inbox is designed for explicit approval—not guaranteed peer review.
 
-Inbox is intentionally Spec-family focused in 0.8. It is not a general Wiki editor or a queue for arbitrary notes.
+Ordinary GROW upkeep can still update project knowledge directly. Inbox is the explicit contribution-and-review path; session notes remain in the event log.
 
 ### Relay: pass the context baton
 
@@ -300,6 +302,26 @@ A Relay packages what the next person needs: a summary, progress, blockers, next
 A Relay is a durable handoff, not chat, a live notification, task assignment, or a Jira replacement.
 
 Within one observed repository state, the first successful eligible Member becomes the sole claimant. There is no cross-clone network lock, so two unsynchronized Members can claim separately and later meet a Git conflict. Only the active recorded sender or active recorded claimant can close the Relay; deactivating either principal can block closure. In 0.8.1, reactivation restores the original Member identity so older handoffs remain usable. There is no decline, reassign, unclaim, reopen, or administrative-override flow. Teammates exchanging new open-to-team Relays need a CLI that supports schema v4.
+
+### Project notes: logging and reuse
+
+`mex log` records decisions, notes, risks, and todos in `.mex/events/decisions.jsonl`. Future agents can retrieve relevant entries with `mex timeline`; people can read them as **Project notes** in Hub Activity. These records are historical context. Durable conclusions can be promoted into maintained knowledge explicitly, with their source retained.
+
+In 0.8.1, **Settings → Agent logging** controls when agents write optional notes in this checkout:
+
+- **Significant events** (default): decisions, discoveries, and risks worth remembering.
+- **Task checkpoints**: batch useful notes when a task or session ends.
+- **Only when asked**: write optional notes on an explicit user request.
+
+The preference guides agents; explicit user requests and mandatory workflow Activity remain independent. It lives under `.mex/local/` and is not shared through Git. Start a new agent session after syncing the updated instructions.
+
+```bash
+mex logging --json
+mex logging checkpoints
+mex timeline --query "retry" --file src/client.ts --type decision --limit 20 --json
+```
+
+Timeline retrieval reads the latest 8 MiB / 10,000 log lines, returns at most 200 entries, and caps output at 64 KiB. JSON reports truncation; a filtered empty result does not prove the full history has no match. Retrieval never changes the log or initializes project identity.
 
 ## Command map
 
@@ -314,9 +336,9 @@ Run `mex <command> --help` for the complete interface.
 | Index and retrieve knowledge | `mex wiki rebuild-index`, `mex wiki query <text>`, `mex wiki show <id>`, `mex wiki related <id>`, `mex wiki backlinks <id>`, `mex wiki for-code <node-id>` |
 | Synthesize or maintain the Wiki | `mex wiki build`, `mex wiki prepare --stage <stage> [--cluster <name>]`, `mex wiki validate`; `mex wiki propose <response-file>` and `mex wiki apply <operation-file>` preview by default and write only with `--apply` |
 | Review team memory | `mex member --help`, `mex activity --help`, `mex workstream --help`, `mex spec --help` |
-| Govern Spec proposals | `mex inbox draft --help`, `mex inbox publish --help`, `mex inbox proposal --help` |
+| Propose knowledge additions or corrections | `mex inbox draft --help`, `mex inbox publish --help`, `mex inbox proposal --help` |
 | Prepare and receive handoffs | `mex relay draft --help`, `mex relay publish --help`, `mex relay acknowledge --help`, `mex relay close --help` |
-| Record project notes or manage patterns | `mex log <message>`, `mex timeline`, `mex pattern --help` |
+| Record and retrieve project notes | `mex log <message>`, `mex logging --help`, `mex timeline --help`, `mex pattern --help` |
 | Check and maintain the project | `mex check`, `mex sync`, `mex doctor`, `mex watch` |
 
 Use `mex capabilities --json` for machine-readable capability discovery and `mex commands` for the concise CLI map.

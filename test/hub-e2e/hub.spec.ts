@@ -60,6 +60,40 @@ async function expectLoadedActivity(page: Page, count: number): Promise<void> {
 }
 
 test.describe("populated development fixture", () => {
+  for (const viewport of [{ width: 1024, height: 768 }, { width: 1440, height: 900 }]) {
+    test(`changes checkout logging settings accessibly at ${viewport.width}px`, async ({ page }, testInfo) => {
+      const errors = watchBrowserErrors(page);
+      await page.setViewportSize(viewport);
+      await page.goto("/settings?fixture=populated");
+      await expect(page.getByRole("heading", { name: "Agent logging", exact: true })).toBeVisible();
+      const significant = page.getByRole("radio", { name: "Significant events", exact: true });
+      await expect(significant).toBeChecked();
+      await expect(page.getByRole("button", { name: "Save preference" })).toBeDisabled();
+      await expectAccessible(page);
+      await expectNoHorizontalOverflow(page, viewport.width);
+      await page.screenshot({ path: testInfo.outputPath("settings-default.png"), fullPage: true });
+      await significant.focus();
+      await page.keyboard.press("ArrowDown");
+      await expect(page.getByRole("radio", { name: "Task checkpoints", exact: true })).toBeChecked();
+      const save = page.getByRole("button", { name: "Save preference" });
+      await save.focus();
+      await page.keyboard.press("Enter");
+      const notice = page.getByText("Logging preference saved for this checkout.");
+      await expect(notice).toBeFocused();
+      await expect(save).toBeDisabled();
+      await page.getByRole("radio", { name: "Only when asked", exact: true }).check();
+      await page.getByRole("button", { name: "Cancel", exact: true }).click();
+      await expect(page.getByRole("radio", { name: "Task checkpoints", exact: true })).toBeChecked();
+      await expectAccessible(page);
+      await expectNoHorizontalOverflow(page, viewport.width);
+      await page.screenshot({ path: testInfo.outputPath("settings-saved.png"), fullPage: true });
+      await page.getByRole("link", { name: /Read project notes in Activity/ }).click();
+      await expect(page).toHaveURL(/\/activity\?source=legacy$/);
+      await expect(page.getByRole("heading", { name: "Activity", exact: true })).toBeVisible();
+      expect(errors).toEqual([]);
+    });
+  }
+
   test("renders the deterministic Home workbench", async ({ page }) => {
     const errors = watchBrowserErrors(page);
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -2002,6 +2036,7 @@ test.describe("populated development fixture", () => {
     })));
     expect(utilityItems).toEqual([
       { href: "/health", label: "Health" },
+      { href: "/settings", label: "Settings" },
       { href: "/jobs", label: "Jobs" },
     ]);
 
@@ -2198,7 +2233,7 @@ test.describe("populated development fixture", () => {
     await expect(page.getByRole("heading", { name: "Members", exact: true })).toBeVisible();
     await expect(page.locator("#main-content")).toBeFocused();
     await page.getByRole("button", { name: /^System/ }).click();
-    for (const heading of ["Health", "Jobs"] as const) {
+    for (const heading of ["Health", "Settings", "Jobs"] as const) {
       await page.getByRole("link", { name: heading, exact: true }).click();
       await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
       await expect(page.locator("#main-content")).toBeFocused();

@@ -92,6 +92,7 @@ describe("Project Hub routes", () => {
     await user.click(within(utilities).getByRole("button", { name: /^System/u }));
     expect(within(utilities).getAllByRole("link").map((link) => link.querySelector("span")?.textContent)).toEqual([
       "Health",
+      "Settings",
       "Jobs",
     ]);
   });

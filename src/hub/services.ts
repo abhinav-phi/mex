@@ -1,4 +1,6 @@
+import { readAgentLoggingPolicy, setAgentLoggingPolicy } from "../logging/policy.js";
 import {
+  AgentLoggingPolicySchema,
   HUB_LIMITS,
   type ActivityActor,
   type ActivityDiagnostic,
@@ -320,6 +322,12 @@ export function createLocalHubReadServices(
   const timeline = new TimelineReader(options.projectRoot, canonicalActivity, actors);
 
   return {
+    loggingPolicy() {
+      return AgentLoggingPolicySchema.parse(readAgentLoggingPolicy(options.projectRoot));
+    },
+    async setLoggingPolicy(request) {
+      return AgentLoggingPolicySchema.parse(await setAgentLoggingPolicy(options.projectRoot, request));
+    },
     async capabilities(): Promise<HubCapabilities> {
       const gitStatus = await gitCapability(git);
       return {

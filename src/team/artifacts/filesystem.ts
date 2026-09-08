@@ -43,6 +43,9 @@ export interface ContainedArtifactRead {
   canonicalPath: string;
 }
 
+/** Canonical artifacts undo Git checkout conversion; local preferences retain exact bytes. */
+export type ArtifactByteMode = "canonical" | "exact";
+
 /** Resolve a caller-supplied root once so repositories cannot follow a later symlink swap. */
 export function canonicalizeProjectRoot(projectRoot: string): string {
   let canonicalRoot: string;
@@ -62,6 +65,7 @@ export function readContainedArtifact(
   projectRoot: string,
   path: RepoRelativePath,
   maxBytes: number,
+  byteMode: ArtifactByteMode = "canonical",
 ): ContainedArtifactRead {
   const { canonicalRoot, lexicalPath } = resolveArtifactPath(projectRoot, path);
   let descriptor: number | undefined;
@@ -119,8 +123,8 @@ export function readContainedArtifact(
     // Git's checkout conversion is undone here, at the one boundary every
     // canonical artifact is read through, so that parsing, the canonical-form
     // assertion and the revision hash all see the bytes the author committed.
-    const canonicalBytes = undoCheckoutLineEndings(bytes);
-    return { bytes: canonicalBytes, revision: revisionOf(canonicalBytes), canonicalPath };
+    const revisionBytes = byteMode === "exact" ? bytes : undoCheckoutLineEndings(bytes);
+    return { bytes: revisionBytes, revision: revisionOf(revisionBytes), canonicalPath };
   } catch (error) {
     if (isNotFound(error)) {
       throw artifactError("NOT_FOUND", "Artifact not found", `Artifact ${path} does not exist.`, path);
@@ -135,9 +139,10 @@ export function tryReadContainedArtifact(
   projectRoot: string,
   path: RepoRelativePath,
   maxBytes: number,
+  byteMode: ArtifactByteMode = "canonical",
 ): ContainedArtifactRead | null {
   try {
-    return readContainedArtifact(projectRoot, path, maxBytes);
+    return readContainedArtifact(projectRoot, path, maxBytes, byteMode);
   } catch (error) {
     if (isMexCode(error, "NOT_FOUND")) return null;
     throw error;
@@ -183,13 +188,14 @@ export function atomicCreateArtifact(
   }
 }
 
-/** Atomically replace a regular artifact after an exact-byte optimistic check. */
+/** Atomically replace a regular artifact after an optimistic check in the selected byte mode. */
 export function atomicReplaceArtifact(
   projectRoot: string,
   path: RepoRelativePath,
   expectedRevision: Revision,
   bytes: string | Uint8Array,
   maxExistingBytes: number,
+  byteMode: ArtifactByteMode = "canonical",
 ): Revision {
   const { canonicalRoot, lexicalPath } = resolveArtifactPath(projectRoot, path);
   const parentRelative = dirname(path) as RepoRelativePath;
@@ -216,13 +222,13 @@ export function atomicReplaceArtifact(
     lockOwned = true;
     lockIdentity = lock.identity;
 
-    assertExpectedRevision(projectRoot, path, expectedRevision, maxExistingBytes);
+    assertExpectedRevision(projectRoot, path, expectedRevision, maxExistingBytes, byteMode);
     const payload = asBytes(bytes);
     temporaryPath = stageFile(parentPath, basename(path), payload);
 
     // Revalidate after all potentially expensive serialization/staging work.
     assertSafeExistingComponents(canonicalRoot, parentRelative, false);
-    assertExpectedRevision(projectRoot, path, expectedRevision, maxExistingBytes);
+    assertExpectedRevision(projectRoot, path, expectedRevision, maxExistingBytes, byteMode);
     assertTargetAbsentOrRegular(lexicalPath, path, false);
     renameSync(temporaryPath, lexicalPath);
     temporaryPath = undefined;
@@ -660,10 +666,11 @@ function assertExpectedRevision(
   path: RepoRelativePath,
   expectedRevision: Revision,
   maxBytes: number,
+  byteMode: ArtifactByteMode = "canonical",
 ): void {
   let current: ContainedArtifactRead;
   try {
-    current = readContainedArtifact(projectRoot, path, maxBytes);
+    current = readContainedArtifact(projectRoot, path, maxBytes, byteMode);
   } catch (error) {
     if (isMexCode(error, "NOT_FOUND")) {
       throw artifactError(

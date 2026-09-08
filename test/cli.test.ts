@@ -85,11 +85,20 @@ function buildProgram(): Command {
     .option("--json", "Output events as JSON")
     .option("--since <date>", "Filter from YYYY-MM-DD or relative Nd, e.g. 30d")
     .option("--type <type>", "Filter by event type")
-    .option("--limit <n>", "Maximum number of entries", parsePositiveIntArg)
+    .option("--query <text>", "Literal message text")
+    .option("--file <path>", "Exact recorded file path", (value, prev: string[]) => [...prev, value], [])
+    .option("--limit <n>", "Maximum entries, 1–200", (raw: string) => {
+      if (!/^[0-9]+$/.test(raw) || Number(raw) < 1 || Number(raw) > 200) {
+        throw new InvalidArgumentError("Expected an integer from 1 to 200.");
+      }
+      return Number(raw);
+    })
     .action(async (opts) => {
       try {
         const { runTimeline } = await import("../src/events.js");
-        await runTimeline(config, opts);
+        await runTimeline(config, {
+          json: opts.json, since: opts.since, kind: opts.type, query: opts.query, files: opts.file, limit: opts.limit,
+        });
       } catch (err) {
         console.error((err as Error).message);
         process.exit(1);
@@ -187,11 +196,11 @@ describe("mex timeline parsing", () => {
     const program = buildProgram();
     await program.parseAsync(["node", "mex", "timeline", "--limit", "5"]);
 
-    expect(runTimeline).toHaveBeenCalledWith(config, { limit: 5 });
+    expect(runTimeline).toHaveBeenCalledWith(config, expect.objectContaining({ limit: 5 }));
   });
 
   it("rejects invalid --limit values", async () => {
-    for (const value of ["0", "foo"]) {
+    for (const value of ["0", "foo", "201", "2.5", "1junk"]) {
       const program = buildProgram();
       await expect(program.parseAsync(["node", "mex", "timeline", "--limit", value])).rejects.toMatchObject({
         code: "commander.invalidArgument",
@@ -213,11 +222,18 @@ describe("mex timeline parsing", () => {
       "risk",
     ]);
 
-    expect(runTimeline).toHaveBeenCalledWith(config, {
+    expect(runTimeline).toHaveBeenCalledWith(config, expect.objectContaining({
       json: true,
       since: "30d",
-      type: "risk",
-    });
+      kind: "risk",
+    }));
+  });
+
+  it("maps repeatable file filters and the literal query to the handler", async () => {
+    await buildProgram().parseAsync(["node", "mex", "timeline", "--query", "auth rollout", "--file", "src/auth.ts", "--file", "src/session.ts"]);
+    expect(runTimeline).toHaveBeenCalledWith(config, expect.objectContaining({
+      query: "auth rollout", files: ["src/auth.ts", "src/session.ts"],
+    }));
   });
 });
 
@@ -508,7 +524,8 @@ describe("built CLI main-module guard", () => {
       });
       const examples = catalogEnvelope.data.requestFile.examples as any[];
       expect(Object.keys(examples[0].request.action.draft).sort())
-        .toEqual(["recipients", "summary"]);
+        .toEqual(["audience", "recipients", "summary"]);
+      expect(examples[0].request.action.draft).toMatchObject({ audience: "team", recipients: [] });
       const evidence = examples.flatMap((example) => example.request.action?.draft?.evidence ?? []);
       expect(evidence).toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: "commit" }),
@@ -917,7 +934,7 @@ describe("built CLI main-module guard", () => {
     expect(result.stdout).not.toContain(pkg.version);
   });
 
-  it("backfills scaffold_id on an existing scaffold when a command loads config", () => {
+  it("backfills scaffold_id on an existing scaffold when an explicit log write loads config", () => {
     const fixture = mkdtempSync(join(tmpdir(), "mex-migrate-"));
     try {
       const mexPath = join(fixture, ".mex");
@@ -925,8 +942,7 @@ describe("built CLI main-module guard", () => {
       writeFileSync(join(mexPath, "ROUTER.md"), "");
       writeFileSync(join(mexPath, "config.json"), JSON.stringify({ aiTools: ["claude"] }));
 
-      // timeline reads config (via loadConfig) and returns [] on an empty log.
-      const result = spawnSync(process.execPath, [cliPath, "timeline", "--json"], {
+      const result = spawnSync(process.execPath, [cliPath, "log", "Explicit project note"], {
         cwd: fixture,
         encoding: "utf8",
         env: { ...process.env, NO_COLOR: "1" },
@@ -941,6 +957,45 @@ describe("built CLI main-module guard", () => {
       expect(raw.aiTools).toEqual(["claude"]); // existing keys preserved
     } finally {
       rmSync(fixture, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  it("filters timeline types and relevant files without minting identity or changing history", () => {
+    const fixture = mkdtempSync(join(tmpdir(), "mex-timeline-readonly-"));
+    const userHome = mkdtempSync(join(tmpdir(), "mex-timeline-readonly-home-"));
+    try {
+      const mexPath = join(fixture, ".mex");
+      mkdirSync(join(mexPath, "events"), { recursive: true });
+      writeFileSync(join(mexPath, "ROUTER.md"), "# Router\n");
+      const configPath = join(mexPath, "config.json");
+      writeFileSync(configPath, JSON.stringify({ aiTools: ["claude"] }));
+      const historyPath = join(mexPath, "events/decisions.jsonl");
+      writeFileSync(historyPath, [
+        { kind: "risk", message: "Auth rollout", files: ["src/auth.ts"] },
+        { kind: "note", message: "Auth rollout", files: ["src/auth.ts"] },
+        { kind: "risk", message: "Auth rollout", files: ["src/auth.tsx"] },
+      ].map((entry) => JSON.stringify({ timestamp: "2026-05-14T00:00:00.000Z", cwd: ".", ...entry })).join("\n") + "\n");
+      const before = [configPath, historyPath].map((path) => ({ bytes: readFileSync(path), mtime: lstatSync(path, { bigint: true }).mtimeNs }));
+      const result = spawnSync(process.execPath, [cliPath, "timeline", "--json", "--type", "risk", "--query", "AUTH", "--file", "src/auth.ts", "--limit", "10"], {
+        cwd: fixture, encoding: "utf8", env: { ...process.env, HOME: userHome, MEX_TELEMETRY: "1", DO_NOT_TRACK: "0", NO_COLOR: "1" },
+      });
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        events: [expect.objectContaining({ kind: "risk", message: "Auth rollout", files: ["src/auth.ts"] })],
+        truncated: false, sourceTruncated: false,
+      });
+      expect([configPath, historyPath].map((path) => ({ bytes: readFileSync(path), mtime: lstatSync(path, { bigint: true }).mtimeNs }))).toEqual(before);
+      expect(readdirSync(mexPath).sort()).toEqual(["ROUTER.md", "config.json", "events"]);
+      expect(readdirSync(userHome)).toEqual([]);
+      const invalid = spawnSync(process.execPath, [cliPath, "timeline", "--type", "checkpoint", "--json"], {
+        cwd: fixture, encoding: "utf8", env: { ...process.env, HOME: userHome, MEX_TELEMETRY: "1", DO_NOT_TRACK: "0", NO_COLOR: "1" },
+      });
+      expect(invalid.status).toBe(1);
+      expect(invalid.stderr).toContain("Unknown event type");
+      expect(readdirSync(userHome)).toEqual([]);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+      rmSync(userHome, { recursive: true, force: true });
     }
   }, 10_000);
 

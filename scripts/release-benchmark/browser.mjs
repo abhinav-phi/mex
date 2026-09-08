@@ -207,6 +207,14 @@ export async function assertReleaseRouteReady(page, route, teamFixture) {
     await page.locator('[role="article"][data-source]').first()
       .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
   }
+  if (route === "settings") {
+    await page.getByRole("heading", { name: "Agent logging", exact: true })
+      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
+    const choices = page.getByRole("group", { name: "When to write notes", exact: true });
+    await choices.waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
+    await choices.locator('input[name="logging-mode"]:checked')
+      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
+  }
 }
 
 async function addApiCookie(context, origin, serializedCookie) {

@@ -22,6 +22,14 @@ describe("managed MEX instruction blocks", () => {
       expect(block).toContain("durable team handoffs");
       expect(block).toContain("Invoke them automatically when intent clearly matches");
       expect(block).toContain("ordinary GROW upkeep remains available without Inbox");
+      expect(block).toContain("mex logging --json");
+      expect(block).toContain("`significant`");
+      expect(block).toContain("`checkpoints`");
+      expect(block).toContain("`manual`");
+      expect(block).toContain("Honor explicit user log requests in every mode");
+      expect(block).toContain("never suppress mandatory workflow Activity or recovery audit records");
+      expect(block).toContain('mex timeline --query "subject phrase" --file src/example.ts --limit 10 --json');
+      expect(block).toContain("historical evidence, not accepted current knowledge");
       expect(block).toContain(
         "MEX context used: <specific records/files/entities consulted>.",
       );

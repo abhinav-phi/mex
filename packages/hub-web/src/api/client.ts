@@ -1,4 +1,5 @@
 import {
+  AgentLoggingPolicySchema,
   ActivityResponseSchema,
   BootstrapResponseSchema,
   CodeKnowledgeResponseSchema,
@@ -41,6 +42,8 @@ import {
 } from "@mex/hub-contracts";
 import { createFixtureApi } from "virtual:mex-hub-fixture-api";
 import type {
+  AgentLoggingPolicy,
+  AgentLoggingUpdateRequest,
   ActivityRequest,
   ActivityResponse,
   BootstrapResponse,
@@ -162,6 +165,8 @@ export interface FixtureApiOptions {
 }
 
 export interface HubApi {
+  getLoggingPolicy(): Promise<AgentLoggingPolicy>;
+  setLoggingPolicy(request: AgentLoggingUpdateRequest): Promise<AgentLoggingPolicy>;
   bootstrap(token: string): Promise<BootstrapResponse>;
   getSession(): Promise<SessionResponse>;
   getCapabilities(): Promise<CapabilitiesResponse>;
@@ -613,6 +618,15 @@ export class HttpHubApi implements HubApi {
 
   getHealth(): Promise<HealthResponse> {
     return this.#request("/health", HealthResponseSchema);
+  }
+
+  getLoggingPolicy(): Promise<AgentLoggingPolicy> {
+    return this.#request("/settings/logging", AgentLoggingPolicySchema);
+  }
+
+  setLoggingPolicy(request: AgentLoggingUpdateRequest): Promise<AgentLoggingPolicy> {
+    return this.#request("/settings/logging", AgentLoggingPolicySchema,
+      { method: "POST", body: JSON.stringify(request) }, true);
   }
 
   getJobs(cursor?: string): Promise<JobsResponse> {

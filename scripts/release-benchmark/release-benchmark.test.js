@@ -62,6 +62,7 @@ function frozenAllowedCalibrationProjection(value) {
   projected.assets.routes.activity.jsBytes = "__ACTIVITY_JS_CALIBRATION__";
   projected.assets.routes.activity.cssBytes = "__ACTIVITY_CSS_CALIBRATION__";
   delete projected.assets.routes.catchUp;
+  delete projected.assets.routes.settings;
   for (const profile of ["small", "medium", "large"]) {
     delete projected.runtime.apiLatencyMs[profile].relayDrafts;
     delete projected.runtime.apiLatencyMs[profile].relays;
@@ -69,12 +70,13 @@ function frozenAllowedCalibrationProjection(value) {
     projected.runtime.browserHeapBytes[profile].members = 0;
     projected.runtime.browserHeapBytes[profile].relays = 0;
     delete projected.runtime.browserHeapBytes[profile].catchUp;
+    delete projected.runtime.browserHeapBytes[profile].settings;
   }
   return projected;
 }
 
 describe("release benchmark contract", () => {
-  it("permits only the calibrated Overview, Relay, Activity, or Members asset budgets", () => {
+  it("permits only owned calibration leaves, including the additive Settings route", () => {
     const digest = (value) => createHash("sha256")
       .update(JSON.stringify(frozenAllowedCalibrationProjection(value)))
       .digest("hex");
@@ -83,6 +85,7 @@ describe("release benchmark contract", () => {
     const allowed = structuredClone(budgets);
     allowed.calibration.status = "calibrated-from-pinned-run-example";
     allowed.assets.routes.relays = { jsBytes: 123, cssBytes: 45, fontBytes: 0 };
+    allowed.assets.routes.settings = { jsBytes: 123, cssBytes: 45, fontBytes: 0 };
     allowed.assets.routes.members.cssBytes += 1;
     allowed.assets.routes.activity.jsBytes += 1;
     allowed.assets.routes.activity.cssBytes += 1;
@@ -96,6 +99,7 @@ describe("release benchmark contract", () => {
       allowed.runtime.browserHeapBytes[profile].home += 1;
       allowed.runtime.browserHeapBytes[profile].members += 1;
       allowed.runtime.browserHeapBytes[profile].relays += 1;
+      allowed.runtime.browserHeapBytes[profile].settings = 123;
     }
     expect(digest(allowed)).toBe(FROZEN_NON_OVERVIEW_UX_BUDGETS_SHA256);
 
@@ -112,7 +116,10 @@ describe("release benchmark contract", () => {
       medium: { sourceFiles: 16, wikiEntities: 16, workstreams: 1, inboxDrafts: 1, inboxProposals: 1, members: 2, relayDrafts: 1, relays: 1, activityEvents: 16 },
       large: { sourceFiles: 48, wikiEntities: 48, workstreams: 1, inboxDrafts: 1, inboxProposals: 1, members: 2, relayDrafts: 1, relays: 1, activityEvents: 48 },
     });
+    // Settings assets use the deterministic build; its heap limits remain
+    // absent until pinned calibration rather than inventing a local limit.
     expect(Object.keys(budgets.assets.routes)).toEqual(RELEASE_ROUTE_KEYS);
+    expect(budgets.assets.routes.settings).toEqual({ jsBytes: 8035, cssBytes: 2910, fontBytes: 0 });
     expect(Object.keys(releaseWorkbenchPaths({
       knowledgeEntityId: "mx_knowledge",
       specEntityId: "mx_spec",
@@ -126,7 +133,8 @@ describe("release benchmark contract", () => {
       .map((match) => match[1] === "index" ? "(index)" : match[2]);
     expect(registeredPatterns).toEqual(Object.values(RELEASE_ROUTE_PATTERNS));
     for (const profile of ["small", "medium", "large"]) {
-      expect(Object.keys(budgets.runtime.browserHeapBytes[profile])).toEqual(RELEASE_ROUTE_KEYS);
+      expect(Object.keys(budgets.runtime.browserHeapBytes[profile]))
+        .toEqual(RELEASE_ROUTE_KEYS.filter((route) => route !== "settings"));
     }
     expect({
       small: {
@@ -262,6 +270,48 @@ describe("release benchmark contract", () => {
     },
   );
 
+  it.each(["ready", "preferences unavailable", "selection missing"])(
+    "measures Settings only after its preference form has loaded: %s",
+    async (state) => {
+      const selected = { waitFor: vi.fn(async () => {
+        if (state === "selection missing") throw new Error("No current preference.");
+      }) };
+      const group = { waitFor: vi.fn(async () => {}), locator: vi.fn(() => selected) };
+      const heading = { waitFor: vi.fn(async () => {
+        if (state === "preferences unavailable") throw new Error("Preferences unavailable.");
+      }) };
+      const page = { getByRole: vi.fn((role) => role === "heading" ? heading : group) };
+      const ready = assertReleaseRouteReady(page, "settings", {});
+      if (state === "ready") {
+        await expect(ready).resolves.toBeUndefined();
+        expect(page.getByRole).toHaveBeenCalledWith("heading", { name: "Agent logging", exact: true });
+        expect(page.getByRole).toHaveBeenCalledWith("group", { name: "When to write notes", exact: true });
+        expect(selected.waitFor).toHaveBeenCalledWith({ state: "visible", timeout: 30_000 });
+      } else {
+        await expect(ready).rejects.toThrow(state === "preferences unavailable" ? "Preferences unavailable." : "No current preference.");
+      }
+    },
+  );
+
+  it("records Settings without pretending its missing heap calibration is a passing budget", () => {
+    const profiles = Object.fromEntries(["small", "medium", "large"].map((profile) => [
+      profile,
+      { ...runtimeProfile(100), browserHeap: { outboundRequestCount: 0, routes: { settings: { p95: 123 } } } },
+    ]));
+    const violations = evaluateRuntimeBudgets(profiles, budgets.runtime)
+      .filter(({ metric }) => metric.endsWith(".settings"));
+    expect(violations).toEqual(["small", "medium", "large"].map((profile) => ({
+      metric: `runtime.browserHeapBytes.${profile}.settings`, measured: 123, budget: null, reason: "budget_missing",
+    })));
+    expect(classifyRuntimeViolations(violations)).toEqual({ confirmable: [], immediate: violations });
+    expect(RELEASE_ROUTE_KEYS).toContain("settings");
+    expect(releaseWorkbenchPaths({ knowledgeEntityId: "knowledge", specEntityId: "spec", codeSymbolId: "code" }).settings).toBe("/settings");
+    expect(reportSchema.$defs.routeSummaries.properties.settings).toEqual({ $ref: "#/$defs/summary5" });
+    expect(reportSchema.$defs.routeSummaries.required).not.toContain("settings");
+    expect(budgetsSchema.$defs.routeBudgets.properties.settings).toEqual({ $ref: "#/$defs/nonNegativeNumber" });
+    expect(budgetsSchema.$defs.routeBudgets.required).not.toContain("settings");
+  });
+
   it("uses nearest-rank p95 and rejects the wrong sample count", () => {
     expect(summarize([7, 1, 9, 4, 2, 10, 8, 6, 5, 3], 10)).toEqual({
       samples: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
@@ -353,6 +403,8 @@ describe("release benchmark contract", () => {
         confirmedViolations: [],
       },
     });
+    expect(validate(legacyReport), JSON.stringify(validate.errors)).toBe(true);
+    delete legacyReport.assets.routes.settings;
     expect(validate(legacyReport), JSON.stringify(validate.errors)).toBe(true);
 
     const firstAdvisory = runtimeViolation(metric, 53);
@@ -477,7 +529,7 @@ describe("release benchmark contract", () => {
       mkdirSync(join(output, "assets"));
       const pages = ["HomePage", "SearchPage", "ContextPage", "KnowledgePage", "SymbolPage",
         "CapabilityPage", "WorkstreamsPage", "SpecsPage", "InboxPage", "RelayPage",
-        "MembersPage", "ActivityPage", "JobsPage", "HealthPage"];
+        "MembersPage", "ActivityPage", "JobsPage", "HealthPage", "SettingsPage"];
       const manifest = {
         "index.html": { file: "assets/index.js", isEntry: true, dynamicImports: pages },
         "graph-runtime": { file: "assets/graph.js" },
@@ -508,6 +560,15 @@ describe("release benchmark contract", () => {
       ]);
       expect(measurement.initial.files.map(({ file }) => file)).toEqual(["assets/index.js"]);
       expect(measurement.routes.home.files.map(({ file }) => file)).toEqual(["assets/HomePage.js"]);
+      expect(measurement.routes.settings.files.map(({ file }) => file)).toEqual(["assets/SettingsPage.js"]);
+
+      manifest.HomePage.imports = ["SettingsPage"];
+      writeFileSync(join(output, ".vite", "manifest.json"), JSON.stringify(manifest));
+      expect(() => measureBuiltAssets(output, budgets.assets)).toThrow("Home workbench still includes SettingsPage.");
+      delete manifest.HomePage.imports;
+      manifest["index.html"].imports = ["SettingsPage"];
+      writeFileSync(join(output, ".vite", "manifest.json"), JSON.stringify(manifest));
+      expect(() => measureBuiltAssets(output, budgets.assets)).toThrow("initial application shell still includes SettingsPage.");
     } finally {
       rmSync(output, { recursive: true, force: true });
     }

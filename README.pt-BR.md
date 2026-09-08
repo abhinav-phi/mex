@@ -26,6 +26,8 @@ O MEX mantém a arquitetura, as decisões, os requisitos e as passagens de conte
 
 </div>
 
+> Esta tradução descreve a versão 0.8.0. As mudanças de 0.8.1 em desenvolvimento —o grafo de Context, as contribuições de conhecimento pelo Inbox, os Relays abertos à equipe e as preferências de registro— estão documentadas no [README em inglês](README.md) e no [plano da versão](docs/design/0.8.1-release-plan.md).
+
 ---
 
 Uma pessoa sabe por que uma restrição existe. Outra conhece o histórico de depuração. Um agente de programação encontrou um caso extremo importante em uma sessão que ninguém mais vai ler. O próximo colega precisa reconstruir tudo isso.

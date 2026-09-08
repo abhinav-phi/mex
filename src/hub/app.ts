@@ -1,4 +1,8 @@
 import {
+  AgentLoggingPolicySchema,
+  AgentLoggingUpdateRequestSchema,
+  type AgentLoggingPolicy,
+  type AgentLoggingUpdateRequest,
   ActivityRequestSchema,
   ActivityResponseSchema,
   BootstrapRequestSchema,
@@ -185,6 +189,8 @@ export interface HubJobService {
 }
 
 export interface HubReadServices {
+  loggingPolicy?(): Promise<AgentLoggingPolicy> | AgentLoggingPolicy;
+  setLoggingPolicy?(request: AgentLoggingUpdateRequest): Promise<AgentLoggingPolicy> | AgentLoggingPolicy;
   capabilities(): Promise<HubCapabilities> | HubCapabilities;
   home(): Promise<HomeResponse> | HomeResponse;
   overview?(): Promise<OverviewResponse> | OverviewResponse;
@@ -707,6 +713,19 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
       WikiEntityDetailResponseSchema,
       await options.services.wikiEntity(entityId),
     );
+  });
+
+  app.get("/api/v1/settings/logging", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    if (!options.services.loggingPolicy) throw unavailable("Agent logging preferences are unavailable in this build.");
+    return resourceResponse(AgentLoggingPolicySchema, await options.services.loggingPolicy());
+  });
+
+  app.post("/api/v1/settings/logging", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    if (!options.services.setLoggingPolicy) throw unavailable("Agent logging preferences are unavailable in this build.");
+    const request = parseInput(AgentLoggingUpdateRequestSchema, await readBoundedJson(context.req.raw));
+    return resourceResponse(AgentLoggingPolicySchema, await options.services.setLoggingPolicy(request));
   });
 
   app.get("/api/v1/health", async () => resourceResponse(

@@ -832,6 +832,59 @@ describe("approval evidence in one Wiki operation", () => {
     metadata: { proposalId: "proposal_reviewed", author: { kind: "agent", id: "producer" }, approvedBy: { kind: "human", id: "reviewer" } },
   };
 
+  it.each([false, true])("captures creation authority only when explicitly enabled: %s", (captureCreationProvenance) => {
+    const target = scaffold();
+    const request = {
+      ...envelope(target, "create-entry", {
+        file: "context/architecture.md", insertAt: { at: "end-of-file" },
+        type: "component", title: "New component", body: "Newly authored content.", headingDepth: 2,
+      }),
+      actor: { kind: "agent", id: "known-producer", sessionId: "known-session" },
+      timestamp: "2026-09-08T10:00:00.000Z",
+    };
+    const result = applyOperation(request, { scaffoldRoot: target.root, captureCreationProvenance });
+    expect(result.ok).toBe(true);
+    const created = target.entity(result.createdIds[0]!);
+    expect(created.provenance).toEqual(captureCreationProvenance ? {
+      createdBy: { kind: "agent", id: "known-producer" },
+      createdAt: request.timestamp,
+      agentSessionId: "known-session",
+    } : undefined);
+    expect(created.sources).toEqual([]);
+  });
+
+  it("does not turn adoption time or actor into the original prose's provenance", () => {
+    const text = "---\nlast_updated: 2020-01-01\n---\n\n# Existing guide\n\nLongstanding prose.\n";
+    const target = scaffold({ "context/guide.md": text });
+    const request = envelope(target, "create-entry", {
+      file: "context/guide.md", adopt: { at: "file" }, type: "guide", title: "Existing guide",
+    });
+    const result = applyOperation(request, { scaffoldRoot: target.root, captureCreationProvenance: true });
+    expect(result.ok).toBe(true);
+    expect(target.entity(result.createdIds[0]!).provenance).toBeUndefined();
+    expect(target.read("context/guide.md")).toContain("last_updated: 2020-01-01");
+    expect(target.read("context/guide.md")).toContain("Longstanding prose.");
+  });
+
+  it("does not bypass authoring provenance bounds when capturing operation authority", () => {
+    const target = scaffold();
+    const before = target.files();
+    const request = envelope(target, "create-entry", {
+      file: "context/architecture.md", insertAt: { at: "end-of-file" },
+      type: "component", title: "New component", body: "Newly authored content.", headingDepth: 2,
+    });
+    for (const actor of [
+      { kind: "agent", id: "x".repeat(257) },
+      { kind: "agent", id: "known", sessionId: "x".repeat(257) },
+    ]) {
+      const planned = planOperation({ ...request, actor }, { scaffoldRoot: target.root, captureCreationProvenance: true });
+      expect(planned.ok).toBe(false);
+      expect(planned.diagnostics.some((entry) => entry.code === "INVALID_OPERATION_PAYLOAD")).toBe(true);
+    }
+    expect(target.files()).toEqual(before);
+    expect(readAuditLog(target.root).entries).toEqual([]);
+  });
+
   it("creates explicit producer provenance and exact proposal evidence with one replay-safe audit", () => {
     const target = scaffold();
     const before = target.files();
@@ -840,10 +893,10 @@ describe("approval evidence in one Wiki operation", () => {
       type: "decision", title: "Reviewed decision", body: "The accepted context.", headingDepth: 2,
       provenance, sources: [approval],
     });
-    const planned = planOperation(request, { scaffoldRoot: target.root });
+    const planned = planOperation(request, { scaffoldRoot: target.root, captureCreationProvenance: true });
     expect(planned.ok).toBe(true);
     if (!planned.ok) return;
-    const applied = applyOperation(request, { scaffoldRoot: target.root });
+    const applied = applyOperation(request, { scaffoldRoot: target.root, captureCreationProvenance: true });
     expect(applied.ok).toBe(true);
     const created = target.entity(applied.createdIds[0]!);
     expect(created.provenance).toEqual(provenance);

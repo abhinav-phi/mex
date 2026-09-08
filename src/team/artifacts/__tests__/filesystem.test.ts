@@ -282,6 +282,28 @@ describe("Git's checkout line-ending conversion", () => {
   const CANONICAL = "---\nschema_version: 1\nid: \"member_00000000000000000000000000\"\n---\n";
   const path = ".mex/team/members/member_00000000000000000000000000.md" as RepoRelativePath;
 
+  it("preserves exact bytes and revisions only when requested, including replacement checks", () => {
+    const root = temporaryRoot();
+    const crlf = CANONICAL.replaceAll("\n", "\r\n");
+    atomicCreateArtifact(root, path, crlf);
+    const canonical = readContainedArtifact(root, path, 64 * 1024);
+    const exact = readContainedArtifact(root, path, 64 * 1024, "exact");
+    expect(Buffer.from(canonical.bytes).toString("utf8")).toBe(CANONICAL);
+    expect(canonical.revision).toBe(revisionOf(CANONICAL));
+    expect(Buffer.from(exact.bytes).toString("utf8")).toBe(crlf);
+    expect(exact.revision).toBe(revisionOf(crlf));
+    expect(exact.revision).not.toBe(canonical.revision);
+    expect(tryReadContainedArtifact(root, path, 64 * 1024, "exact")).toEqual(exact);
+    expect(() => atomicReplaceArtifact(root, path, canonical.revision, "stale\n", 64 * 1024, "exact"))
+      .toThrowError(expect.objectContaining({ problem: expect.objectContaining({ code: "REVISION_CONFLICT" }) }));
+    expect(readFileSync(join(root, path), "utf8")).toBe(crlf);
+    expect(atomicReplaceArtifact(root, path, exact.revision, crlf, 64 * 1024, "exact"))
+      .toBe(revisionOf(crlf));
+    // Existing canonical callers still accept the committed LF revision of a CRLF checkout.
+    expect(atomicReplaceArtifact(root, path, canonical.revision, CANONICAL, 64 * 1024))
+      .toBe(revisionOf(CANONICAL));
+  });
+
   it("is undone on read, so a Windows clone sees the bytes that were committed", () => {
     // A `.mex/**` artifact is canonical: written with LF, parsed with any `\r`
     // refused, and revisioned by the SHA-256 of its bytes. `core.autocrlf`

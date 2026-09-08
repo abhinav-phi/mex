@@ -124,6 +124,7 @@
             "activity": { "$ref": "#/$defs/assetGroup" },
             "jobs": { "$ref": "#/$defs/assetGroup" },
             "health": { "$ref": "#/$defs/assetGroup" },
+            "settings": { "$ref": "#/$defs/assetGroup" },
             "notFound": { "$ref": "#/$defs/assetGroup" }
           }
         },
@@ -266,6 +267,7 @@
         "activity": { "$ref": "#/$defs/summary5" },
         "jobs": { "$ref": "#/$defs/summary5" },
         "health": { "$ref": "#/$defs/summary5" },
+        "settings": { "$ref": "#/$defs/summary5" },
         "notFound": { "$ref": "#/$defs/summary5" }
       }
     },

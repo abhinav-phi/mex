@@ -18,6 +18,7 @@ const FORBIDDEN_SHELL_HINTS = [
   "ActivityPage",
   "HealthPage",
   "JobsPage",
+  "SettingsPage",
   "/setup/",
 ];
 
@@ -35,6 +36,7 @@ const FORBIDDEN_HOME_HINTS = [
   "ActivityPage",
   "HealthPage",
   "JobsPage",
+  "SettingsPage",
   "/setup/",
 ];
 

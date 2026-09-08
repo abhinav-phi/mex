@@ -1,6 +1,8 @@
 import { isInboxCreate, isInboxUpdate } from "../lib/inbox-change";
 import type { FixtureApiOptions, HubApi, JobSubscription } from "../api/client";
 import type {
+  AgentLoggingPolicy,
+  AgentLoggingUpdateRequest,
   ActivityItem,
   ActivityRequest,
   ActivityResponse,
@@ -2036,6 +2038,20 @@ function fixtureRelaySummary(relay: RelayDetail): OverviewRelayItem {
 }
 
 class FixtureHubApi implements HubApi {
+  #loggingPolicy: AgentLoggingPolicy = { mode: "significant", source: "default", revision: null };
+  #loggingRevision = 0;
+
+  getLoggingPolicy(): Promise<AgentLoggingPolicy> {
+    return Promise.resolve(structuredClone(this.#loggingPolicy));
+  }
+
+  async setLoggingPolicy(request: AgentLoggingUpdateRequest): Promise<AgentLoggingPolicy> {
+    if (request.expectedRevision !== this.#loggingPolicy.revision) throw new Error("Logging preference changed. Reload and try again.");
+    this.#loggingPolicy = {
+      mode: request.mode, source: "local", revision: (++this.#loggingRevision).toString(16).padStart(64, "0"),
+    };
+    return structuredClone(this.#loggingPolicy);
+  }
   readonly #jobs = structuredClone(jobs);
   readonly #members: TeamMember[];
   readonly #workstreams = structuredClone(fixtureWorkstreams);

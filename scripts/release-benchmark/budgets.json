@@ -41,6 +41,7 @@
       "activity": { "jsBytes": 66663, "cssBytes": 19437, "fontBytes": 0 },
       "jobs": { "jsBytes": 29416, "cssBytes": 14641, "fontBytes": 0 },
       "health": { "jsBytes": 30410, "cssBytes": 16736, "fontBytes": 0 },
+      "settings": { "jsBytes": 8035, "cssBytes": 2910, "fontBytes": 0 },
       "notFound": { "jsBytes": 7095, "cssBytes": 3510, "fontBytes": 0 }
     }
   },

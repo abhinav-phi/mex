@@ -8,6 +8,7 @@ import {
   Network,
   Search,
   Send,
+  Settings2,
   UsersRound,
   type LucideIcon,
 } from "lucide-react";
@@ -124,6 +125,15 @@ export const navigationItems: readonly NavigationItem[] = [
     label: "Health",
     path: "/health",
     icon: HeartPulse,
+    group: "system",
+    placement: "footer",
+    availability: { kind: "always" },
+  },
+  {
+    id: "settings",
+    label: "Settings",
+    path: "/settings",
+    icon: Settings2,
     group: "system",
     placement: "footer",
     availability: { kind: "always" },

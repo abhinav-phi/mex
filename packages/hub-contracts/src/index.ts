@@ -97,6 +97,19 @@ const hubJobId = z.string()
   .regex(/^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$/, "Invalid Hub job ID.");
 const revision = z.string().regex(/^[a-f0-9]{64}$/, "Invalid SHA-256 revision.");
 
+export const AgentLoggingModeSchema = z.enum(["significant", "checkpoints", "manual"]);
+export const AgentLoggingPolicySchema = z.discriminatedUnion("source", [
+  z.object({ mode: z.literal("significant"), revision: z.null(), source: z.literal("default") }).strict(),
+  z.object({ mode: AgentLoggingModeSchema, revision, source: z.literal("local") }).strict(),
+]);
+export const AgentLoggingUpdateRequestSchema = z.object({
+  mode: AgentLoggingModeSchema,
+  expectedRevision: revision.nullable(),
+}).strict();
+export type AgentLoggingMode = z.infer<typeof AgentLoggingModeSchema>;
+export type AgentLoggingPolicy = z.infer<typeof AgentLoggingPolicySchema>;
+export type AgentLoggingUpdateRequest = z.infer<typeof AgentLoggingUpdateRequestSchema>;
+
 /** Shared primitives for route-private contract entry points. */
 export const HubIsoTimestampSchema = isoTimestamp;
 export const HubBoundedReasonSchema = boundedReason;

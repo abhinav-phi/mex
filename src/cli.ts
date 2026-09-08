@@ -8,6 +8,7 @@ import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporte
 import { VERSION } from "./version.js";
 import { captureCommand, flush, isEnabled, getPayloadPreview, showFirstRunNotice } from "./telemetry/index.js";
 import { readMachineId, setGlobalConfigKey } from "./global-config.js";
+import { buildLoggingCommand } from "./logging/cli.js";
 import { runFeedback, maybeShowInvite, dismissInvite, enableInvite } from "./feedback/index.js";
 import type { MexConfig } from "./types.js";
 import type { RunHubCommandOptions } from "./hub/command.js";
@@ -161,12 +162,16 @@ export function isTelemetryExemptCommand(
     || parentName === "spec"
     || parentName === "skills"
     || commandName === "hub"
+    || commandName === "logging"
+    || commandName === "timeline"
     || commandName === "capabilities";
 }
 
 /** Commands whose machine/read-only contract must precede any global notice. */
 export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
   return commandName === "hub"
+    || commandName === "logging"
+    || commandName === "timeline"
     || commandName === "capabilities"
     || commandName === "member"
     || commandName === "activity"
@@ -311,6 +316,8 @@ const specReadService: SpecCliServiceFactory = async () => {
   });
   return createSpecReadService(wiki);
 };
+
+program.addCommand(buildLoggingCommand());
 
 for (const command of buildTeamIdentityActivityCommands({
   service: teamIdentityActivityService,
@@ -929,16 +936,30 @@ program
 
 program
   .command("timeline")
-  .description("Show recent mex event log entries")
+  .description("Read bounded recent project notes (latest 8 MiB / 10,000 log lines)")
   .option("--json", "Output events as JSON")
   .option("--since <date>", "Filter from YYYY-MM-DD or relative Nd, e.g. 30d")
-  .option("--type <type>", "Filter by event type")
-  .option("--limit <n>", "Maximum number of entries", parsePositiveIntArg)
+  .option("--type <type>", "Filter by event type: decision, note, risk, todo")
+  .option("--query <text>", "Case-insensitive literal text in the message (max 256 UTF-8 bytes)")
+  .option("--file <path>", "Exact recorded file path; any may match (repeatable, max 16)", (value, prev: string[]) => [...prev, value], [])
+  .option("--limit <n>", "Maximum entries, 1–200 (default 20; output capped at 64 KiB)", (raw: string) => {
+    if (!/^[0-9]+$/.test(raw) || Number(raw) < 1 || Number(raw) > 200) {
+      throw new InvalidArgumentError("Expected an integer from 1 to 200.");
+    }
+    return Number(raw);
+  })
   .action(async (opts) => {
     try {
-      const config = loadConfig();
+      const config = findConfig();
       const { runTimeline } = await import("./events.js");
-      await runTimeline(config, opts);
+      await runTimeline(config, {
+        json: opts.json,
+        since: opts.since,
+        kind: opts.type,
+        query: opts.query,
+        files: opts.file,
+        limit: opts.limit,
+      });
     } catch (err) {
       console.error((err as Error).message);
       process.exit(1);
