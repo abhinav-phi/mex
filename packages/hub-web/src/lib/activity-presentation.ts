@@ -35,6 +35,7 @@ const WORKFLOW_NARRATION: Readonly<Record<string, WorkflowNarration>> = {
   "member.add": { action: "member.added", headline: "Added a teammate" },
   "member.update": { action: "member.updated", headline: "Updated a teammate" },
   "member.deactivate": { action: "member.deactivated", headline: "Deactivated a teammate" },
+  "member.reactivate": { action: "member.reactivated", headline: "Reactivated a teammate" },
   "workstream.create": { action: "workstream.created", headline: "Created a Workstream" },
   "workstream.update": { action: "workstream.updated", headline: "Updated a Workstream" },
   "workstream.archive": { action: "workstream.archived", headline: "Archived a Workstream" },

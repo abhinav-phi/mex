@@ -369,10 +369,12 @@ function relayReplacement(relay: Awaited<ReturnType<RelayRepository["get"]>> & {
     inProgress: relay.inProgress, decisions: relay.decisions, blockers: relay.blockers, unresolvedQuestions: relay.unresolvedQuestions,
     changedFiles: relay.changedFiles, code: relay.code, evidence: relay.evidence, nextActions: relay.nextActions,
   };
-  return relay.schemaVersion === 3
+  return relay.schemaVersion === 3 || relay.schemaVersion === 4
     ? {
         ...content,
-        schemaVersion: 3 as const,
+        ...(relay.schemaVersion === 4
+          ? { schemaVersion: 4 as const, audience: relay.audience }
+          : { schemaVersion: 3 as const }),
         publishedAt: relay.publishedAt,
         publishedRepoState: relay.publishedRepoState,
       }

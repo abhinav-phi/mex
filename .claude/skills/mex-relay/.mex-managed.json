@@ -4,8 +4,8 @@
   "skill": "mex-relay",
   "packageVersion": "0.8.0",
   "files": {
-    "SKILL.md": "70fa6eb782225f6357b0046ea9449e80095e6c01bc5e960886a2f60fad7e3f25",
+    "SKILL.md": "40efda769fd3453d115ca29f80f7033849b38c23d5d5f0b5bbeb193c8ab4fea4",
     "agents/openai.yaml": "9c2e9c2e34d60ec0f4d07089b07d9e49a6c8210c2a3e277593c15a2635f03076",
-    "references/cli-workflows.md": "98be305e6d941acdd5caa7697317c963343bb62ddcc25af8e129d0af1ea0aaa8"
+    "references/cli-workflows.md": "56b6e74129cdc6ddb5121480b03e01fd2f1f65b7b8c0b7899552a4a217d48cf5"
   }
 }

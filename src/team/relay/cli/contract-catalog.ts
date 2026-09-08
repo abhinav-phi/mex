@@ -35,7 +35,7 @@ const REVISION = "a".repeat(64);
 const REQUEST_SCHEMA: Readonly<Record<string, unknown>> = Object.freeze({
   $id: RELAY_REQUEST_SCHEMA_ID,
   $comment:
-    "Runtime additionally requires NFC product text without lone surrogates, UTF-8 byte ceilings, canonical repository paths, WHATWG-valid credential-free HTTP(S) URLs, unique recipient memberIds, canonical set ordering, exact unique expectation coverage, and active Members immediately before publish. Sparse standalone drafts are normalized before hashing. A pre-v3 Workstream draft field is accepted only as a read-time migration input and becomes entity evidence. Service-issued Git actor fields use their separately declared normalized fallback domain.",
+    "Runtime additionally requires NFC product text without lone surrogates, UTF-8 byte ceilings, canonical repository paths, WHATWG-valid credential-free HTTP(S) URLs, unique recipient memberIds, canonical set ordering, exact unique expectation coverage, and an active sender immediately before publish, plus active recipients for named audiences. Sparse standalone drafts are normalized before hashing. A pre-v3 Workstream draft field is accepted only as a read-time migration input and becomes entity evidence. Service-issued Git actor fields use their separately declared normalized fallback domain.",
   $ref: "#/$defs/command",
   $defs: {
     operationId: {
@@ -225,9 +225,9 @@ const REQUEST_SCHEMA: Readonly<Record<string, unknown>> = Object.freeze({
       additionalProperties: false,
       required: ["recipients", "summary"],
       properties: {
+        audience: { enum: ["team", "members"] },
         recipients: {
           type: "array",
-          minItems: 1,
           maxItems: RELAY_CLI_MAX_RECIPIENTS,
           uniqueItems: true,
           items: { $ref: "#/$defs/memberRef" },
@@ -264,6 +264,10 @@ const REQUEST_SCHEMA: Readonly<Record<string, unknown>> = Object.freeze({
         },
         nextActions: { $ref: "#/$defs/textList" },
       },
+      allOf: [{
+        if: { required: ["audience"], properties: { audience: { const: "team" } } },
+        then: { properties: { recipients: { type: "array", maxItems: 0 } } },
+      }],
     },
     legacyDraft: {
       $comment:
@@ -501,7 +505,7 @@ const REQUEST_SCHEMA: Readonly<Record<string, unknown>> = Object.freeze({
             properties: {
               expectedRevisions: {
                 type: "array",
-                minItems: 2,
+                minItems: 1,
                 maxItems: 33,
                 items: { $ref: "#/$defs/publishExpectation" },
                 allOf: [
@@ -512,7 +516,7 @@ const REQUEST_SCHEMA: Readonly<Record<string, unknown>> = Object.freeze({
                   },
                   {
                     contains: { $ref: "#/$defs/memberExpectation" },
-                    minContains: 1,
+                    minContains: 0,
                     maxContains: 32,
                   },
                 ],
@@ -614,7 +618,7 @@ function relayActionSchemaSelection(action: RelayContractAction): {
         runtimeAction: action,
         expectedRevisions: {
           type: "array",
-          minItems: 2,
+          minItems: 1,
           maxItems: 33,
           uniqueItems: true,
           items: { $ref: "#/$defs/publishExpectation" },
@@ -626,7 +630,7 @@ function relayActionSchemaSelection(action: RelayContractAction): {
             },
             {
               contains: { $ref: "#/$defs/memberExpectation" },
-              minContains: 1,
+              minContains: 0,
               maxContains: 32,
             },
           ],
@@ -1190,7 +1194,8 @@ const COMMANDS = Object.freeze({
 });
 
 const SPARSE_DRAFT = Object.freeze({
-  recipients: [{ kind: "member", memberId: MEMBER_ID }],
+  audience: "team",
+  recipients: [],
   summary: "Continue the reviewed Relay handoff.",
 });
 
@@ -1329,6 +1334,11 @@ export interface RelayActionContractData {
     examples: ReadonlyArray<(typeof EXAMPLES)[number]>;
   };
   applyFile: RelayContractCatalogData["applyFile"];
+  localSave?: {
+    usage: string;
+    requirement: string;
+    contentFile: { maxBytes: number; schema: Readonly<Record<string, unknown>> };
+  };
   exitCodes: typeof EXIT_CODES;
 }
 
@@ -1341,7 +1351,7 @@ const REQUEST_RUNTIME_CONSTRAINTS = Object.freeze([
   {
     id: "recipient-member-id-uniqueness",
     enforcedBy: "request-parser",
-    requirement: `Recipients contain 1-${RELAY_CLI_MAX_RECIPIENTS} Member references with unique memberIds; the sender may be included.`,
+    requirement: `Local drafts may omit recipient selection with an empty array. Team audiences require an empty recipient array; named publication requires 1-${RELAY_CLI_MAX_RECIPIENTS} unique Member references. An omitted audience preserves named-recipient semantics.`,
   },
   {
     id: "action-expectation-target-equality",
@@ -1351,12 +1361,12 @@ const REQUEST_RUNTIME_CONSTRAINTS = Object.freeze([
   {
     id: "publish-dependency-expectation-equality",
     enforcedBy: "preview-service",
-    requirement: "Publish requires exactly the selected local draft and every unique recipient Member revision, with no Workstream, unrelated, or semantic expectations.",
+    requirement: "Team publication requires only the exact local draft revision. Named publication additionally requires every unique recipient Member revision, with no Workstream, unrelated, or semantic expectations.",
   },
   {
     id: "publish-live-authority-and-dependencies",
     enforcedBy: "preview-service",
-    requirement: "Publish revalidates an active canonical sender and every active recipient Member under the workflow lease.",
+    requirement: "Publish revalidates an active canonical sender under the workflow lease. Named publication also requires every active recipient Member; team eligibility is checked against active membership when taking the Relay, including Members who joined after publication.",
   },
 ] as const satisfies RelayContractCatalogData["requestFile"]["runtimeConstraints"]);
 
@@ -1451,6 +1461,20 @@ export function relayActionContractData(action: RelayContractAction): RelayActio
       preview: { ...preview, inputContract: schemaRef },
       apply,
     },
+    ...(action === "relay.draft.save" ? {
+      localSave: {
+        usage: "mex relay draft save --from <draft.json> [--operation-id <id>] --json",
+        requirement: "Creates one checkout-local draft through exact preview/apply. Omitted audience and recipients default to team; omitted recipients become []. No publication or Member lookup. A private pending preview is retained before apply, then removed on success. Resume an interruption with the same operation ID/content or the returned recovery command; never replace a conflicting receipt.",
+        contentFile: {
+          maxBytes: RELAY_CLI_MAX_ENVELOPE_BYTES,
+          schema: projectLocalSchemaClosure({
+            id: `${RELAY_REQUEST_SCHEMA_ID}?local-create`,
+            source: REQUEST_SCHEMA,
+            root: { ...(projectSchemaDefinition(REQUEST_SCHEMA, "standaloneDraft") as Record<string, unknown>), required: ["summary"] },
+          }),
+        },
+      },
+    } : {}),
     requestFile: {
       contractId: RELAY_REQUEST_CONTRACT_ID,
       schemaRef,

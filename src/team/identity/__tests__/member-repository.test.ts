@@ -15,6 +15,7 @@ import { memberArtifactPath, serializeMemberArtifact } from "../../artifacts/cod
 import { atomicCreateArtifact, atomicReplaceArtifact } from "../../artifacts/filesystem.js";
 import { generateArtifactId } from "../../artifacts/ulid.js";
 import { MEMBER_REPOSITORY_LIMITS, MemberRepository } from "../member-repository.js";
+import { ActorResolver } from "../actor-resolver.js";
 
 const roots: string[] = [];
 
@@ -101,6 +102,82 @@ describe("MemberRepository", () => {
 
     const noOp = await repository.update(id, {}, updated.revision);
     expect(noOp.revision).toBe(updated.revision);
+  });
+
+  it("reactivates the same member and restores actor eligibility without changing recorded identity", async () => {
+    const root = temporaryRoot();
+    const repository = new MemberRepository(root);
+    const member = await repository.create({
+      id: memberId(10), displayName: "Returning teammate",
+      gitAliases: [{ name: "Returning", email: "returning@example.com" }], active: false,
+    });
+    const resolver = new ActorResolver(repository);
+    const recordedActor = Object.freeze({ kind: "member" as const, memberId: member.ref.id, displayName: "Recorded historical name" });
+    await expect(resolver.resolve({ configuredMemberId: member.ref.id })).rejects.toMatchObject({
+      problem: { code: "VALIDATION_FAILED" },
+    });
+    expect((await resolver.resolveHistorical(recordedActor)).diagnostics).toHaveLength(1);
+    const path = join(root, member.sourcePath);
+    const before = readFileSync(path);
+    const preview = await repository.previewReactivate(member.ref.id, member.revision);
+    expect(readFileSync(path)).toEqual(before);
+    expect(preview.change.diff).toContain("-active: false");
+    expect(preview.change.diff).toContain("+active: true");
+    const result = await repository.apply(preview, preview.previewRevision);
+    expect(result.member).toMatchObject({
+      ref: member.ref, sourcePath: member.sourcePath, displayName: member.displayName,
+      gitAliases: member.gitAliases, active: true,
+    });
+    expect((await repository.list()).map((value) => value.ref.id)).toEqual([member.ref.id]);
+    await expect(resolver.resolve({ configuredMemberId: member.ref.id })).resolves.toEqual({
+      kind: "member", memberId: member.ref.id, displayName: member.displayName,
+    });
+    await expect(resolver.resolve({ gitIdentity: member.gitAliases[0] })).resolves.toEqual({
+      kind: "member", memberId: member.ref.id, displayName: member.displayName,
+    });
+    expect(await resolver.resolveHistorical(recordedActor)).toMatchObject({ recordedActor, diagnostics: [] });
+    expect(recordedActor.displayName).toBe("Recorded historical name");
+  });
+
+  it("rejects active or stale reactivation targets and stale reactivation previews", async () => {
+    const root = temporaryRoot();
+    const repository = new MemberRepository(root);
+    const member = await repository.create({ id: memberId(11), displayName: "Member", active: true });
+    await expect(repository.previewReactivate(member.ref.id, member.revision)).rejects.toMatchObject({
+      problem: { code: "VALIDATION_FAILED" },
+    });
+    const inactive = await repository.update(member.ref.id, { active: false }, member.revision);
+    await expect(repository.previewReactivate(member.ref.id, member.revision)).rejects.toMatchObject({
+      problem: { code: "REVISION_CONFLICT" },
+    });
+    const preview = await repository.previewReactivate(inactive.ref.id, inactive.revision);
+    const changed = await repository.update(inactive.ref.id, { displayName: "Concurrent rename" }, inactive.revision);
+    await expect(repository.apply(preview, preview.previewRevision)).rejects.toMatchObject({
+      problem: { code: "REVISION_CONFLICT" },
+    });
+    expect(await repository.get(member.ref.id)).toEqual(changed);
+    expect(changed.active).toBe(false);
+  });
+
+  it("rechecks active alias collisions before reactivation publication", async () => {
+    const root = temporaryRoot();
+    const repository = new MemberRepository(root);
+    const member = await repository.create({
+      id: memberId(12), displayName: "Returning", active: false,
+      gitAliases: [{ name: "Returning", email: "shared@example.com" }],
+    });
+    const preview = await repository.previewReactivate(member.ref.id, member.revision);
+    atomicCreateArtifact(root, memberArtifactPath(memberId(13)), serializeMemberArtifact({
+      id: memberId(13), displayName: "Merged active member", active: true,
+      gitAliases: [{ name: "Merged", email: "SHARED@example.com" }],
+    }));
+    await expect(repository.apply(preview, preview.previewRevision)).rejects.toMatchObject({
+      problem: { code: "VALIDATION_FAILED" },
+    });
+    await expect(repository.previewReactivate(member.ref.id, member.revision)).rejects.toMatchObject({
+      problem: { code: "VALIDATION_FAILED" },
+    });
+    expect(await repository.get(member.ref.id)).toEqual(member);
   });
 
   it("rejects a stale update preview without changing the newer member", async () => {

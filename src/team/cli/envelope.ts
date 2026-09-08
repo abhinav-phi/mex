@@ -30,6 +30,7 @@ export type TeamCliCommandName =
   | "member.add"
   | "member.update"
   | "member.deactivate"
+  | "member.reactivate"
   | "member.select"
   | "activity"
   | "activity.list"

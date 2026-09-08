@@ -286,6 +286,20 @@ export class MemberRepository implements MemberReader {
     });
   }
 
+  /** Reactivation retains the canonical identity and uses ordinary update proofs. */
+  async previewReactivate(memberId: string, expectedRevision: Revision): Promise<MemberWritePlan> {
+    const plan = await this.previewUpdate(memberId, { active: true }, expectedRevision);
+    if (plan.kind !== "update" || parseMemberArtifact(plan.beforeDocument, plan.member.sourcePath).active) {
+      throw artifactError(
+        "VALIDATION_FAILED",
+        "Member is already active",
+        "Only an inactive member can be reactivated.",
+        plan.member.sourcePath,
+      );
+    }
+    return plan;
+  }
+
   async apply(
     plan: MemberWritePlan,
     expectedPreviewRevision: Revision,

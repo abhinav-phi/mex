@@ -146,7 +146,7 @@ function reviewCopy(source: RelayReviewSource): {
       pendingTitle: "Checking the handoff",
       pendingDetail: "Confirming that the current Relay state can still be claimed.",
       consequence: [
-        "Other eligible recipients will no longer be able to take this synchronized state.",
+        "Other eligible Members will no longer be able to take this synchronized state.",
         "There is no unclaim or reassignment.",
         "Two unsynchronized clones can still attempt a claim and later encounter a Git conflict.",
       ],
@@ -161,14 +161,14 @@ function reviewCopy(source: RelayReviewSource): {
       pendingDetail: "Confirming that its sender, claimant, and current Relay state still allow closing.",
       consequence: [
         "The handoff will no longer appear as open.",
-        "This does not complete or modify the Workstream or task.",
+        "The saved handoff remains readable in project history.",
       ],
     };
   }
   if (source.kind === "publish") {
     return {
       title: "Publish this handoff?",
-      description: "This converts the private checkout-local draft into a Git-tracked Relay.",
+      description: "This writes a Relay Markdown artifact in your working tree. Share it through Git so teammates can take it.",
       confirm: "Publish handoff",
       pendingTitle: "Checking publication",
       pendingDetail: "Confirming the current sender, recipients, draft revision, and repository state.",
@@ -176,7 +176,7 @@ function reviewCopy(source: RelayReviewSource): {
         "The local draft will be removed after the Relay is created.",
         "The Relay records branch, HEAD, clean or dirty state, and observation time.",
         "MEX does not create a commit or capture source-file or local-change contents.",
-        "Commit and push are still required before teammates can receive it.",
+        "Commit and push are still required to share it; MEX does not verify delivery to another checkout.",
       ],
     };
   }
@@ -212,6 +212,7 @@ export default function RelayMutationDialog({
   const [identityError, setIdentityError] = useState<Error | null>(null);
   const [applyFailed, setApplyFailed] = useState(false);
   const generation = useRef(0);
+  const restoreTriggerFocus = useRef(true);
   const preview = useMutation({ mutationFn: (request: RelayOperationPreviewRequest) => api.previewRelayOperation(request) });
   const apply = useMutation({ mutationFn: (request: RelayOperationPreviewResponse) => api.applyRelayOperation(request) });
 
@@ -238,8 +239,8 @@ export default function RelayMutationDialog({
   }, []);
 
   const close = (restoreFocus = true) => {
+    restoreTriggerFocus.current = restoreFocus;
     onClose();
-    if (restoreFocus) queueMicrotask(() => finalFocus()?.focus({ preventScroll: true }));
   };
   const applyEnvelope = () => {
     if (!envelope || applyFailed) return;
@@ -256,7 +257,7 @@ export default function RelayMutationDialog({
 
   return (
     <AlertDialog open onOpenChange={(open) => { if (!open && !apply.isPending) close(); }}>
-      <AlertDialogContent className={styles.reviewDialog}>
+      <AlertDialogContent className={styles.reviewDialog} finalFocus={() => restoreTriggerFocus.current ? finalFocus() : false}>
         <AlertDialogHeader>
           <AlertDialogMedia><Handshake aria-hidden="true" /></AlertDialogMedia>
           <AlertDialogTitle>{copy.title}</AlertDialogTitle>
@@ -265,6 +266,7 @@ export default function RelayMutationDialog({
         <section className={styles.confirmationSummary} aria-label="Handoff outcome">
           <p className={styles.confirmationEyebrow}>Handoff</p>
           <h3>{handoffSummary}</h3>
+          {source.kind === "publish" && source.snapshot.kind === "draft" ? <p><strong>Who can take:</strong> {source.snapshot.input.audience === "team" ? "Any active Member, including teammates who join later." : source.snapshot.input.recipients.map(actorLabel).join(", ")}</p> : null}
           <ul>{copy.consequence.map((item) => <li key={item}>{item}</li>)}</ul>
           {envelope ? <p><strong>{source.kind === "acknowledge" ? "Taking as" : source.kind === "close" ? "Closing as" : "Acting as"} {actorLabel(envelope.receipt.authority.actor)}</strong></p> : null}
           {source.kind === "publish" && envelope ? (

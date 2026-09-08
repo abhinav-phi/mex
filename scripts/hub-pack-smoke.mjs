@@ -268,7 +268,9 @@ try {
     || relayExamples.length === 0
     || relayExamples[0]?.command !== "relay.draft.save"
     || JSON.stringify(Object.keys(sparseRelayDraft ?? {}).sort())
-      !== JSON.stringify(["recipients", "summary"])
+      !== JSON.stringify(["audience", "recipients", "summary"])
+    || sparseRelayDraft?.audience !== "team"
+    || JSON.stringify(sparseRelayDraft?.recipients) !== "[]"
     || !relayExamples.some((example) => (
       Array.isArray(example?.request?.action?.draft?.evidence)
       && example.request.action.draft.evidence.some((item) => item?.kind === "commit")
@@ -287,6 +289,8 @@ try {
   const normalizedSparseDraft = sparseRelayPreview?.data?.request?.action?.draft;
   if (
     sparseRelayPreview?.ok !== true
+    || normalizedSparseDraft?.audience !== "team"
+    || JSON.stringify(normalizedSparseDraft?.recipients) !== "[]"
     || Object.hasOwn(normalizedSparseDraft ?? {}, "workstream")
     || ![
       "completed",
@@ -301,6 +305,10 @@ try {
     ].every((key) => Array.isArray(normalizedSparseDraft?.[key]))
   ) {
     throw new Error("The packed Relay CLI did not normalize the sparse standalone draft.");
+  }
+  const relaySaveHelp = run(process.execPath, [cli, "relay", "draft", "save", "--help"], project);
+  if (!relaySaveHelp.includes("--from <draft-file>") || !relaySaveHelp.includes("--operation-id <id>")) {
+    throw new Error("The packed Relay help omitted the sparse local quick-save surface.");
   }
   const packedCapabilitiesOutput = run(
     process.execPath,
@@ -834,6 +842,53 @@ try {
     && exit.signal === "SIGTERM";
   if (!stoppedAsRequested && !terminatedAsRequestedOnWindows) {
     throw new Error(`The packaged Hub did not stop cleanly (${JSON.stringify(exit)}).`);
+  }
+  // Exercise the shortcut after the immutable Hub-read and maintenance checks.
+  // Only checkout-local state may change; Git, knowledge, Members and Activity stay exact.
+  const beforeQuickSave = snapshotProtectedProjectState(project, {
+    includeRuntimeState: false,
+    includeGraphIndex: true,
+  });
+  const quickDraftFile = join(work, "relay-quick-draft.json");
+  const quickSummary = "Resume the packed-install investigation when a teammate joins.";
+  writeFileSync(quickDraftFile, JSON.stringify({ summary: quickSummary }));
+  const quickSave = JSON.parse(run(process.execPath, [
+    cli, "relay", "draft", "save", "--from", quickDraftFile,
+    "--operation-id", "packed-relay-quick-save", "--json",
+  ], project));
+  const savedLocal = quickSave?.data?.localChanges?.[0];
+  if (
+    quickSave?.ok !== true
+    || quickSave?.command !== "relay.draft.save"
+    || quickSave?.mode !== "apply"
+    || quickSave?.data?.applied !== true
+    || quickSave?.data?.localChanges?.length !== 1
+    || savedLocal?.namespace !== "relay-draft"
+    || savedLocal?.beforeRevision !== null
+    || typeof savedLocal?.id !== "string"
+    || !/^[a-f0-9]{64}$/.test(savedLocal?.afterRevision ?? "")
+    || JSON.stringify(quickSave?.data?.changes) !== "[]"
+    || JSON.stringify(quickSave?.data?.relays) !== "[]"
+    || JSON.stringify(quickSave?.data?.events) !== "[]"
+  ) {
+    throw new Error("The packed Relay shortcut did not save exactly one local draft without publication.");
+  }
+  const savedDraft = JSON.parse(run(process.execPath, [
+    cli, "relay", "draft", "show", savedLocal.id, "--json",
+  ], project));
+  if (
+    savedDraft?.ok !== true
+    || savedDraft?.data?.id !== savedLocal.id
+    || savedDraft?.data?.revision !== savedLocal.afterRevision
+    || savedDraft?.data?.summary !== quickSummary
+    || savedDraft?.data?.input?.audience !== "team"
+    || JSON.stringify(savedDraft?.data?.input?.recipients) !== "[]"
+    || JSON.stringify(snapshotProtectedProjectState(project, {
+      includeRuntimeState: false,
+      includeGraphIndex: true,
+    })) !== JSON.stringify(beforeQuickSave)
+  ) {
+    throw new Error("The packed Relay shortcut lost its draft or changed protected project state.");
   }
   process.stdout.write("Packed Project Hub and official agent-skills smoke test passed.\n");
 } finally {

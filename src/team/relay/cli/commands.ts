@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { isArtifactId } from "../../artifacts/ulid.js";
 import { MexPortError } from "../../contracts/shared.js";
 import {
@@ -37,7 +38,10 @@ import {
   projectRelayPage,
   projectRelayPreview,
 } from "./projections.js";
-import { isRelayLocalId } from "../handoff.js";
+import { isRelayLocalId, normalizeTeamRelayCommand } from "../handoff.js";
+import { readBoundedJsonFile } from "../../cli/request-file.js";
+import { locateTeamRepositoryRoot } from "../../cli/repository-root.js";
+import { withLocalRelayPreview } from "./local-preview.js";
 import {
   readRelayCommandFile,
   readRelayPreviewFile,
@@ -49,6 +53,16 @@ export interface RelayListFlags extends TeamPageFlags {
   perspective?: string;
   state?: string | readonly string[];
   workstream?: string;
+}
+
+export interface RelayMutationFlags extends TeamMutationFlags {
+  /** Save a new local draft directly from bounded sparse content. */
+  from?: string;
+  operationId?: string;
+}
+
+export interface RelayMutationOptions {
+  projectRoot?: () => string;
 }
 
 export type RelayCliServiceSource = TeamRelayCliService | TeamRelayCliServiceFactory;
@@ -137,9 +151,55 @@ export async function runRelayMutation(
   source: RelayCliServiceSource,
   command: RelayMutationCommandName,
   requestFile: string | undefined,
-  flags: TeamMutationFlags,
+  flags: RelayMutationFlags,
   io: TeamCommandIo,
+  options: RelayMutationOptions = {},
 ): Promise<void> {
+  if (flags.from !== undefined || flags.operationId !== undefined) {
+    await execute(command, "apply", flags, io, async () => {
+      if (command !== "relay.draft.save" || flags.from === undefined
+        || requestFile !== undefined || flags.apply !== undefined) {
+        throw new TeamCliUsageError("Quick saving accepts only relay draft save --from <draft.json> and an optional --operation-id; do not combine it with a request file or --apply.");
+      }
+      const value = readBoundedJsonFile(flags.from);
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        throw new TeamCliUsageError("The draft file must contain one Relay draft object.");
+      }
+      const content = value as Record<string, unknown>;
+      const request = normalizeTeamRelayCommand({
+        operationId: flags.operationId ?? `relay-local-${randomUUID()}`,
+        action: {
+          kind: "relay.draft.save",
+          draft: {
+            ...content,
+            ...(!Object.hasOwn(content, "audience") && !Object.hasOwn(content, "recipients") ? { audience: "team" } : {}),
+            ...(!Object.hasOwn(content, "recipients") ? { recipients: [] } : {}),
+          },
+        },
+        expectedRevisions: [],
+      });
+      const service = await resolveService(source);
+      const result = await withLocalRelayPreview(
+        (options.projectRoot ?? locateTeamRepositoryRoot)(),
+        request,
+        async () => {
+          const preview = await service.previewRelay(request);
+          const local = preview.preview.localChanges;
+          if (!preview.preview.valid || preview.preview.scope !== "local"
+            || preview.preview.changes.length !== 0 || local.length !== 1
+            || local[0]?.namespace !== "relay-draft" || local[0].beforeRevision !== null
+            || preview.request.action.kind !== "relay.draft.save"
+            || preview.request.action.draftId !== undefined) {
+            throw new TeamCliUsageError("Quick saving requires a valid preview that only creates one checkout-local Relay draft.");
+          }
+          return preview;
+        },
+        async (preview) => projectRelayApply(await service.applyRelay(preview)),
+      );
+      return teamEnvelope({ command, mode: "apply", data: result });
+    }, renderApply);
+    return;
+  }
   if (flags.apply === undefined) {
     await execute(command, "preview", flags, io, async () => {
       if (requestFile === undefined) {
@@ -212,6 +272,9 @@ async function execute<T>(
     io.write(problem === null ? "Relay command failed validation." : `${problem.code}: ${problem.detail}`);
     for (const diagnostic of envelope.diagnostics) {
       io.write(`${diagnostic.severity} ${diagnostic.code}: ${diagnostic.message}`);
+    }
+    for (const recovery of problem?.recovery ?? []) {
+      io.write(recovery.command ?? recovery.label);
     }
   } else {
     human(envelope.data as T, envelope as TeamCliEnvelope<T>, io);
@@ -300,7 +363,7 @@ function renderDraftList(
 ): void {
   if (page.items.length === 0) io.write("No local Relay drafts found.");
   for (const draft of page.items) {
-    io.write(`${draft.id}\t${draft.recipients.length} recipient${draft.recipients.length === 1 ? "" : "s"}\t${draft.summary}`);
+    io.write(`${draft.id}\t${relayAudience(draft)}\t${draft.summary}`);
   }
   renderContinuation(page, io);
 }
@@ -311,7 +374,8 @@ function renderDraft(
   io: TeamCommandIo,
 ): void {
   io.write(`${draft.summary} (${draft.id})`);
-  io.write(`Recipients: ${draft.recipients.map((recipient) => recipient.memberId).join(", ")}`);
+  io.write("Sharing: checkout-local draft; nothing is published or shared.");
+  io.write(`Audience: ${relayAudience(draft)}`);
   io.write(`Revision: ${draft.revision}`);
   io.write(`Updated: ${draft.updatedAt}`);
 }
@@ -342,6 +406,8 @@ function renderRelay(
 ): void {
   io.write(`${relay.summary} (${relay.ref.id})`);
   io.write(`State: ${relay.state}`);
+  io.write("Sharing: canonical working-tree artifact; Git distributes it, delivery is not verified.");
+  io.write(`Who can take it: ${relay.state === "published" ? relayAudience(relay) : relay.state === "acknowledged" ? "Already taken by the recorded claimant." : "Closed."}`);
   if (relay.workstream !== null) io.write(`Workstream: ${relay.workstream.id}`);
   io.write(`Published: ${relay.publishedAt ?? "legacy timestamp unavailable"}`);
   const publicationContext = relayPublicationContext(relay);
@@ -360,6 +426,14 @@ function relayPublicationContext(
   const branch = state.branch ?? "Detached HEAD";
   const head = state.head === null ? "No committed HEAD" : state.head.slice(0, 8);
   return `${branch} @ ${head} (${state.dirty ? "local changes present" : "clean working tree"})`;
+}
+
+function relayAudience(value: Pick<TeamRelaySummary, "audience" | "recipients">): string {
+  if (value.audience === "team") return "Open to any active project Member, including future Members";
+  if (value.recipients.length === 0) return "Recipients not selected; choose an audience before publishing";
+  return value.recipients.map((recipient) => recipient.kind === "member"
+    ? recipient.displayName ?? recipient.memberId
+    : recipient.kind === "git" ? recipient.name ?? recipient.email ?? "Git actor" : "Unknown actor").join(", ");
 }
 
 function renderPreview(
@@ -384,6 +458,16 @@ function renderApply(
   io.write(`Local changes: ${result.localChanges.length}`);
   io.write(`Relays: ${result.relays.length}`);
   io.write(`Activity events: ${result.events.length}`);
+  if (result.changes.length === 0 && result.localChanges.length > 0) {
+    io.write("Local draft state changed only in this checkout; nothing was published or shared.");
+    for (const change of result.localChanges) {
+      if (change.namespace === "relay-draft" && change.afterRevision !== null) {
+        io.write(`/relays?view=drafts&draft=${encodeURIComponent(change.id)}`);
+      }
+    }
+  } else if (result.changes.length > 0) {
+    io.write("Canonical files were written to the working tree; commit/push and teammate pull are still required to share them.");
+  }
 }
 
 function renderContinuation(

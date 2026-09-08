@@ -295,11 +295,11 @@ Inbox is intentionally Spec-family focused in 0.8. It is not a general Wiki edit
 
 ### Relay: pass the context baton
 
-A Relay packages what the next person needs: the active sender resolved at publication, one to 32 unique active canonical Member recipients, a summary, optional related context such as a Workstream, and observed repository state. That snapshot includes branch and `HEAD` when available, plus a dirty-tree boolean and timestamp. Publication rejects inactive, duplicate, or unresolved recipients; it stores no diff or dirty file contents.
+A Relay packages what the next person needs: a summary, progress, blockers, next actions, useful evidence, and observed repository state. The 0.8.1 update adds **Open to team**, including active Members who join later, alongside named recipients. Save a local draft before selecting anyone, or use `mex relay draft save --from draft.json --json` for the shorter agent path. Publication requires an active sender; named handoffs also require one to 32 unique active recipients. The observed state includes branch, `HEAD`, a dirty-tree flag, and timestamp; it stores no diff or dirty file contents.
 
 A Relay is a durable handoff, not chat, a live notification, task assignment, or a Jira replacement.
 
-Within one observed repository state, the first successful eligible recipient becomes the sole claimant. There is no cross-clone network lock, so two unsynchronized recipients can claim separately and later meet a Git conflict. Only the active recorded sender or active recorded claimant can close the Relay; deactivating either principal can block closure. Version 0.8 has no decline, reassign, unclaim, reopen, or administrative-override flow.
+Within one observed repository state, the first successful eligible Member becomes the sole claimant. There is no cross-clone network lock, so two unsynchronized Members can claim separately and later meet a Git conflict. Only the active recorded sender or active recorded claimant can close the Relay; deactivating either principal can block closure. In 0.8.1, reactivation restores the original Member identity so older handoffs remain usable. There is no decline, reassign, unclaim, reopen, or administrative-override flow. Teammates exchanging new open-to-team Relays need a CLI that supports schema v4.
 
 ## Command map
 

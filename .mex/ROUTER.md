@@ -99,6 +99,15 @@ Then read this file fully before doing anything else in this session.
   Relays/Activity. The agent skill searches existing knowledge and uses the
   fresh, bounded `mex inbox target <id> --json` lookup for exact correction
   revisions. This is working-tree implementation, not a published release.
+- Phase 3 adds explicit open-to-team Relays, including future active Members,
+  while preserving named v3 and earlier artifact/recovery formats. New team
+  handoffs use schema v4; local drafts may defer recipient selection. Hub and
+  CLI show the audience, current eligibility, and working-tree/Git boundary.
+  `mex relay draft save --from <draft.json>` saves a local draft through the
+  existing signed workflow, retaining a bounded private preview before apply
+  so an interrupted save can resume exactly. Explicit Member reactivation
+  preserves the original identity and older handoffs. This is local
+  implementation on `codex/0.8.1`; release gates remain in the release plan.
 - Explicit graph status, refresh, and isolated rebuild/recovery commands preserve
   the last trustworthy index behind one cross-process maintenance lease.
 - Targeted graph get/query/impact consumers use one provenance-bound immutable

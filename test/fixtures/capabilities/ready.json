@@ -289,6 +289,13 @@
           "inputContract": "team.identity_activity.request.v1#/$defs/memberDeactivateRequest"
         },
         {
+          "id": "member.reactivate.preview",
+          "path": "mex member reactivate",
+          "usage": "mex member reactivate <request-file> --json",
+          "output": "json",
+          "inputContract": "team.identity_activity.request.v1#/$defs/memberReactivateRequest"
+        },
+        {
           "id": "member.select.preview",
           "path": "mex member select",
           "usage": "mex member select <request-file> --json",
@@ -421,6 +428,13 @@
           "usage": "mex member deactivate --apply <preview-envelope> --json",
           "output": "json",
           "inputContract": "team.identity_activity.preview-envelope.v1#member.deactivate"
+        },
+        {
+          "id": "member.reactivate.apply",
+          "path": "mex member reactivate",
+          "usage": "mex member reactivate --apply <preview-envelope> --json",
+          "output": "json",
+          "inputContract": "team.identity_activity.preview-envelope.v1#member.reactivate"
         },
         {
           "id": "member.select.apply",
@@ -680,6 +694,7 @@
                     "kind": {
                       "enum": [
                         "member.deactivate",
+                        "member.reactivate",
                         "member.select"
                       ]
                     },
@@ -804,6 +819,7 @@
                         "enum": [
                           "member.update",
                           "member.deactivate",
+                          "member.reactivate",
                           "member.select",
                           "member.clear"
                         ]
@@ -1756,6 +1772,20 @@
                 }
               }
             },
+            "memberReactivateRequest": {
+              "$ref": "#",
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "member.reactivate"
+                    }
+                  }
+                }
+              }
+            },
             "memberSelectRequest": {
               "$ref": "#",
               "type": "object",
@@ -1900,6 +1930,27 @@
             }
           },
           {
+            "command": "member.reactivate",
+            "usage": "mex member reactivate request.json --json",
+            "schemaRef": "team.identity_activity.request.v1#/$defs/memberReactivateRequest",
+            "request": {
+              "operationId": "member-reactivate-example-001",
+              "action": {
+                "kind": "member.reactivate",
+                "memberId": "member_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+              },
+              "expectedRevisions": [
+                {
+                  "target": {
+                    "kind": "artifact",
+                    "path": ".mex/team/members/member_01ARZ3NDEKTSV4RRFFQ69G5FAV.md"
+                  },
+                  "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }
+              ]
+            }
+          },
+          {
             "command": "member.select",
             "usage": "mex member select request.json --json",
             "schemaRef": "team.identity_activity.request.v1#/$defs/memberSelectRequest",
@@ -1995,55 +2046,6 @@
                 }
               },
               "expectedRevisions": []
-            }
-          },
-          {
-            "command": "workstream.update",
-            "usage": "mex workstream update request.json --json",
-            "schemaRef": "team.identity_activity.request.v1#/$defs/workstreamUpdateRequest",
-            "request": {
-              "operationId": "workstream-update-example-001",
-              "action": {
-                "kind": "workstream.update",
-                "workstreamId": "ws_01ARZ3NDEKTSV4RRFFQ69G5FAV",
-                "patch": {
-                  "state": "blocked",
-                  "blockers": [
-                    "Awaiting a reviewed dependency"
-                  ],
-                  "currentState": "Dependency review"
-                }
-              },
-              "expectedRevisions": [
-                {
-                  "target": {
-                    "kind": "artifact",
-                    "path": ".mex/workstreams/ws_01ARZ3NDEKTSV4RRFFQ69G5FAV.md"
-                  },
-                  "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                }
-              ]
-            }
-          },
-          {
-            "command": "workstream.archive",
-            "usage": "mex workstream archive request.json --json",
-            "schemaRef": "team.identity_activity.request.v1#/$defs/workstreamArchiveRequest",
-            "request": {
-              "operationId": "workstream-archive-example-001",
-              "action": {
-                "kind": "workstream.archive",
-                "workstreamId": "ws_01ARZ3NDEKTSV4RRFFQ69G5FAV"
-              },
-              "expectedRevisions": [
-                {
-                  "target": {
-                    "kind": "artifact",
-                    "path": ".mex/workstreams/ws_01ARZ3NDEKTSV4RRFFQ69G5FAV.md"
-                  },
-                  "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                }
-              ]
             }
           }
         ]

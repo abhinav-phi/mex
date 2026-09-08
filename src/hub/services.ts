@@ -2057,6 +2057,7 @@ function projectRelayEvidence(evidence: TeamEvidenceRef): RelayEvidenceRef {
 
 function projectRelayDraftInput(input: TeamRelayDraftDetail["input"]): RelayDraftInput {
   return {
+    ...(input.audience === undefined ? {} : { audience: input.audience }),
     recipients: input.recipients.map(projectRelayMemberActor),
     summary: input.summary,
     completed: [...input.completed],
@@ -2073,6 +2074,7 @@ function projectRelayDraftInput(input: TeamRelayDraftDetail["input"]): RelayDraf
 
 function projectRelayDraftSummary(draft: TeamRelayDraftSummary): RelayDraftSummary {
   return {
+    ...(draft.audience === undefined ? {} : { audience: draft.audience }),
     id: draft.id,
     revision: draft.revision,
     updatedAt: draft.updatedAt,
@@ -2088,6 +2090,7 @@ function projectRelayDraftDetail(draft: TeamRelayDraftDetail): RelayDraftDetail 
 function projectRelaySummary(relay: TeamRelaySummary): RelaySummary {
   if (relay.ref.kind !== "relay") throw invalidRelayProjection();
   return {
+    ...(relay.audience === undefined ? {} : { audience: relay.audience }),
     schemaVersion: relay.schemaVersion,
     ref: { ...projectRelayEntity(relay.ref), kind: "relay" },
     sourcePath: relay.sourcePath,
@@ -2130,6 +2133,7 @@ function projectRelayDetail(relay: TeamRelayDetail): RelayDetail {
 
 function projectRelayDraftInputToService(input: RelayDraftInput): TeamRelayDraftDetail["input"] {
   return {
+    ...(input.audience === undefined ? {} : { audience: input.audience }),
     recipients: input.recipients.map((actor) => ({ ...actor })),
     summary: input.summary,
     completed: [...input.completed],
@@ -3198,7 +3202,8 @@ function cloneTeamAction(
         },
       };
     case "member.deactivate":
-      return { kind: "member.deactivate", memberId: action.memberId };
+    case "member.reactivate":
+      return { kind: action.kind, memberId: action.memberId };
     case "member.select":
       return { kind: "member.select", memberId: action.memberId };
     case "member.clear":
@@ -3809,9 +3814,9 @@ function projectOverviewRelays(
   const memberId = identity.current.actor.memberId;
   const readyToTake = corpus.items.filter((relay) => (
     relay.state === "published"
-    && relay.recipients.some((recipient) => (
+    && (relay.audience === "team" || relay.recipients.some((recipient) => (
       recipient.kind === "member" && recipient.memberId === memberId
-    ))
+    )))
   ));
   const inYourHands = corpus.items.filter((relay) => (
     relay.state === "acknowledged"

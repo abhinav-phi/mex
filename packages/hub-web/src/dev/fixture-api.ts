@@ -2131,9 +2131,9 @@ class FixtureHubApi implements HubApi {
     )).length;
     const readyToTakeCount = actor.kind !== "member" ? null : this.#relays.filter((relay) => (
       relay.state === "published"
-      && relay.recipients.some((recipient) => (
+      && (relay.audience === "team" || relay.recipients.some((recipient) => (
         recipient.kind === "member" && recipient.memberId === actor.memberId
-      ))
+      )))
     )).length;
     const inYourHandsCount = actor.kind !== "member" ? null : this.#relays.filter((relay) => (
       relay.state === "acknowledged"
@@ -2298,9 +2298,9 @@ class FixtureHubApi implements HubApi {
     const readyRelayItems = currentMemberId === null ? [] : this.#relays
       .filter((relay) => (
         relay.state === "published"
-        && relay.recipients.some((recipient) => (
+        && (relay.audience === "team" || relay.recipients.some((recipient) => (
           recipient.kind === "member" && recipient.memberId === currentMemberId
-        ))
+        )))
       ))
       .slice(0, 3)
       .map(fixtureRelaySummary);
@@ -2517,7 +2517,7 @@ class FixtureHubApi implements HubApi {
         return relay.sender.kind === "member" && relay.sender.memberId === current.memberId;
       }
       return relay.state === "published"
-        ? relay.recipients.some((recipient) => recipient.kind === "member" && recipient.memberId === current.memberId)
+        ? relay.audience === "team" || relay.recipients.some((recipient) => recipient.kind === "member" && recipient.memberId === current.memberId)
         : relay.acknowledgedBy?.kind === "member" && relay.acknowledgedBy.memberId === current.memberId;
     }).sort((left, right) => {
       if (left.publishedAt === null && right.publishedAt !== null) return 1;
@@ -2673,6 +2673,7 @@ class FixtureHubApi implements HubApi {
           revision: envelope.preview.localChanges[0]?.afterRevision ?? revision("c"),
           updatedAt: envelope.receipt.authority.occurredAt,
           summary: action.draft.summary,
+          ...(action.draft.audience === undefined ? {} : { audience: action.draft.audience }),
           recipients: structuredClone(action.draft.recipients),
           input: structuredClone(action.draft),
         };
@@ -2688,13 +2689,14 @@ class FixtureHubApi implements HubApi {
       const id = envelope.receipt.purposeIds.find((item) => item.purpose === "relay")?.id;
       if (draft !== undefined && id !== undefined) {
         const next: RelayDetail = {
-          schemaVersion: 3,
+          schemaVersion: draft.input.audience === "team" ? 4 : 3,
           ref: { kind: "relay", id },
           sourcePath: `.mex/relays/${id}.md`,
           revision: envelope.preview.changes[0]?.afterRevision ?? revision("d"),
           state: "published",
           sender: structuredClone(envelope.receipt.authority.actor),
           ...structuredClone(draft.input),
+          audience: draft.input.audience === "team" ? "team" : undefined,
           workstream: null,
           publishedAt: envelope.receipt.authority.occurredAt,
           publishedRepoState: structuredClone(envelope.receipt.authority.repoState),
@@ -3155,6 +3157,7 @@ class FixtureHubApi implements HubApi {
       ? fixtureOperationId("member", sequence)
       : request.action.kind === "member.update"
         || request.action.kind === "member.deactivate"
+        || request.action.kind === "member.reactivate"
         || request.action.kind === "member.select"
         ? request.action.memberId
         : null;
@@ -3172,6 +3175,7 @@ class FixtureHubApi implements HubApi {
     const canonical = request.action.kind === "member.add"
       || request.action.kind === "member.update"
       || request.action.kind === "member.deactivate"
+      || request.action.kind === "member.reactivate"
       || request.action.kind === "workstream.create"
       || request.action.kind === "workstream.update"
       || request.action.kind === "workstream.archive"
@@ -3183,6 +3187,7 @@ class FixtureHubApi implements HubApi {
     const afterRevision = request.action.kind === "member.add" || request.action.kind === "workstream.create"
       ? revision("e")
       : request.action.kind === "member.update" || request.action.kind === "member.deactivate"
+        || request.action.kind === "member.reactivate"
         || request.action.kind === "workstream.update" || request.action.kind === "workstream.archive"
         ? revision("f")
         : revision("9");
@@ -3274,13 +3279,13 @@ class FixtureHubApi implements HubApi {
         revision: envelope.preview.changes[0]?.afterRevision ?? revision("e"),
       };
       this.#members.push(member);
-    } else if (action.kind === "member.update" || action.kind === "member.deactivate") {
+    } else if (action.kind === "member.update" || action.kind === "member.deactivate" || action.kind === "member.reactivate") {
       const index = this.#members.findIndex((candidate) => candidate.id === action.memberId);
       const current = this.#members[index];
       if (current !== undefined) {
         member = {
           ...current,
-          ...(action.kind === "member.update" ? action.patch : { active: false }),
+          ...(action.kind === "member.update" ? action.patch : { active: action.kind === "member.reactivate" }),
           revision: envelope.preview.changes[0]?.afterRevision ?? revision("f"),
         };
         this.#members[index] = member;
@@ -3343,13 +3348,14 @@ class FixtureHubApi implements HubApi {
     if (eventPurpose?.purpose === "activity") {
       const direct = action.kind === "activity.record" ? action.activity : null;
       const eventMember = member ?? (
-        action.kind === "member.update" || action.kind === "member.deactivate"
+        action.kind === "member.update" || action.kind === "member.deactivate" || action.kind === "member.reactivate"
           ? this.#members.find((candidate) => candidate.id === action.memberId) ?? null
           : null
       );
       const eventAction = action.kind === "member.add" ? "member.added"
         : action.kind === "member.update" ? "member.updated"
           : action.kind === "member.deactivate" ? "member.deactivated"
+          : action.kind === "member.reactivate" ? "member.reactivated"
             : action.kind === "workstream.create" ? "workstream.created"
               : action.kind === "workstream.update" ? "workstream.updated"
                 : action.kind === "workstream.archive" ? "workstream.archived"

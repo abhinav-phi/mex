@@ -57,6 +57,33 @@ const RELAY_V2_GOLDEN = RELAY_V1_GOLDEN
     'next_actions: ["Review"]\n---',
     `next_actions: ["Review"]\npublished_at: ${JSON.stringify(NOW)}\n---`,
   );
+const PUBLICATION_STATE = {
+  branch: "main", head: "1".repeat(40), dirty: false, observedAt: NOW,
+};
+const RELAY_V3_GOLDEN = RELAY_V2_GOLDEN
+  .replace("schema_version: 2", "schema_version: 3")
+  .replace(`workstream: {"id":${JSON.stringify(WORKSTREAM)},"kind":"workstream"}\n`, "")
+  .replace(
+    `published_at: ${JSON.stringify(NOW)}\n---`,
+    `published_at: ${JSON.stringify(NOW)}\npublished_repo_state: {"branch":"main","dirty":false,"head":"${"1".repeat(40)}","observedAt":${JSON.stringify(NOW)}}\n---`,
+  );
+const RELAY_V4_GOLDEN = RELAY_V3_GOLDEN
+  .replace("schema_version: 3", "schema_version: 4")
+  .replace(
+    `recipients: [{"displayName":"Ada","kind":"member","memberId":${JSON.stringify(MEMBER)}}]`,
+    'audience: "team"\nrecipients: []',
+  );
+
+function teamRelayInput() {
+  return {
+    schemaVersion: 4 as const, audience: "team" as const,
+    id: RELAY, entityRevision: 1, state: "published" as const,
+    sender: ACTOR, recipients: [], summary: "Handoff", completed: [], inProgress: ["Tests"],
+    decisions: [], blockers: [], unresolvedQuestions: [], changedFiles: ["src/team/index.ts"],
+    code: [], evidence: [], nextActions: ["Review"], publishedAt: NOW,
+    publishedRepoState: PUBLICATION_STATE,
+  };
+}
 
 describe("workflow artifact codecs", () => {
   it("round-trips strict v1 workstream, relay, playbook, and run Wiki entities", () => {
@@ -401,6 +428,123 @@ describe("workflow artifact codecs", () => {
         sender: gitActor,
         recipients: expect.arrayContaining(legacyRecipients),
       });
+    }
+  });
+
+  it("preserves canonical v1-v3 bytes and rejects audience on every old schema", () => {
+    for (const bytes of [RELAY_V1_GOLDEN, RELAY_V2_GOLDEN, RELAY_V3_GOLDEN]) {
+      const parsed = parseRelayArtifact(bytes, relayArtifactPath(RELAY));
+      const { ref, kind: _kind, sourcePath: _sourcePath, revision: _revision, ...content } = parsed;
+      const input = { id: ref.id, ...content };
+      expect(serializeRelayArtifact(input)).toBe(bytes);
+      expect(parsed).not.toHaveProperty("audience");
+      for (const audience of ["members", "team"]) {
+        expect(() => serializeRelayArtifact({ ...input, audience } as never)).toThrow();
+        expect(() => parseRelayArtifact(
+          bytes.replace("recipients:", `audience: ${JSON.stringify(audience)}\nrecipients:`),
+          relayArtifactPath(RELAY),
+        )).toThrow();
+      }
+    }
+  });
+
+  it("round-trips team Relay v4 through take and sender or claimant closure", () => {
+    const published = teamRelayInput();
+    expect(serializeRelayArtifact(published)).toBe(RELAY_V4_GOLDEN);
+    const claimant: ActorRef = {
+      kind: "member", displayName: "Claimant",
+      memberId: generateArtifactId("member", { now: 9, random: new Uint8Array(10).fill(9) }),
+    };
+    const acknowledged = {
+      ...published, state: "acknowledged" as const, entityRevision: 2,
+      acknowledgedBy: claimant, acknowledgedAt: "2026-08-27T11:00:00.000Z",
+    };
+    const states = [published, acknowledged, ...[ACTOR, { ...claimant, displayName: "Renamed claimant" }].map((closedBy) => ({
+      ...acknowledged, state: "closed" as const, entityRevision: 3,
+      closedBy, closedAt: "2026-08-27T12:00:00.000Z",
+    }))];
+    for (const input of states) {
+      const bytes = serializeRelayArtifact(input);
+      const parsed = parseRelayArtifact(bytes, relayArtifactPath(RELAY));
+      expect(parsed).toMatchObject({
+        schemaVersion: 4, audience: "team", recipients: [], state: input.state,
+        publishedAt: NOW, publishedRepoState: PUBLICATION_STATE,
+      });
+      expect(parsed).not.toHaveProperty("workstream");
+      const { ref, kind: _kind, sourcePath: _sourcePath, revision: _revision, ...content } = parsed;
+      expect(serializeRelayArtifact({ id: ref.id, ...content })).toBe(bytes);
+    }
+  });
+
+  it("rejects ambiguous team audiences, legacy principals, and unrelated v4 closers", () => {
+    const valid = teamRelayInput();
+    const unknown = { kind: "unknown" as const };
+    const outsider: ActorRef = {
+      kind: "member", memberId: generateArtifactId("member", { now: 10, random: new Uint8Array(10).fill(10) }),
+    };
+    for (const patch of [
+      { audience: undefined }, { audience: "members" }, { recipients: [ACTOR] },
+      { workstream: { id: WORKSTREAM, kind: "workstream" } }, { sender: unknown },
+      { publishedAt: undefined }, { publishedRepoState: undefined },
+      { state: "acknowledged", acknowledgedBy: unknown, acknowledgedAt: NOW },
+      { state: "closed", acknowledgedBy: ACTOR, acknowledgedAt: NOW, closedBy: unknown, closedAt: NOW },
+      { state: "closed", acknowledgedBy: ACTOR, acknowledgedAt: NOW, closedBy: outsider, closedAt: NOW },
+      { state: "acknowledged", acknowledgedBy: outsider, acknowledgedAt: "2026-08-26T10:00:00.000Z" },
+    ]) {
+      expect(() => serializeRelayArtifact({ ...valid, ...patch } as never)).toThrow();
+    }
+    for (const bytes of [
+      RELAY_V4_GOLDEN.replace('audience: "team"\n', ""),
+      RELAY_V4_GOLDEN.replace('audience: "team"', 'audience: "members"'),
+      RELAY_V4_GOLDEN.replace("recipients: []", `recipients: [${JSON.stringify(ACTOR)}]`),
+      RELAY_V4_GOLDEN.replace("schema_version: 4", "schema_version: 5"),
+    ]) expect(() => parseRelayArtifact(bytes, relayArtifactPath(RELAY))).toThrow();
+  });
+
+  it("keeps local draft audiences explicit and bounds named Member identity", () => {
+    const unaddressed = normalizeRelayDraftInput({ recipients: [], summary: "Capture before routing" });
+    expect(unaddressed.recipients).toEqual([]);
+    expect(unaddressed).not.toHaveProperty("audience");
+    for (const audience of ["team", "members"] as const) {
+      expect(normalizeRelayDraftInput({ ...unaddressed, audience })).toMatchObject({ audience, recipients: [] });
+    }
+    const members = Array.from({ length: 33 }, (_, index) => ({
+      kind: "member" as const,
+      memberId: generateArtifactId("member", { now: 100 + index, random: new Uint8Array(10).fill(index) }),
+    }));
+    expect(normalizeRelayDraftInput({ ...unaddressed, audience: "members", recipients: members.slice(0, 32) }).recipients).toHaveLength(32);
+    for (const patch of [
+      { audience: "all" }, { audience: "team", recipients: [ACTOR] }, { recipients: members },
+      { recipients: [{ kind: "unknown" }] },
+      { recipients: [{ kind: "git", name: "Name", email: "person@example.com" }] },
+      { recipients: [ACTOR, { ...ACTOR, displayName: "Renamed" }] },
+    ]) expect(() => normalizeRelayDraftInput({ ...unaddressed, ...patch })).toThrow();
+  });
+
+  it("preserves new and omitted draft audiences through bounded legacy evidence translation", () => {
+    const workstream = { id: WORKSTREAM, kind: "workstream" as const };
+    const evidence = Array.from({ length: 64 }, (_, index) => ({ kind: "manual" as const, note: `Evidence ${index}` }));
+    for (const audience of [undefined, "members", "team"] as const) {
+      const input = { recipients: [], summary: "Legacy handoff", workstream, evidence, ...(audience === undefined ? {} : { audience }) };
+      const before = structuredClone(input);
+      const normalized = normalizeRelayDraftInputWithLegacy(input);
+      expect(input).toEqual(before);
+      expect(normalized.legacy).toEqual({ workstream, evidence });
+      expect(normalized.input.evidence).toHaveLength(65);
+      expect(normalized.input.evidence[0]).toEqual({ kind: "entity", entity: workstream });
+      if (audience === undefined) expect(normalized.input).not.toHaveProperty("audience");
+      else expect(normalized.input.audience).toBe(audience);
+      expect(normalizeRelayDraftInput(normalized.input)).toEqual(normalized.input);
+    }
+    const translated = normalizeRelayDraftInput({ recipients: [], summary: "Team", audience: "team", workstream, evidence });
+    const canonical = { ...teamRelayInput(), evidence: translated.evidence };
+    expect(parseRelayArtifact(serializeRelayArtifact(canonical), relayArtifactPath(RELAY)).evidence).toHaveLength(65);
+    for (const invalidEvidence of [
+      [...evidence, { kind: "manual" as const, note: "Unreserved" }],
+      [...translated.evidence, { kind: "manual" as const, note: "Overflow" }],
+    ]) {
+      expect(() => normalizeRelayDraftInput({ ...translated, evidence: invalidEvidence })).toThrow();
+      expect(() => serializeRelayArtifact({ ...canonical, evidence: invalidEvidence })).toThrow();
     }
   });
 

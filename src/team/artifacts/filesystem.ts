@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import {
   closeSync,
   constants,
+  fchmodSync,
   fstatSync,
   fsyncSync,
   linkSync,
@@ -148,12 +149,16 @@ export function atomicCreateArtifact(
   projectRoot: string,
   path: RepoRelativePath,
   bytes: string | Uint8Array,
+  mode: 0o600 | 0o644 = 0o644,
 ): Revision {
+  if (mode !== 0o600 && mode !== 0o644) {
+    throw artifactError("INVALID_REQUEST", "Invalid artifact mode", "Artifact mode must be owner-only or standard readable.");
+  }
   const { canonicalRoot, lexicalPath } = resolveArtifactPath(projectRoot, path);
   const parentPath = ensureSafeDirectory(canonicalRoot, dirname(path) as RepoRelativePath);
   assertTargetAbsentOrRegular(lexicalPath, path, true);
   const payload = asBytes(bytes);
-  const temporaryPath = stageFile(parentPath, basename(path), payload);
+  const temporaryPath = stageFile(parentPath, basename(path), payload, mode);
 
   try {
     assertSafeExistingComponents(canonicalRoot, dirname(path) as RepoRelativePath, false);
@@ -700,7 +705,7 @@ function readDescriptorBounded(
   return Buffer.concat(chunks, total);
 }
 
-function stageFile(parentPath: string, targetName: string, bytes: Uint8Array): string {
+function stageFile(parentPath: string, targetName: string, bytes: Uint8Array, mode: 0o600 | 0o644 = 0o644): string {
   const temporaryPath = resolve(
     parentPath,
     `.${targetName}.mex-tmp-${process.pid}-${randomBytes(8).toString("hex")}`,
@@ -710,8 +715,9 @@ function stageFile(parentPath: string, targetName: string, bytes: Uint8Array): s
     descriptor = openSync(
       temporaryPath,
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW,
-      0o644,
+      mode,
     );
+    if (mode === 0o600) fchmodSync(descriptor, mode);
     writeFileSync(descriptor, bytes);
     fsyncSync(descriptor);
     return temporaryPath;

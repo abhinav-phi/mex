@@ -1606,6 +1606,92 @@ test.describe("populated development fixture", () => {
     expect(errors).toEqual([]);
   });
 
+  for (const viewport of [{ width: 1024, height: 768 }, { width: 1440, height: 900 }]) {
+    test(`saves and publishes an open-to-team Relay at ${viewport.width}px`, async ({ page }, testInfo) => {
+      const errors = watchBrowserErrors(page);
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await page.setViewportSize(viewport);
+      await page.goto("/relays?fixture=populated&view=drafts");
+      const create = page.getByRole("button", { name: "Create manually" });
+      await create.focus();
+      await page.keyboard.press("Enter");
+      const composer = page.getByRole("dialog", { name: "Create handoff draft" });
+      await expect(composer.getByRole("combobox", { name: "Who can take this handoff?" })).toHaveValue("team");
+      await expect(composer.getByRole("combobox", { name: "Eligible recipients" })).toHaveCount(0);
+      await expect(composer.getByText(/including teammates who join later/)).toBeVisible();
+      await composer.getByRole("textbox", { name: "Summary" }).fill("Context for whoever picks up this work later");
+      await expectNoHorizontalOverflow(page, viewport.width);
+      await expectAccessible(page);
+      await page.screenshot({ path: testInfo.outputPath("relay-team-draft.png"), fullPage: true });
+      await composer.getByRole("button", { name: "Save draft" }).click();
+      await expect(composer).toBeHidden();
+      await expect(page).toHaveURL(/view=drafts.*draft=relay-draft-02/);
+      const local = page.getByRole("region", { name: "Selected handoff draft detail" });
+      await expect(local.getByRole("heading", { name: "Context for whoever picks up this work later" })).toBeVisible();
+      await expect(local.getByText(/Saved only in this checkout/)).toBeVisible();
+      await expect(local.getByText("Open to team", { exact: true })).toBeVisible();
+      const publish = local.getByRole("button", { name: "Publish handoff" });
+      await publish.click();
+      const review = page.getByRole("alertdialog", { name: "Publish this handoff?" });
+      await expect(review.getByText(/Any active Member, including teammates who join later/)).toBeVisible();
+      await expect(review.getByText(/MEX does not verify delivery/)).toBeVisible();
+      await expect.poll(() => review.evaluate((element) => element.contains(document.activeElement))).toBe(true);
+      await expectNoHorizontalOverflow(page, viewport.width);
+      await expectAccessible(page);
+      await page.screenshot({ path: testInfo.outputPath("relay-team-publication-review.png"), fullPage: true });
+      await page.keyboard.press("Escape");
+      await expect(review).toBeHidden();
+      await expect(publish).toBeFocused();
+      await publish.click();
+      const confirm = review.getByRole("button", { name: "Publish handoff" });
+      await expect(confirm).toBeEnabled();
+      await confirm.focus();
+      await page.keyboard.press("Enter");
+      await expect(page).toHaveURL(/view=sent.*relay=relay_02000000000000000000000001/);
+      const published = page.getByRole("region", { name: "Selected handoff detail" });
+      await expect(published.getByText("Published working-tree artifact.")).toBeVisible();
+      await expect(published.getByText(/MEX has not verified commit, push, or receipt/)).toBeVisible();
+      await expect(published.getByText(/including teammates who join later/)).toBeVisible();
+      await expect(published.getByRole("button", { name: "Take handoff" })).toBeEnabled();
+      await expectNoHorizontalOverflow(page, viewport.width);
+      await expectAccessible(page);
+      expect(errors).toEqual([]);
+    });
+
+    test(`reactivates an inactive Member with reviewed Git sharing at ${viewport.width}px`, async ({ page }, testInfo) => {
+      const errors = watchBrowserErrors(page);
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await page.setViewportSize(viewport);
+      await page.goto(`/members?fixture=populated&status=inactive&member=${inactiveMemberId}`);
+      const detail = page.getByRole("region", { name: "Selected Member detail" });
+      await expect(detail.getByRole("heading", { name: "Lin Chen", exact: true })).toBeVisible();
+      const reactivate = detail.getByRole("button", { name: "Reactivate Member" });
+      await reactivate.focus();
+      await page.keyboard.press("Enter");
+      const review = page.getByRole("alertdialog", { name: "Reactivate Lin Chen?" });
+      await expect(review.getByText(/Their identity and recorded history stay the same/)).toBeVisible();
+      await expect(review.getByText(/Commit and push to share it through Git/)).toBeVisible();
+      await expectNoHorizontalOverflow(page, viewport.width);
+      await expectAccessible(page);
+      await page.screenshot({ path: testInfo.outputPath("member-reactivation-review.png"), fullPage: true });
+      await page.keyboard.press("Escape");
+      await expect(review).toBeHidden();
+      await expect(reactivate).toBeFocused();
+      await reactivate.click();
+      const confirm = review.getByRole("button", { name: "Reactivate Member" });
+      await expect(confirm).toBeEnabled();
+      await confirm.focus();
+      await page.keyboard.press("Enter");
+      await expect(page).toHaveURL(new RegExp(`status=active.*member=${inactiveMemberId}`));
+      await expect(page.getByText("Member reactivated", { exact: true })).toBeVisible();
+      await expect(detail.getByText("Active team member", { exact: true })).toBeVisible();
+      await expect(detail.getByRole("button", { name: "Reactivate Member" })).toHaveCount(0);
+      await expectNoHorizontalOverflow(page, viewport.width);
+      await expectAccessible(page);
+      expect(errors).toEqual([]);
+    });
+  }
+
   test("keeps Relay draft review, searchable recipients, disclosures, overflow, and focus complete", async ({ page }) => {
     const errors = watchBrowserErrors(page);
     const requests: string[] = [];
@@ -1726,7 +1812,7 @@ test.describe("populated development fixture", () => {
     await close.click();
     const closeDialog = page.getByRole("alertdialog", { name: "Close this handoff?" });
     await expect(closeDialog.getByText(/closing is irreversible/i)).toBeVisible();
-    await expect(closeDialog.getByText(/does not complete or modify the Workstream or task/i)).toBeVisible();
+    await expect(closeDialog.getByText(/saved handoff remains readable in project history/i)).toBeVisible();
     await expect(closeDialog.getByRole("button", { name: "Technical details" })).toHaveAttribute("aria-expanded", "false");
     await closeDialog.getByRole("button", { name: "Close handoff" }).click();
     await expect(page.getByText(
@@ -1741,7 +1827,7 @@ test.describe("populated development fixture", () => {
     const publish = page.getByRole("button", { name: "Publish handoff" });
     await publish.click();
     const publishDialog = page.getByRole("alertdialog", { name: "Publish this handoff?" });
-    await expect(publishDialog.getByText(/private checkout-local draft into a Git-tracked Relay/i)).toBeVisible();
+    await expect(publishDialog.getByText(/writes a Relay Markdown artifact in your working tree/i)).toBeVisible();
     await expect(publishDialog.getByText(/records branch, HEAD, clean or dirty state, and observation time/i)).toBeVisible();
     await expect(publishDialog.getByText(/does not create a commit or capture source-file or local-change contents/i)).toBeVisible();
     await expect(publishDialog.getByText(/Commit and push are still required/i)).toBeVisible();
@@ -2389,7 +2475,8 @@ test.describe("built production Hub", () => {
     await createManually.click();
     const relayComposer = page.getByRole("dialog", { name: "Create handoff draft" });
     await expect(relayComposer).toBeVisible();
-    await expect(relayComposer.getByRole("combobox", { name: "Eligible recipients" })).toBeVisible();
+    await expect(relayComposer.getByRole("combobox", { name: "Who can take this handoff?" })).toHaveValue("team");
+    await expect(relayComposer.getByRole("combobox", { name: "Eligible recipients" })).toHaveCount(0);
     await expect(relayComposer.getByRole("combobox", { name: "Workstream" })).toHaveCount(0);
     await expect(relayComposer.getByRole("textbox", { name: "Workstream ID" })).toHaveCount(0);
     expect(relayWorkstreamRequests).toEqual([]);

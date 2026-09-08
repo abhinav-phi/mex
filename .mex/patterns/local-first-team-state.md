@@ -17,7 +17,7 @@ mex:
   id: mx_01M1M0CJMRWZY5TZCEBSFJPAHT
   type: pattern
   status: promoted
-  revision: 5
+  revision: 6
   title: local-first-team-state
   grounds_to:
     - node: function:ecf1fb45ac2910d02bc78f6f761c0145
@@ -121,6 +121,17 @@ under `.mex/local/`. When present, the legacy decision-event JSONL stays byte-fo
 - A stable Wiki read can represent an already stale index. Target discovery for
   a correction must require fresh status in the same immutable observation as
   the returned text and revisions; a separate earlier status check is not enough.
+- An open-to-team Relay audience must remain a rule, not a snapshot of today's
+  Members. Check current active identity at Take; preserve omitted audience as
+  legacy named intent. A recipient-free local draft must never silently broaden
+  named publication. Reactivation restores the same Member ID and revalidates
+  alias uniqueness without rewriting prior actors or selecting that Member.
+- A CLI shortcut that internally previews and applies still needs exact restart
+  authority. Local draft publication and journal intent are separate transactions:
+  persist the complete signed preview privately before apply, reuse it for an
+  interrupted same-operation retry, and remove only its exact bytes after success.
+  Bound pending count and bytes; never replace a conflicting receipt, silently
+  evict pending operations, or put draft content into the metadata-only journal.
 
 ## Verify
 

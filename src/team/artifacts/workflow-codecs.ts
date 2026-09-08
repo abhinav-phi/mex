@@ -78,18 +78,28 @@ type RelaySharedArtifactInput = {
 export type RelayArtifactInput =
   | (RelaySharedArtifactInput & {
       schemaVersion?: 1;
+      audience?: never;
       workstream: EntityRef;
       publishedAt?: never;
       publishedRepoState?: never;
     })
   | (RelaySharedArtifactInput & {
       schemaVersion?: 2;
+      audience?: never;
       workstream: EntityRef;
       publishedAt: string;
       publishedRepoState?: never;
     })
   | (RelaySharedArtifactInput & {
       schemaVersion: 3;
+      audience?: never;
+      workstream?: never;
+      publishedAt: string;
+      publishedRepoState: RepoState;
+    })
+  | (RelaySharedArtifactInput & {
+      schemaVersion: 4;
+      audience: "team";
       workstream?: never;
       publishedAt: string;
       publishedRepoState: RepoState;
@@ -98,18 +108,28 @@ export type RelayArtifactInput =
 type NormalizedRelayArtifactInput =
   | (RelaySharedArtifactInput & {
       schemaVersion: 1;
+      audience?: never;
       workstream: EntityRef;
       publishedAt?: never;
       publishedRepoState?: never;
     })
   | (RelaySharedArtifactInput & {
       schemaVersion: 2;
+      audience?: never;
       workstream: EntityRef;
       publishedAt: string;
       publishedRepoState?: never;
     })
   | (RelaySharedArtifactInput & {
       schemaVersion: 3;
+      audience?: never;
+      workstream?: never;
+      publishedAt: string;
+      publishedRepoState: RepoState;
+    })
+  | (RelaySharedArtifactInput & {
+      schemaVersion: 4;
+      audience: "team";
       workstream?: never;
       publishedAt: string;
       publishedRepoState: RepoState;
@@ -141,6 +161,7 @@ const RELAY_V3_REQUIRED_KEYS = [
   "unresolved_questions", "changed_files", "code", "evidence",
   "next_actions", "published_at", "published_repo_state",
 ] as const;
+const RELAY_V4_REQUIRED_KEYS = [...RELAY_V3_REQUIRED_KEYS, "audience"] as const;
 const RELAY_OPTIONAL_KEYS = ["acknowledged_by", "acknowledged_at", "closed_by", "closed_at"] as const;
 const PLAYBOOK_KEYS = [
   "schema_version", "id", "mex", "state", "title", "purpose", "trigger",
@@ -239,13 +260,15 @@ export function serializeRelayArtifact(input: RelayArtifactInput): string {
   return encodeArtifact([
     ["schema_version", value.schemaVersion], ["id", value.id],
     ["mex", wikiMetadata(value.id, "relay", relayWikiState(value.state), value.entityRevision, `Relay ${value.id}`, value.summary)],
-    ["state", value.state], ["sender", value.sender], ["recipients", value.recipients],
-    ...(value.schemaVersion === 3 ? [] : [["workstream", value.workstream] as const]),
+    ["state", value.state], ["sender", value.sender],
+    ...(value.schemaVersion === 4 ? [["audience", value.audience] as const] : []),
+    ["recipients", value.recipients],
+    ...(value.schemaVersion === 1 || value.schemaVersion === 2 ? [["workstream", value.workstream] as const] : []),
     ["summary", value.summary], ["completed", value.completed], ["in_progress", value.inProgress], ["decisions", value.decisions],
     ["blockers", value.blockers], ["unresolved_questions", value.unresolvedQuestions], ["changed_files", value.changedFiles],
     ["code", value.code], ["evidence", value.evidence], ["next_actions", value.nextActions],
     ...(value.publishedAt === undefined ? [] : [["published_at", value.publishedAt] as const]),
-    ...(value.schemaVersion === 3
+    ...(value.schemaVersion === 3 || value.schemaVersion === 4
       ? [["published_repo_state", value.publishedRepoState] as const]
       : []),
     ...(value.acknowledgedBy === undefined ? [] : [["acknowledged_by", value.acknowledgedBy] as const]),
@@ -256,15 +279,17 @@ export function serializeRelayArtifact(input: RelayArtifactInput): string {
 }
 
 export function parseRelayArtifact(bytes: string | Uint8Array, sourcePath: RepoRelativePath): Relay {
-  const { exactBytes, raw } = parseArtifact(bytes, sourcePath, [1, 2, 3]);
-  const schemaVersion = raw.schema_version as 1 | 2 | 3;
+  const { exactBytes, raw } = parseArtifact(bytes, sourcePath, [1, 2, 3, 4]);
+  const schemaVersion = raw.schema_version as 1 | 2 | 3 | 4;
   exactKeys(
     raw,
-    schemaVersion === 3
-      ? RELAY_V3_REQUIRED_KEYS
-      : schemaVersion === 2
-        ? RELAY_V2_REQUIRED_KEYS
-        : RELAY_REQUIRED_KEYS,
+    schemaVersion === 4
+      ? RELAY_V4_REQUIRED_KEYS
+      : schemaVersion === 3
+        ? RELAY_V3_REQUIRED_KEYS
+        : schemaVersion === 2
+          ? RELAY_V2_REQUIRED_KEYS
+          : RELAY_REQUIRED_KEYS,
     RELAY_OPTIONAL_KEYS,
     "relay",
     sourcePath,
@@ -281,10 +306,12 @@ export function parseRelayArtifact(bytes: string | Uint8Array, sourcePath: RepoR
     ...(raw.closed_by === undefined ? {} : { closedBy: raw.closed_by as ActorRef }),
     ...(raw.closed_at === undefined ? {} : { closedAt: raw.closed_at as string }),
   };
-  const value = normalizeRelay(schemaVersion === 3
+  const value = normalizeRelay(schemaVersion === 3 || schemaVersion === 4
     ? {
         ...common,
-        schemaVersion,
+        ...(schemaVersion === 4
+          ? { schemaVersion, audience: raw.audience as "team" }
+          : { schemaVersion }),
         publishedAt: raw.published_at as string,
         publishedRepoState: raw.published_repo_state as RepoState,
       }
@@ -420,7 +447,7 @@ export function normalizeRelayDraftInputWithLegacy(
     [
       "workstream", "completed", "inProgress", "decisions", "blockers",
       "unresolvedQuestions", "changedFiles", "code", "evidence",
-      "nextActions",
+      "nextActions", "audience",
     ],
     "Relay draft",
   );
@@ -436,9 +463,25 @@ export function normalizeRelayDraftInputWithLegacy(
   const originalEvidence = legacyWorkstream === null
     ? null
     : evidenceList(value.evidence ?? []);
+  const audience = value.audience === undefined
+    ? undefined
+    : enumValue(value.audience, ["team", "members"] as const, "Relay draft audience");
+  const recipients = actorSet(value.recipients, "Relay draft recipients");
+  if (recipients.length > 32 || recipients.some((recipient) => recipient.kind !== "member")) {
+    invalid("Relay draft recipients may contain up to 32 canonical Members.");
+  }
+  uniqueBy(
+    recipients,
+    (recipient) => (recipient as Extract<ActorRef, { kind: "member" }>).memberId,
+    "Relay draft recipient Member IDs must be unique.",
+  );
+  if (audience === "team" && recipients.length !== 0) {
+    invalid("Team Relay drafts must have no named recipients.");
+  }
   return {
     input: {
-    recipients: actorSet(value.recipients, "Relay draft recipients", true),
+    ...(audience === undefined ? {} : { audience }),
+    recipients,
     summary: text(value.summary, "Relay draft summary", 8 * 1024),
     completed: textList(value.completed ?? [], "Relay draft completed items"),
     inProgress: textList(value.inProgress ?? [], "Relay draft in-progress items"),
@@ -554,8 +597,9 @@ function normalizeRelay(input: RelayArtifactInput): NormalizedRelayArtifactInput
     inferredSchemaVersion !== 1
     && inferredSchemaVersion !== 2
     && inferredSchemaVersion !== 3
+    && inferredSchemaVersion !== 4
   ) invalid("Relay schema version is invalid.");
-  const schemaVersion = inferredSchemaVersion as 1 | 2 | 3;
+  const schemaVersion = inferredSchemaVersion as 1 | 2 | 3 | 4;
   const commonKeys = [
     "id", "entityRevision", "state", "sender", "recipients", "summary",
     "completed", "inProgress", "decisions", "blockers",
@@ -565,7 +609,15 @@ function normalizeRelay(input: RelayArtifactInput): NormalizedRelayArtifactInput
   const lifecycleKeys = [
     "acknowledgedBy", "acknowledgedAt", "closedBy", "closedAt",
   ] as const;
-  if (schemaVersion === 3) {
+  if (schemaVersion === 4) {
+    exactObject(
+      value,
+      [...commonKeys, "schemaVersion", "audience", "publishedAt", "publishedRepoState"],
+      lifecycleKeys,
+      "schema-v4 relay",
+    );
+    if (value.audience !== "team") invalid("Schema-v4 Relay audience must be team.");
+  } else if (schemaVersion === 3) {
     exactObject(
       value,
       [...commonKeys, "schemaVersion", "publishedAt", "publishedRepoState"],
@@ -603,27 +655,38 @@ function normalizeRelay(input: RelayArtifactInput): NormalizedRelayArtifactInput
   if (publishedAt !== undefined && acknowledgedAt !== undefined && publishedAt > acknowledgedAt) invalid("Relay publication cannot follow acknowledgement.");
   if (acknowledgedAt !== undefined && closedAt !== undefined && acknowledgedAt > closedAt) invalid("Relay acknowledgement cannot follow closure.");
   const sender = actor(value.sender, "relay sender");
-  const recipients = actorSet(value.recipients, "relay recipients", true);
-  if (schemaVersion === 3) {
+  const recipients = actorSet(value.recipients, "relay recipients", schemaVersion !== 4);
+  if (schemaVersion === 3 || schemaVersion === 4) {
     if (sender.kind !== "member") {
-      invalid("Schema-v3 Relay sender must be a canonical Member.");
+      invalid(`Schema-v${schemaVersion} Relay sender must be a canonical Member.`);
+    }
+    if (schemaVersion === 4 && recipients.length !== 0) {
+      invalid("Team Relay recipients must be empty.");
     }
     if (
       recipients.length > 32
       || recipients.some((recipient) => recipient.kind !== "member")
     ) {
-      invalid("Schema-v3 Relay recipients must contain between 1 and 32 canonical Members.");
+      invalid(`Schema-v${schemaVersion} Relay recipients must contain between 1 and 32 canonical Members.`);
     }
     const recipientIds = recipients.map((recipient) =>
       (recipient as Extract<ActorRef, { kind: "member" }>).memberId);
     if (new Set(recipientIds).size !== recipientIds.length) {
-      invalid("Schema-v3 Relay recipient Member IDs must be unique.");
+      invalid(`Schema-v${schemaVersion} Relay recipient Member IDs must be unique.`);
     }
     if (
       (acknowledgedBy !== undefined && acknowledgedBy.kind !== "member")
       || (closedBy !== undefined && closedBy.kind !== "member")
     ) {
-      invalid("Schema-v3 Relay lifecycle principals must be canonical Members.");
+      invalid(`Schema-v${schemaVersion} Relay lifecycle principals must be canonical Members.`);
+    }
+    if (
+      schemaVersion === 4
+      && closedBy?.kind === "member"
+      && closedBy.memberId !== sender.memberId
+      && (acknowledgedBy?.kind !== "member" || closedBy.memberId !== acknowledgedBy.memberId)
+    ) {
+      invalid("Team Relay closer must be its sender or claimant.");
     }
   }
   const common = {
@@ -634,17 +697,17 @@ function normalizeRelay(input: RelayArtifactInput): NormalizedRelayArtifactInput
     inProgress: textList(value.inProgress, "relay in-progress items"), decisions: entitySet(value.decisions, "relay decisions"),
     blockers: textList(value.blockers, "relay blockers"), unresolvedQuestions: textList(value.unresolvedQuestions, "relay unresolved questions"),
     changedFiles: pathSet(value.changedFiles, "relay changed files"), code: codeSet(value.code, "relay code references"),
-    evidence: schemaVersion === 3
+    evidence: schemaVersion === 3 || schemaVersion === 4
       ? normalizeRelayDraftEvidence(value.evidence, null)
       : evidenceList(value.evidence),
     nextActions: textList(value.nextActions, "relay next actions"),
     ...(acknowledgedBy === undefined ? {} : { acknowledgedBy }), ...(acknowledgedAt === undefined ? {} : { acknowledgedAt }),
     ...(closedBy === undefined ? {} : { closedBy }), ...(closedAt === undefined ? {} : { closedAt }),
   };
-  if (schemaVersion === 3) {
+  if (schemaVersion === 3 || schemaVersion === 4) {
     return {
       ...common,
-      schemaVersion,
+      ...(schemaVersion === 4 ? { schemaVersion, audience: "team" as const } : { schemaVersion }),
       publishedAt: publishedAt!,
       publishedRepoState: repoState(
         value.publishedRepoState,

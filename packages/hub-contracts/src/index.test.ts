@@ -539,8 +539,8 @@ describe("Hub API contracts", () => {
       expectedRevisions: [memberTarget, draftTarget],
     };
     expect(RelayOperationPreviewRequestSchema.parse(publish)).toEqual(publish);
+    expect(RelayOperationPreviewRequestSchema.safeParse({ ...publish, expectedRevisions: [draftTarget] }).success).toBe(true);
     for (const expectedRevisions of [
-      [draftTarget],
       [memberTarget],
       [draftTarget, memberTarget, {
         target: { kind: "artifact" as const, path: "README.md" },

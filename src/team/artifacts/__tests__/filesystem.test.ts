@@ -31,6 +31,16 @@ afterEach(() => {
 });
 
 describe("contained atomic artifact I/O", () => {
+  it("can publish owner-only private files without changing the default artifact mode", () => {
+    const root = temporaryRoot();
+    atomicCreateArtifact(root, ".mex/local/private.json", "private\n", 0o600);
+    atomicCreateArtifact(root, ".mex/team/public.md", "public\n");
+    if (process.platform !== "win32") {
+      expect(lstatSync(join(root, ".mex/local/private.json")).mode & 0o777).toBe(0o600);
+      expect(lstatSync(join(root, ".mex/team/public.md")).mode & 0o777).toBe(0o644 & ~process.umask());
+    }
+  });
+
   it("publishes complete bytes, refuses overwrite, and preserves stale revisions", () => {
     const root = temporaryRoot();
     const path = ".mex/team/members/member_00000000000000000000000000.md" as RepoRelativePath;

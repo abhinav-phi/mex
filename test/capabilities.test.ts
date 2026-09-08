@@ -243,12 +243,11 @@ describe("mex capabilities manifest", () => {
       "member.add",
       "member.update",
       "member.deactivate",
+      "member.reactivate",
       "member.select",
       "member.clear",
       "activity.record",
       "workstream.create",
-      "workstream.update",
-      "workstream.archive",
     ]);
     const createExample = structuredClone(
       contract.requestFile.examples.find((entry) => entry.command === "workstream.create")!.request,
@@ -259,6 +258,7 @@ describe("mex capabilities manifest", () => {
       "member.add.preview",
       "member.update.preview",
       "member.deactivate.preview",
+      "member.reactivate.preview",
       "member.select.preview",
       "activity.record.preview",
       "workstream.create.preview",
@@ -272,8 +272,8 @@ describe("mex capabilities manifest", () => {
     for (const descriptor of envelope.data.commands.apply.filter((entry) => teamApplyIds.includes(entry.id))) {
       expect(descriptor.inputContract).toMatch(/^team\.identity_activity\.preview-envelope\.v1#[a-z.]+$/u);
     }
-    expect(envelope.data.commands.preview.filter((entry) => teamPreviewIds.includes(entry.id))).toHaveLength(8);
-    expect(envelope.data.commands.apply.filter((entry) => teamApplyIds.includes(entry.id))).toHaveLength(8);
+    expect(envelope.data.commands.preview.filter((entry) => teamPreviewIds.includes(entry.id))).toHaveLength(teamPreviewIds.length);
+    expect(envelope.data.commands.apply.filter((entry) => teamApplyIds.includes(entry.id))).toHaveLength(teamApplyIds.length);
     expect(Buffer.byteLength(JSON.stringify(envelope), "utf8")).toBeLessThanOrEqual(CAPABILITIES_MAX_BYTES);
   });
 

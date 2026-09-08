@@ -630,7 +630,7 @@ export class RepositoryTeamWorkflowPort<
     this.#assertPortablePreviewFresh(envelope.receipt.authority.occurredAt);
     await this.#assertAuthorityCurrent(
       envelope.receipt.authority,
-      envelope.request.action.kind === "member.clear",
+      actionAllowsStaleSelectionFallback(envelope.request.action.kind),
     );
     const replanned = await this.#plan(
       command,
@@ -1200,14 +1200,14 @@ export class RepositoryTeamWorkflowPort<
         ) continue;
         if (
           filter.workstreamId !== null
-          && (stored.schemaVersion === 3
+          && ((stored.schemaVersion === 3 || stored.schemaVersion === 4)
             || stored.workstream.id !== filter.workstreamId)
         ) continue;
         if (filter.perspective === "sent") {
           if (stored.sender.kind !== "member" || stored.sender.memberId !== memberId) continue;
         } else if (filter.perspective === "mine") {
           const mine = stored.state === "published"
-            ? stored.recipients.some(
+            ? stored.audience === "team" || stored.recipients.some(
                 (recipient) => recipient.kind === "member" && recipient.memberId === memberId,
               )
             : stored.acknowledgedBy?.kind === "member"
@@ -1981,6 +1981,18 @@ export class RepositoryTeamWorkflowPort<
           return primary([applied.member], [applied.change]);
         });
       }
+      case "member.reactivate": {
+        const current = await required(this.#members.get(action.memberId), "Member");
+        requireArtifactExpectation(expectedRevisions, current.sourcePath, current.revision);
+        const plan = await this.#members.previewReactivate(action.memberId, current.revision);
+        return canonicalPlan<TWikiPayload>(plan, "member", action.memberId, workflowActivity("member.reactivate", {
+          action: "member.reactivated",
+          subjects: [entitySubject(plan.member.ref)],
+        }, plan.member.displayName), async () => {
+          const applied = await this.#members.apply(plan, plan.previewRevision);
+          return primary([applied.member], [applied.change]);
+        });
+      }
       case "member.select": {
         const member = await required(this.#members.get(action.memberId), "Member");
         requireArtifactExpectation(expectedRevisions, member.sourcePath, member.revision);
@@ -2275,6 +2287,7 @@ export class RepositoryTeamWorkflowPort<
         requireLocalExpectation(expectedRevisions, "relay-draft", action.draftId, draft.revision);
         const compatibility = normalizeRelayDraftInputWithLegacy(draft.payload);
         const payload = normalizeStoredRelayProductDraftInput(compatibility.input);
+        const { audience, ...publicationPayload } = payload;
         const recipients = await Promise.all(payload.recipients.map(async (recipient) => {
           if (recipient.kind !== "member") throw relayUnauthorized("Relay recipients must be Members.");
           const member = await required(this.#members.get(recipient.memberId), "Member");
@@ -2298,7 +2311,7 @@ export class RepositoryTeamWorkflowPort<
           );
           const plan = await this.#relays.previewCreate({
             ...(recoveryId === null ? {} : { id: recoveryId }),
-            ...payload,
+            ...publicationPayload,
             schemaVersion: 2,
             evidence: compatibility.legacy.evidence,
             recipients,
@@ -2314,8 +2327,8 @@ export class RepositoryTeamWorkflowPort<
         }
         const plan = await this.#relays.previewCreate({
           ...(recoveryId === null ? {} : { id: recoveryId }),
-          ...payload,
-          schemaVersion: 3,
+          ...publicationPayload,
+          ...(audience === "team" ? { schemaVersion: 4 as const, audience: "team" as const } : { schemaVersion: 3 as const }),
           recipients,
           sender: authority.actor,
           publishedAt: authority.occurredAt,
@@ -2346,7 +2359,7 @@ export class RepositoryTeamWorkflowPort<
         return canonicalWorkflowPlan(plan, "relay", action.relayId, workflowActivity(action.kind, {
           action: action.kind === "relay.acknowledge" ? "relay.acknowledged" : "relay.closed",
           subjects: [entitySubject(plan.artifact.ref)],
-          ...(current.schemaVersion === 3
+          ...((current.schemaVersion === 3 || current.schemaVersion === 4)
             ? {}
             : { workstream: current.workstream }),
         }, current.summary), this.#relays);
@@ -2919,6 +2932,13 @@ export class RepositoryTeamWorkflowPort<
         "relay",
       );
       const payload = normalizeStoredRelayProductDraftInput(draft.payload);
+      if (payload.audience !== "team" && payload.recipients.length === 0) {
+        throw artifactError(
+          "VALIDATION_FAILED",
+          "Relay recipients are required for publication",
+          "Choose at least one active Member or explicitly open the handoff to the team before publishing.",
+        );
+      }
       const recipients = await Promise.all(payload.recipients.map(async (recipient) => {
         if (recipient.kind !== "member") {
           throw artifactError(
@@ -2980,7 +3000,7 @@ export class RepositoryTeamWorkflowPort<
           relay.sourcePath,
         );
       }
-      if (!relay.recipients.some(
+      if (relay.audience !== "team" && !relay.recipients.some(
         (recipient) => recipient.kind === "member" && recipient.memberId === actorId,
       )) {
         throw relayUnauthorized("Only a listed Relay recipient may acknowledge it.");
@@ -4663,6 +4683,7 @@ function purposeIdsFromEffects(
     action === "member.add"
     || action === "member.update"
     || action === "member.deactivate"
+    || action === "member.reactivate"
     || action === "activity.record"
   ) {
     const activities = effects.filter(
@@ -4729,6 +4750,7 @@ function assertIdentityActivityCommand(
       break;
     }
     case "member.deactivate":
+    case "member.reactivate":
     case "member.select":
     case "member.clear":
       break;
@@ -5538,6 +5560,7 @@ function normalizeReceiptPurposeIds(
     ? ["activity", "member"]
     : action === "member.update"
       || action === "member.deactivate"
+      || action === "member.reactivate"
       || action === "activity.record"
       ? ["activity"]
       : [];
@@ -6552,6 +6575,7 @@ function assertActionShape(action: unknown): void {
     "member.add": [["kind", "member"], []],
     "member.update": [["kind", "memberId", "patch"], []],
     "member.deactivate": [["kind", "memberId"], []],
+    "member.reactivate": [["kind", "memberId"], []],
     "member.select": [["kind", "memberId"], []],
     "member.clear": [["kind"], []],
     "activity.record": [["kind", "activity"], []],
@@ -6720,6 +6744,7 @@ function actionAllowsStaleSelectionFallback(
   kind: TeamWorkflowAction<JsonValue>["kind"],
 ): boolean {
   return kind === "member.clear"
+    || kind === "member.reactivate"
     || kind === "relay.draft.save"
     || kind === "relay.draft.delete";
 }

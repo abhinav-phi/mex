@@ -118,6 +118,7 @@ export interface TeamCliContract {
         | "member.add"
         | "member.update"
         | "member.deactivate"
+        | "member.reactivate"
         | "member.select"
         | "member.clear"
         | "activity.record"
@@ -447,7 +448,7 @@ const COMPACT_TEAM_REQUEST_SCHEMA_SOURCE: Readonly<Record<string, unknown>> = Ob
           },
         },
       },
-      { required: ["kind", "memberId"], properties: { kind: { enum: ["member.deactivate", "member.select"] }, memberId: { $ref: "#/$defs/memberId" } } },
+      { required: ["kind", "memberId"], properties: { kind: { enum: ["member.deactivate", "member.reactivate", "member.select"] }, memberId: { $ref: "#/$defs/memberId" } } },
       { required: ["kind"], properties: { kind: { const: "member.clear" } } },
       {
         required: ["kind", "activity"],
@@ -471,7 +472,7 @@ const COMPACT_TEAM_REQUEST_SCHEMA_SOURCE: Readonly<Record<string, unknown>> = Ob
   },
   allOf: [
     {
-      if: { properties: { action: { type: "object", properties: { kind: { enum: ["member.update", "member.deactivate", "member.select", "member.clear"] } } } } },
+      if: { properties: { action: { type: "object", properties: { kind: { enum: ["member.update", "member.deactivate", "member.reactivate", "member.select", "member.clear"] } } } } },
       then: { properties: { expectedRevisions: { type: "array", minItems: 1 } } },
     },
     {
@@ -691,6 +692,7 @@ const COMPACT_TEAM_REQUEST_SCHEMA = Object.freeze({
     memberAddRequest: teamCommandRequestSchema("member.add"),
     memberUpdateRequest: teamCommandRequestSchema("member.update"),
     memberDeactivateRequest: teamCommandRequestSchema("member.deactivate"),
+    memberReactivateRequest: teamCommandRequestSchema("member.reactivate"),
     memberSelectRequest: teamCommandRequestSchema(["member.select", "member.clear"]),
     activityRecordRequest: teamCommandRequestSchema("activity.record"),
     workstreamCreateRequest: teamCommandRequestSchema("workstream.create"),
@@ -728,6 +730,7 @@ const TEAM_CLI_CONTRACT: TeamCliContract = {
       repositoryPath: 4_096,
     },
     schema: COMPACT_TEAM_REQUEST_SCHEMA,
+    // Representative request shapes; all command schemas remain discoverable.
     examples: [
       {
         command: "member.add",
@@ -769,6 +772,19 @@ const TEAM_CLI_CONTRACT: TeamCliContract = {
         request: {
           operationId: "member-deactivate-example-001",
           action: { kind: "member.deactivate", memberId: EXAMPLE_MEMBER_ID },
+          expectedRevisions: [{
+            target: { kind: "artifact", path: `.mex/team/members/${EXAMPLE_MEMBER_ID}.md` },
+            revision: EXAMPLE_REVISION,
+          }],
+        },
+      },
+      {
+        command: "member.reactivate",
+        usage: "mex member reactivate request.json --json",
+        schemaRef: requestSchemaRef("memberReactivateRequest"),
+        request: {
+          operationId: "member-reactivate-example-001",
+          action: { kind: "member.reactivate", memberId: EXAMPLE_MEMBER_ID },
           expectedRevisions: [{
             target: { kind: "artifact", path: `.mex/team/members/${EXAMPLE_MEMBER_ID}.md` },
             revision: EXAMPLE_REVISION,
@@ -841,40 +857,6 @@ const TEAM_CLI_CONTRACT: TeamCliContract = {
             },
           },
           expectedRevisions: [],
-        },
-      },
-      {
-        command: "workstream.update",
-        usage: "mex workstream update request.json --json",
-        schemaRef: requestSchemaRef("workstreamUpdateRequest"),
-        request: {
-          operationId: "workstream-update-example-001",
-          action: {
-            kind: "workstream.update",
-            workstreamId: EXAMPLE_WORKSTREAM_ID,
-            patch: {
-              state: "blocked",
-              blockers: ["Awaiting a reviewed dependency"],
-              currentState: "Dependency review",
-            },
-          },
-          expectedRevisions: [{
-            target: { kind: "artifact", path: `.mex/workstreams/${EXAMPLE_WORKSTREAM_ID}.md` },
-            revision: EXAMPLE_REVISION,
-          }],
-        },
-      },
-      {
-        command: "workstream.archive",
-        usage: "mex workstream archive request.json --json",
-        schemaRef: requestSchemaRef("workstreamArchiveRequest"),
-        request: {
-          operationId: "workstream-archive-example-001",
-          action: { kind: "workstream.archive", workstreamId: EXAMPLE_WORKSTREAM_ID },
-          expectedRevisions: [{
-            target: { kind: "artifact", path: `.mex/workstreams/${EXAMPLE_WORKSTREAM_ID}.md` },
-            revision: EXAMPLE_REVISION,
-          }],
         },
       },
     ],
@@ -1975,6 +1957,20 @@ const COMMANDS = {
     "json",
     previewContractRef("member.deactivate"),
   ),
+  memberReactivatePreview: command(
+    "member.reactivate.preview",
+    "mex member reactivate",
+    "mex member reactivate <request-file> --json",
+    "json",
+    requestSchemaRef("memberReactivateRequest"),
+  ),
+  memberReactivateApply: command(
+    "member.reactivate.apply",
+    "mex member reactivate",
+    "mex member reactivate --apply <preview-envelope> --json",
+    "json",
+    previewContractRef("member.reactivate"),
+  ),
   memberSelectPreview: command(
     "member.select.preview",
     "mex member select",
@@ -2482,6 +2478,7 @@ function availableCommands(
       COMMANDS.memberAddPreview,
       COMMANDS.memberUpdatePreview,
       COMMANDS.memberDeactivatePreview,
+      COMMANDS.memberReactivatePreview,
       COMMANDS.memberSelectPreview,
       COMMANDS.activityRecordPreview,
       COMMANDS.workstreamCreatePreview,
@@ -2496,6 +2493,7 @@ function availableCommands(
       COMMANDS.memberAddApply,
       COMMANDS.memberUpdateApply,
       COMMANDS.memberDeactivateApply,
+      COMMANDS.memberReactivateApply,
       COMMANDS.memberSelectApply,
       COMMANDS.activityRecordApply,
       COMMANDS.workstreamCreateApply,

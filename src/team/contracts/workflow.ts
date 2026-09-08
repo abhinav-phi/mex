@@ -386,6 +386,7 @@ interface RelayBase extends Omit<TeamArtifactBase<"relay">, "schemaVersion"> {
 /** Original Relay format. Its Workstream is immutable and publication time was not recorded. */
 export interface RelayV1 extends RelayBase {
   schemaVersion: 1;
+  audience?: never;
   workstream: EntityRef;
   publishedAt?: never;
   publishedRepoState?: never;
@@ -394,6 +395,7 @@ export interface RelayV1 extends RelayBase {
 /** Timestamped legacy Relay format. Its Workstream remains canonical related context. */
 export interface RelayV2 extends RelayBase {
   schemaVersion: 2;
+  audience?: never;
   workstream: EntityRef;
   publishedAt: string;
   publishedRepoState?: never;
@@ -402,12 +404,23 @@ export interface RelayV2 extends RelayBase {
 /** Standalone Relay format with immutable publication-time repository provenance. */
 export interface RelayV3 extends RelayBase {
   schemaVersion: 3;
+  audience?: never;
   workstream?: never;
   publishedAt: string;
   publishedRepoState: RepoState;
 }
 
-export type Relay = RelayV1 | RelayV2 | RelayV3;
+/** Open to whichever active Member claims first, including future Members. */
+export interface RelayV4 extends RelayBase {
+  schemaVersion: 4;
+  audience: "team";
+  workstream?: never;
+  publishedAt: string;
+  publishedRepoState: RepoState;
+}
+
+export type Relay = RelayV1 | RelayV2 | RelayV3 | RelayV4;
+export type RelayAudience = "team" | "members";
 
 export interface PlaybookStepDefinition {
   id: string;
@@ -479,6 +492,7 @@ export interface InboxDraft<TWikiOperationPlan>
 }
 
 export interface RelayDraft extends LocalDraftBase<"relay"> {
+  audience?: RelayAudience;
   recipients: readonly ActorRef[];
   summary: string;
   completed: readonly string[];
@@ -623,6 +637,8 @@ export interface InboxDraftInput<TWikiOperationPlan> {
 }
 
 export interface RelayDraftInput {
+  /** Omission preserves legacy named-recipient receipts and local payloads. */
+  audience?: RelayAudience;
   recipients: readonly ActorRef[];
   summary: string;
   completed: readonly string[];
@@ -679,6 +695,7 @@ export type TeamWorkflowRevisionBoundAction<TWikiOperationPlan> =
       patch: { displayName?: string; gitAliases?: readonly MemberGitAlias[] };
     }
   | { kind: "member.deactivate"; memberId: string }
+  | { kind: "member.reactivate"; memberId: string }
   | { kind: "member.select"; memberId: string }
   | { kind: "member.clear" }
   | { kind: "workstream.update"; workstreamId: string; patch: WorkstreamUpdatePatch }
@@ -768,7 +785,7 @@ export type TeamIdentityActivityCreateAction =
 
 export type TeamIdentityActivityRevisionBoundAction = Extract<
   TeamWorkflowRevisionBoundAction<never>,
-  { kind: "member.update" | "member.deactivate" | "member.select" | "member.clear" }
+  { kind: "member.update" | "member.deactivate" | "member.reactivate" | "member.select" | "member.clear" }
 >;
 
 export type TeamIdentityActivityAction =
@@ -997,6 +1014,7 @@ export interface TeamRelayDraftSummary {
   id: string;
   revision: Revision;
   updatedAt: string;
+  audience?: RelayAudience;
   recipients: readonly Extract<ActorRef, { kind: "member" }>[];
   summary: string;
 }
@@ -1006,7 +1024,8 @@ export interface TeamRelayDraftDetail extends TeamRelayDraftSummary {
 }
 
 export interface TeamRelaySummary {
-  schemaVersion: 1 | 2 | 3;
+  schemaVersion: 1 | 2 | 3 | 4;
+  audience?: RelayAudience;
   ref: EntityRef;
   sourcePath: RepoRelativePath;
   revision: Revision;
