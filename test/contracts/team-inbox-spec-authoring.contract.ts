@@ -871,6 +871,9 @@ export function defineTeamInboxSpecAuthoringContract(
       });
     });
 
+    // This lifecycle spans several real Git/Wiki preview/apply operations.
+    // Windows runner stalls can exceed the default hang guard; performance
+    // remains enforced separately by the pinned release benchmark.
     it.each(["update-target", "topic-endpoint", "relation-endpoint"] as const)("requires explicit stale classification before repair after %s drifts", async (driftCase) => {
       await withHarness(factory, "empty", async (harness) => {
         const input = await harness.makeDriftInput(driftCase);
@@ -936,7 +939,7 @@ export function defineTeamInboxSpecAuthoringContract(
         expect(repairedProposal).not.toHaveProperty("reviewer");
         expect(repairedProposal).not.toHaveProperty("reviewedAt");
       });
-    });
+    }, process.platform === "win32" ? 30_000 : undefined);
 
     it("rejects Team-owned duplicate Spec claimants during publish and repair without effects", async () => {
       await withHarness(factory, "empty", async (harness) => {
