@@ -1149,12 +1149,12 @@ function createdClaimantConflict(entityId: EntityId, detail: string): WikiDiagno
 interface WriteDirectoryBinding {
   root: string;
   realRoot: string;
-  rootDev: number;
-  rootIno: number;
+  rootDev: bigint;
+  rootIno: bigint;
   parent: string;
   realParent: string;
-  parentDev: number;
-  parentIno: number;
+  parentDev: bigint;
+  parentIno: bigint;
 }
 
 /**
@@ -1170,7 +1170,7 @@ function bindWriteDirectory(scaffoldRoot: string, target: string): WriteDirector
   assertWritablePath(root, target);
   let rootLexical;
   try {
-    rootLexical = lstatSync(root);
+    rootLexical = lstatSync(root, { bigint: true });
   } catch {
     throw new WritePathError(target, "the scaffold root does not exist.");
   }
@@ -1178,7 +1178,7 @@ function bindWriteDirectory(scaffoldRoot: string, target: string): WriteDirector
     throw new WritePathError(target, "the scaffold root is not a real directory.");
   }
   const realRoot = realpathSync(root);
-  const rootStats = lstatSync(realRoot);
+  const rootStats = lstatSync(realRoot, { bigint: true });
   const parent = dirname(target);
   const rel = relative(root, parent);
   if (rel === ".." || rel.startsWith(`..${sep}`)) {
@@ -1193,7 +1193,7 @@ function bindWriteDirectory(scaffoldRoot: string, target: string): WriteDirector
     assertWriteRoot(root, realRoot, rootStats.dev, rootStats.ino, target);
     cursor = resolve(cursor, segment);
     if (!existsSync(cursor)) mkdirSync(cursor, { recursive: false, mode: 0o700 });
-    const lexical = lstatSync(cursor);
+    const lexical = lstatSync(cursor, { bigint: true });
     if (!lexical.isDirectory() || lexical.isSymbolicLink()) {
       throw new WritePathError(target, "a containing directory is a symlink or not a directory.");
     }
@@ -1204,21 +1204,21 @@ function bindWriteDirectory(scaffoldRoot: string, target: string): WriteDirector
     }
   }
 
-  const parentLexical = lstatSync(parent);
+  const parentLexical = lstatSync(parent, { bigint: true });
   if (!parentLexical.isDirectory() || parentLexical.isSymbolicLink()) {
     throw new WritePathError(target, "the target parent is not a real directory.");
   }
   const realParent = realpathSync(parent);
-  const parentStats = lstatSync(realParent);
+  const parentStats = lstatSync(realParent, { bigint: true });
   const binding = {
     root,
     realRoot,
-    rootDev: Number(rootStats.dev),
-    rootIno: Number(rootStats.ino),
+    rootDev: rootStats.dev,
+    rootIno: rootStats.ino,
     parent,
     realParent,
-    parentDev: Number(parentStats.dev),
-    parentIno: Number(parentStats.ino),
+    parentDev: parentStats.dev,
+    parentIno: parentStats.ino,
   };
   assertWriteDirectoryBinding(binding, target);
   return binding;
@@ -1227,20 +1227,20 @@ function bindWriteDirectory(scaffoldRoot: string, target: string): WriteDirector
 function assertWriteRoot(
   root: string,
   realRoot: string,
-  dev: number | bigint,
-  ino: number | bigint,
+  dev: bigint,
+  ino: bigint,
   target: string,
 ): void {
   try {
-    const lexical = lstatSync(root);
+    const lexical = lstatSync(root, { bigint: true });
     const currentReal = realpathSync(root);
-    const current = lstatSync(currentReal);
+    const current = lstatSync(currentReal, { bigint: true });
     if (
       !lexical.isDirectory()
       || lexical.isSymbolicLink()
       || currentReal !== realRoot
-      || Number(current.dev) !== Number(dev)
-      || Number(current.ino) !== Number(ino)
+      || current.dev !== dev
+      || current.ino !== ino
     ) throw new WritePathError(target, "the scaffold directory changed during the write.");
   } catch (error) {
     if (error instanceof WritePathError) throw error;
@@ -1255,15 +1255,15 @@ function assertWriteDirectoryBinding(binding: WriteDirectoryBinding, target: str
   }
   assertWriteRoot(binding.root, binding.realRoot, binding.rootDev, binding.rootIno, target);
   try {
-    const lexical = lstatSync(binding.parent);
+    const lexical = lstatSync(binding.parent, { bigint: true });
     const currentReal = realpathSync(binding.parent);
-    const current = lstatSync(currentReal);
+    const current = lstatSync(currentReal, { bigint: true });
     if (
       !lexical.isDirectory()
       || lexical.isSymbolicLink()
       || currentReal !== binding.realParent
-      || Number(current.dev) !== binding.parentDev
-      || Number(current.ino) !== binding.parentIno
+      || current.dev !== binding.parentDev
+      || current.ino !== binding.parentIno
     ) throw new WritePathError(target, "the target directory changed during the write.");
   } catch (error) {
     if (error instanceof WritePathError) throw error;
@@ -1274,7 +1274,7 @@ function assertWriteDirectoryBinding(binding: WriteDirectoryBinding, target: str
 function assertLeafMatches(path: string, expected: string | null): void {
   if (expected === null) {
     try {
-      lstatSync(path);
+      lstatSync(path, { bigint: true });
       throw new WritePathError(path, "a new target appeared during the write.");
     } catch (error) {
       const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
@@ -1316,11 +1316,11 @@ function assertLeafMatches(path: string, expected: string | null): void {
 
 function pathMatchesFd(path: string, fd: number): boolean {
   try {
-    const opened = fstatSync(fd);
-    const lexical = lstatSync(path);
+    const opened = fstatSync(fd, { bigint: true });
+    const lexical = lstatSync(path, { bigint: true });
     return !lexical.isSymbolicLink()
-      && Number(opened.dev) === Number(lexical.dev)
-      && Number(opened.ino) === Number(lexical.ino);
+      && opened.dev === lexical.dev
+      && opened.ino === lexical.ino;
   } catch {
     return false;
   }
@@ -1405,7 +1405,7 @@ function writeAtomically(scaffoldRoot: string, file: PlannedFileEdit, options: A
       0o600,
     );
     ourTemp = true;
-    if (!fstatSync(tempFd).isFile()) throw new WritePathError(temp, "the temp target is not a regular file.");
+    if (!fstatSync(tempFd, { bigint: true }).isFile()) throw new WritePathError(temp, "the temp target is not a regular file.");
     assertWriteDirectoryBinding(binding, target);
     if (!pathMatchesFd(temp, tempFd)) throw new WritePathError(temp, "the temp path changed during the write.");
     writeExact(tempFd, proposedBytes, temp);

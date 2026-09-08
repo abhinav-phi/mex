@@ -17,7 +17,7 @@ mex:
   id: mx_01M1M0CJMRWZY5TZCEBSFJPAHT
   type: pattern
   status: promoted
-  revision: 7
+  revision: 8
   title: local-first-team-state
   grounds_to:
     - node: function:ecf1fb45ac2910d02bc78f6f761c0145
@@ -132,11 +132,22 @@ under `.mex/local/`. When present, the legacy decision-event JSONL stays byte-fo
   interrupted same-operation retry, and remove only its exact bytes after success.
   Bound pending count and bytes; never replace a conflicting receipt, silently
   evict pending operations, or put draft content into the metadata-only journal.
-- Checkout-local preferences need exact raw-byte revision checks. Canonical
-  Git checkout line-ending normalization can hide a local edit; use the exact
-  read/replace mode for those preferences while preserving existing canonical
-  artifact behavior. Reading an absent preference must not initialize local
-  state or silently replace a malformed file with a default.
+- Generic file reads and replacements default to exact bytes. Only known
+  canonical Team codecs opt into uniform CRLF-to-LF conversion; Wiki files,
+  operation ledgers, and local receipts retain exact revisions. Compare tracked
+  config with checkout conversion applied only to that comparison, then recheck
+  its exact revision. Reading an absent preference must not initialize state.
+- Preserve legacy Timeline IDs using logical LF offsets while scanning and
+  bounding actual bytes. Otherwise changing the shared reader silently changes
+  historical IDs after the first CRLF line.
+- Inbox may display escaped carriage returns in a Wiki diff, but must also
+  escape literal backslashes so the display is unambiguous. Only the signed
+  presentation changes; executable Wiki bytes and revisions stay exact.
+- Keep filesystem identity at full width from the first stat through the final
+  recheck: converting an already rounded number back to bigint cannot restore
+  it. Lock owner JSON can retain decimal strings. Capture the newly opened lock
+  identity before writing its owner, and verify the current leaf before cleanup
+  even when initialization or the protected operation failed.
 - Optional agent logging is advisory and separate from mandatory workflow
   Activity. Read the current policy dynamically instead of rewriting agent
   instructions on every preference change. Retrieve bounded historical notes

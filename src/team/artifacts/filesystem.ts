@@ -54,7 +54,7 @@ export function canonicalizeProjectRoot(projectRoot: string): string {
   } catch {
     throw artifactError("NOT_FOUND", "Repository not found", "The project root does not exist.");
   }
-  if (!statSync(canonicalRoot).isDirectory()) {
+  if (!statSync(canonicalRoot, { bigint: true }).isDirectory()) {
     throw artifactError("PATH_OUTSIDE_PROJECT", "Unsafe project root", "The project root is not a directory.");
   }
   return canonicalRoot;
@@ -72,9 +72,9 @@ export function readContainedArtifact(
   try {
     assertSafeExistingComponents(canonicalRoot, path, true);
     descriptor = openSync(lexicalPath, constants.O_RDONLY | NO_FOLLOW);
-    const before = fstatSync(descriptor);
+    const before = fstatSync(descriptor, { bigint: true });
     if (!before.isFile()) throw unsafePath(path, "Artifact is not a regular file.");
-    if (before.size > maxBytes) {
+    if (before.size > BigInt(maxBytes)) {
       throw artifactError(
         "VALIDATION_FAILED",
         "Artifact is too large",
@@ -90,8 +90,8 @@ export function readContainedArtifact(
         path,
       );
     });
-    const after = fstatSync(descriptor);
-    if (!sameIdentity(before, after) || before.size !== after.size || bytes.byteLength !== after.size) {
+    const after = fstatSync(descriptor, { bigint: true });
+    if (!sameIdentity(before, after) || before.size !== after.size || BigInt(bytes.byteLength) !== after.size) {
       throw artifactError(
         "REVISION_CONFLICT",
         "Artifact changed during read",
@@ -100,7 +100,7 @@ export function readContainedArtifact(
       );
     }
 
-    const pathStat = lstatSync(lexicalPath);
+    const pathStat = lstatSync(lexicalPath, { bigint: true });
     if (pathStat.isSymbolicLink() || !pathStat.isFile() || !sameIdentity(after, pathStat)) {
       throw artifactError(
         "REVISION_CONFLICT",
@@ -111,7 +111,7 @@ export function readContainedArtifact(
     }
     const canonicalPath = realpathSync(lexicalPath);
     assertContained(canonicalRoot, canonicalPath, path);
-    const canonicalStat = statSync(canonicalPath);
+    const canonicalStat = statSync(canonicalPath, { bigint: true });
     if (!sameIdentity(after, canonicalStat)) {
       throw artifactError(
         "REVISION_CONFLICT",
@@ -250,7 +250,7 @@ export function assertContainedArtifactDirectory(
     current = resolve(current, segment);
     let stat;
     try {
-      stat = lstatSync(current);
+      stat = lstatSync(current, { bigint: true });
     } catch (error) {
       if (isNotFound(error)) return null;
       throw error;
@@ -329,8 +329,8 @@ function artifactLockOwner(canonicalRoot: string, directoryPath: string): Artifa
     pid: process.pid,
     token: randomBytes(32).toString("hex"),
     acquiredAt: new Date().toISOString(),
-    root: persistedFileIdentity(statSync(canonicalRoot)),
-    directory: persistedFileIdentity(lstatSync(directoryPath)),
+    root: persistedFileIdentity(statSync(canonicalRoot, { bigint: true })),
+    directory: persistedFileIdentity(lstatSync(directoryPath, { bigint: true })),
   };
 }
 
@@ -429,7 +429,7 @@ function createArtifactLockFile(
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW,
       0o600,
     );
-    identity = identityOf(fstatSync(descriptor));
+    identity = identityOf(fstatSync(descriptor, { bigint: true }));
     const bytes = `${JSON.stringify(metadata)}\n`;
     if (Buffer.byteLength(bytes, "utf8") > MAX_ARTIFACT_LOCK_BYTES) {
       throw new Error("Generated artifact lock metadata exceeds its byte limit.");
@@ -454,27 +454,27 @@ function readArtifactLockFile(
 ): ObservedArtifactLock {
   let descriptor: number | undefined;
   try {
-    const pathBefore = lstatSync(path);
+    const pathBefore = lstatSync(path, { bigint: true });
     if (pathBefore.isSymbolicLink() || !pathBefore.isFile()) {
       throw unsafePath(directory, `Artifact lock ${lockName} is not a regular file.`);
     }
     descriptor = openSync(path, constants.O_RDONLY | NO_FOLLOW);
-    const before = fstatSync(descriptor);
+    const before = fstatSync(descriptor, { bigint: true });
     if (!before.isFile() || !sameIdentity(before, pathBefore)) {
       throw unsafePath(directory, `Artifact lock ${lockName} changed during inspection.`);
     }
-    if (before.size < 1 || before.size > MAX_ARTIFACT_LOCK_BYTES) {
+    if (before.size < 1n || before.size > BigInt(MAX_ARTIFACT_LOCK_BYTES)) {
       throw unknownArtifactLock(lockName, directory, "has invalid bounded metadata");
     }
     const bytes = readDescriptorBounded(descriptor, MAX_ARTIFACT_LOCK_BYTES, () => {
       throw unknownArtifactLock(lockName, directory, "exceeds the metadata byte limit");
     });
-    const after = fstatSync(descriptor);
-    const pathAfter = lstatSync(path);
+    const after = fstatSync(descriptor, { bigint: true });
+    const pathAfter = lstatSync(path, { bigint: true });
     if (
       !sameIdentity(before, after)
       || before.size !== after.size
-      || bytes.byteLength !== after.size
+      || BigInt(bytes.byteLength) !== after.size
       || pathAfter.isSymbolicLink()
       || !pathAfter.isFile()
       || !sameIdentity(after, pathAfter)
@@ -487,8 +487,8 @@ function readArtifactLockFile(
       );
     }
     const metadata = parseArtifactLockMetadata(bytes, lockName, directory);
-    const expectedRoot = persistedFileIdentity(statSync(canonicalRoot));
-    const expectedDirectory = persistedFileIdentity(lstatSync(directoryPath));
+    const expectedRoot = persistedFileIdentity(statSync(canonicalRoot, { bigint: true }));
+    const expectedDirectory = persistedFileIdentity(lstatSync(directoryPath, { bigint: true }));
     if (
       !samePersistedIdentity(metadata.root, expectedRoot)
       || !samePersistedIdentity(metadata.directory, expectedDirectory)
@@ -612,7 +612,7 @@ function recoverAbandonedArtifactLockMarker(
   directory: RepoRelativePath,
 ): void {
   try {
-    lstatSync(recoveryPath);
+    lstatSync(recoveryPath, { bigint: true });
   } catch (error) {
     if (isNotFound(error)) return;
     throw error;
@@ -745,7 +745,7 @@ function ensureSafeDirectory(canonicalRoot: string, path: RepoRelativePath): str
     } catch (error) {
       if (!isAlreadyExists(error)) throw error;
     }
-    const stat = lstatSync(current);
+    const stat = lstatSync(current, { bigint: true });
     if (stat.isSymbolicLink() || !stat.isDirectory()) {
       throw unsafePath(path, `Path component ${segment} is not a regular directory.`);
     }
@@ -764,7 +764,7 @@ function assertSafeExistingComponents(
   const segments = path.split("/");
   for (let index = 0; index < segments.length; index += 1) {
     current = resolve(current, segments[index]!);
-    const stat = lstatSync(current);
+    const stat = lstatSync(current, { bigint: true });
     if (stat.isSymbolicLink()) {
       throw unsafePath(path, `Path component ${segments[index]} must not be a symbolic link.`);
     }
@@ -785,7 +785,7 @@ function assertTargetAbsentOrRegular(
   mustBeAbsent: boolean,
 ): void {
   try {
-    const stat = lstatSync(target);
+    const stat = lstatSync(target, { bigint: true });
     if (stat.isSymbolicLink() || !stat.isFile()) {
       throw unsafePath(path, "Artifact target is not a regular file.");
     }
@@ -841,15 +841,15 @@ function assertContained(root: string, candidate: string, path: RepoRelativePath
 }
 
 function sameIdentity(
-  left: { dev: number | bigint; ino: number | bigint },
-  right: { dev: number | bigint; ino: number | bigint },
+  left: FileIdentity,
+  right: FileIdentity,
 ): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
 interface FileIdentity {
-  dev: number | bigint;
-  ino: number | bigint;
+  dev: bigint;
+  ino: bigint;
 }
 
 function identityOf(value: FileIdentity): FileIdentity {
@@ -858,7 +858,7 @@ function identityOf(value: FileIdentity): FileIdentity {
 
 function unlinkOwnedLock(path: string, expected: FileIdentity): void {
   try {
-    const current = lstatSync(path);
+    const current = lstatSync(path, { bigint: true });
     if (current.isFile() && !current.isSymbolicLink() && sameIdentity(current, expected)) {
       unlinkSync(path);
       fsyncDirectory(dirname(path));

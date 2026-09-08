@@ -118,6 +118,14 @@ Then read this file fully before doing anything else in this session.
   records. Legacy Team/Spec recovery bytes stay unchanged. This is local
   implementation on `codex/0.8.1`; Settings heap calibration on the pinned runner remains an
   explicit release gate alongside the existing release requirements.
+- Phase 5 narrows shared artifact I/O to exact bytes by default, with explicit
+  checkout-neutral reads for canonical Team records. Wiki/local revisions remain
+  exact through Inbox preview and recovery; legacy Timeline IDs remain stable
+  across LF/CRLF. The four corrected Wiki ownership boundaries and shared Team
+  artifact locks retain full-width device/inode IDs and preserve replacement
+  files during failure cleanup. The expanded Windows/macOS CI job supplies real
+  platform verification; current results and remaining gates are in the release
+  plan. Graph extraction, public exports, and on-disk schemas are unchanged.
 - Explicit graph status, refresh, and isolated rebuild/recovery commands preserve
   the last trustworthy index behind one cross-process maintenance lease.
 - Targeted graph get/query/impact consumers use one provenance-bound immutable
