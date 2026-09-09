@@ -49,9 +49,24 @@ const budgetsSchema = JSON.parse(readFileSync(new URL("./budgets.schema.json", i
 const packageJson = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
 const reportSchema = JSON.parse(readFileSync(new URL("./report.schema.json", import.meta.url), "utf8"));
 const FROZEN_NON_OVERVIEW_UX_BUDGETS_SHA256 = "e970dea48bdaffd3ca258ce62dd56327a7692f89fd0e740c72bca61092ea10d8";
+const FROZEN_PRE_GRAPH_TIMING_BUDGETS_SHA256 = "d4209e5549ed49c37dcd4e4814eab0ceb7640124d75bdf433347ea9de1514c80";
+const PRE_GRAPH_TIMING_LIMITS = {
+  small: { graph_refresh: 984, graph_rebuild: 496 },
+  medium: { graph_refresh: 1237, graph_rebuild: 743 },
+  large: { graph_rebuild: 1229 },
+};
+
+function beforeGraphTimingCalibration(value) {
+  const projected = structuredClone(value);
+  projected.calibration.status = "pinned-checkpoints-A-G-and-Settings-34286120355";
+  for (const [profile, operations] of Object.entries(PRE_GRAPH_TIMING_LIMITS)) {
+    Object.assign(projected.runtime.maintenanceMs[profile], operations);
+  }
+  return projected;
+}
 
 function frozenAllowedCalibrationProjection(value) {
-  const projected = structuredClone(value);
+  const projected = beforeGraphTimingCalibration(value);
   projected.calibration.status = "__RELAY_CALIBRATION_STATUS__";
   projected.assets.maxJsChunkBytes = "__OVERVIEW_INITIAL_JS_CALIBRATION__";
   projected.assets.initial.jsBytes = "__OVERVIEW_INITIAL_JS_CALIBRATION__";
@@ -76,7 +91,7 @@ function frozenAllowedCalibrationProjection(value) {
 }
 
 describe("release benchmark contract", () => {
-  it("permits only owned calibration leaves, including the additive Settings route", () => {
+  it("composes owned Graph timing calibration with the original frozen budget guard", () => {
     const digest = (value) => createHash("sha256")
       .update(JSON.stringify(frozenAllowedCalibrationProjection(value)))
       .digest("hex");
@@ -116,8 +131,8 @@ describe("release benchmark contract", () => {
       medium: { sourceFiles: 16, wikiEntities: 16, workstreams: 1, inboxDrafts: 1, inboxProposals: 1, members: 2, relayDrafts: 1, relays: 1, activityEvents: 16 },
       large: { sourceFiles: 48, wikiEntities: 48, workstreams: 1, inboxDrafts: 1, inboxProposals: 1, members: 2, relayDrafts: 1, relays: 1, activityEvents: 48 },
     });
-    // Settings assets use the deterministic build; its heap limits remain
-    // absent until pinned calibration rather than inventing a local limit.
+    // Settings assets use the deterministic build; heap limits come from the
+    // retained pinned Linux report, with every unrelated limit still frozen.
     expect(Object.keys(budgets.assets.routes)).toEqual(RELEASE_ROUTE_KEYS);
     expect(budgets.assets.routes.settings).toEqual({ jsBytes: 8035, cssBytes: 2910, fontBytes: 0 });
     expect(Object.keys(releaseWorkbenchPaths({
@@ -134,7 +149,7 @@ describe("release benchmark contract", () => {
     expect(registeredPatterns).toEqual(Object.values(RELEASE_ROUTE_PATTERNS));
     for (const profile of ["small", "medium", "large"]) {
       expect(Object.keys(budgets.runtime.browserHeapBytes[profile]))
-        .toEqual(RELEASE_ROUTE_KEYS.filter((route) => route !== "settings"));
+        .toEqual(RELEASE_ROUTE_KEYS);
     }
     expect({
       small: {
@@ -186,7 +201,7 @@ describe("release benchmark contract", () => {
     }
     expect(budgets.provisional).toBe(false);
     expect(budgets.calibration).toEqual({
-      status: "calibrated-from-pinned-runs-33005876613-33083122092-33117048710-E33169865368-F33249296778-Goverview",
+      status: "pinned-A-G-Settings-34286120355-Graph-timing-34288560611",
       runtimeFormula: "ceil(measured p95 * 1.15)",
       assetFormula: "ceil(built bytes * 1.05)",
     });
@@ -293,12 +308,122 @@ describe("release benchmark contract", () => {
     },
   );
 
-  it("records Settings without pretending its missing heap calibration is a passing budget", () => {
+  it("pins Settings heap to retained runner samples without changing existing budgets", () => {
+    const evidence = JSON.parse(readFileSync(new URL("../../docs/design/settings-heap-calibration.json", import.meta.url), "utf8"));
+    expect(evidence.environment).toEqual({ ...budgets.environment, pinnedBudgetEnvironment: true });
+    expect(evidence.formula).toBe(budgets.calibration.runtimeFormula);
+    expect(evidence.sampleCount).toBe(budgets.samples.idleMemory);
+    const beforeSettings = beforeGraphTimingCalibration(budgets);
+    beforeSettings.calibration.status = evidence.previousCalibrationStatus;
+    for (const profile of ["small", "medium", "large"]) {
+      const measured = evidence.profiles[profile];
+      expect(summarize(measured.samples, evidence.sampleCount).p95).toBe(measured.p95);
+      expect(runtimeBudgetCandidate(measured.p95)).toBe(measured.budgetBytes);
+      expect(budgets.runtime.browserHeapBytes[profile].settings).toBe(measured.budgetBytes);
+      delete beforeSettings.runtime.browserHeapBytes[profile].settings;
+    }
+    expect(createHash("sha256").update(JSON.stringify(beforeSettings)).digest("hex"))
+      .toBe(evidence.unownedBudgetSha256);
+  });
+
+  it("permits exactly five Graph timing leaves while freezing every other current budget", () => {
+    const digest = (value) => createHash("sha256")
+      .update(JSON.stringify(beforeGraphTimingCalibration(value)))
+      .digest("hex");
+    expect(digest(budgets)).toBe(FROZEN_PRE_GRAPH_TIMING_BUDGETS_SHA256);
+    const allowed = structuredClone(budgets);
+    allowed.calibration.status = "another-calibration-reference";
+    for (const [profile, operations] of Object.entries(PRE_GRAPH_TIMING_LIMITS)) {
+      for (const operation of Object.keys(operations)) allowed.runtime.maintenanceMs[profile][operation] += 1;
+    }
+    expect(digest(allowed)).toBe(FROZEN_PRE_GRAPH_TIMING_BUDGETS_SHA256);
+    for (const path of [
+      ["runtime", "maintenanceMs", "large", "graph_refresh"],
+      ["runtime", "maintenanceMs", "small", "wiki_rebuild"],
+      ["runtime", "maintenancePeakRssBytes", "small", "graph_refresh"],
+      ["runtime", "browserHeapBytes", "small", "settings"],
+      ["runtime", "apiLatencyMs", "small", "search"],
+      ["assets", "initial", "jsBytes"],
+    ]) {
+      const forbidden = structuredClone(allowed);
+      const parent = path.slice(0, -1).reduce((value, key) => value[key], forbidden);
+      parent[path.at(-1)] += 1;
+      expect(digest(forbidden), path.join(".")).not.toBe(FROZEN_PRE_GRAPH_TIMING_BUDGETS_SHA256);
+    }
+  });
+
+  it("pins Graph timing to the first corrected runner and retains independent confirmation", () => {
+    const evidence = JSON.parse(readFileSync(new URL("../../docs/design/graph-maintenance-timing-calibration.json", import.meta.url), "utf8"));
+    expect(evidence.environment).toEqual({ ...budgets.environment, pinnedBudgetEnvironment: true });
+    expect(evidence.configuration.fixtureProfiles).toEqual(RELEASE_FIXTURE_PROFILES);
+    expect(evidence.configuration.samples).toEqual(budgets.samples);
+    expect(evidence.configuration).toMatchObject({ maintenanceObservation: "job-event-stream", runtimeBudgetsEnforced: true, assetBudgetsEnforced: true, provisionalBudgets: false });
+    expect(evidence.formula).toBe(budgets.calibration.runtimeFormula);
+    expect(evidence.sampleCount).toBe(budgets.samples.timing);
+    expect(evidence.previousCalibrationStatus).toBe(beforeGraphTimingCalibration(budgets).calibration.status);
+    expect(evidence.unownedBudgetSha256).toBe(FROZEN_PRE_GRAPH_TIMING_BUDGETS_SHA256);
+    expect(evidence.source.primaryAttempt).toBe("first");
+    expect(evidence.source.pullRequestHead).toBe("4d6683eec1a0bdcafe99d7b431d84cde7f02864d");
+    expect(evidence.source.repositoryHead).toBe("6d92bb04d757c8a00693ef679d1f4281669a9b57");
+    expect(evidence.attempts.map(({ role }) => role)).toEqual(["primary", "confirmation"]);
+    expect(evidence.attempts.map(({ manifest }) => manifest.rawReportSha256)).toEqual([
+      "fec98eae2728a017fcaf3480d275d47180d88740b248468d69a6fa858768c9b3",
+      "732d2b897b4592ba7e89d9fedb508c0c86027ae7cb239580ed51aa5a9de9efb9",
+    ]);
+    const [primary, confirmation] = evidence.attempts;
+    expect(primary.manifest.runnerAllocation.job).not.toBe(confirmation.manifest.runnerAllocation.job);
+    expect(primary.manifest.runnerAllocation.runnerName).not.toBe(confirmation.manifest.runnerAllocation.runnerName);
+    for (const attempt of evidence.attempts) {
+      expect(attempt.manifest).toMatchObject({
+        repositoryHead: evidence.source.repositoryHead,
+        github: { runId: "34288560611", runAttempt: "1", sha: evidence.source.repositoryHead },
+        runnerAllocation: { runnerOs: "Linux", runnerArch: "X64" },
+      });
+      for (const profile of ["small", "medium", "large"]) {
+        for (const operation of ["graph_refresh", "graph_rebuild"]) {
+          for (const [metric, summary] of Object.entries(attempt.graph[profile][operation])) {
+            expect(summary).toEqual(summarize(summary.samples, metric === "peakRssBytes" ? budgets.samples.idleMemory : budgets.samples.timing));
+          }
+        }
+      }
+    }
+    const expectedMetrics = Object.entries(PRE_GRAPH_TIMING_LIMITS).flatMap(([profile, operations]) =>
+      Object.keys(operations).map((operation) => `runtime.maintenanceMs.${profile}.${operation}`));
+    expect(evidence.calibratedLeaves.map(({ metric }) => metric)).toEqual(expectedMetrics);
+    expect(evidence.confirmedMaterialAssessments.map(({ metric }) => metric)).toEqual(expectedMetrics);
+    for (const [index, leaf] of evidence.calibratedLeaves.entries()) {
+      const [, , profile, operation] = leaf.metric.split(".");
+      const first = primary.graph[profile][operation].elapsedMs;
+      const second = confirmation.graph[profile][operation].elapsedMs;
+      expect(leaf.previousBudgetMs).toBe(PRE_GRAPH_TIMING_LIMITS[profile][operation]);
+      expect(leaf.primaryP95Ms).toBe(first.p95);
+      expect(leaf.budgetMs).toBe(runtimeBudgetCandidate(first.p95));
+      expect(budgets.runtime.maintenanceMs[profile][operation]).toBe(leaf.budgetMs);
+      // Reconstruct the historical assessment using the old budget, not the newly calibrated policy.
+      const threshold = Math.round((leaf.previousBudgetMs + Math.max(leaf.previousBudgetMs * 0.15, 50)) * 1000) / 1000;
+      const firstSupport = first.samples.filter((sample) => sample > threshold).length;
+      const secondSupport = second.samples.filter((sample) => sample > threshold).length;
+      expect(firstSupport).toBeGreaterThanOrEqual(2);
+      expect(secondSupport).toBeGreaterThanOrEqual(2);
+      expect(evidence.confirmedMaterialAssessments[index]).toEqual({
+        metric: leaf.metric, category: "maintenance_ms", classification: "material", reason: "repeated_material_threshold",
+        budget: leaf.previousBudgetMs, relativeExcessRatio: 0.15, minimumExcess: 50, materialThreshold: threshold,
+        firstMeasured: first.p95, secondMeasured: second.p95, requiredSupportingSamples: 2,
+        firstSampleCount: 10, firstSupportingSamples: firstSupport, secondSampleCount: 10, secondSupportingSamples: secondSupport,
+      });
+    }
+    expect(evidence.unchangedLargeGraphRefreshMs).toBe(1812);
+    expect(budgets.runtime.maintenanceMs.large.graph_refresh).toBe(evidence.unchangedLargeGraphRefreshMs);
+  });
+
+  it("still fails closed if a Settings heap budget is missing", () => {
     const profiles = Object.fromEntries(["small", "medium", "large"].map((profile) => [
       profile,
       { ...runtimeProfile(100), browserHeap: { outboundRequestCount: 0, routes: { settings: { p95: 123 } } } },
     ]));
-    const violations = evaluateRuntimeBudgets(profiles, budgets.runtime)
+    const missing = structuredClone(budgets.runtime);
+    for (const profile of ["small", "medium", "large"]) delete missing.browserHeapBytes[profile].settings;
+    const violations = evaluateRuntimeBudgets(profiles, missing)
       .filter(({ metric }) => metric.endsWith(".settings"));
     expect(violations).toEqual(["small", "medium", "large"].map((profile) => ({
       metric: `runtime.browserHeapBytes.${profile}.settings`, measured: 123, budget: null, reason: "budget_missing",
@@ -334,10 +459,11 @@ describe("release benchmark contract", () => {
 
   it("accepts legacy raw precision when its rounded p95 matches the violation", () => {
     const metric = "runtime.maintenanceMs.small.graph_rebuild";
-    const violation = runtimeViolation(metric, 580.769);
+    const measured = Math.ceil(runtimeMaterialityPolicy(metric).materialThreshold) + 10.769;
+    const violation = runtimeViolation(metric, measured);
     const report = benchmarkPass({ runtimeViolations: [violation] });
     const summary = report.profiles.small.maintenance.graph_rebuild.elapsedMs;
-    summary.samples[summary.samples.length - 1] = 580.7687;
+    summary.samples[summary.samples.length - 1] = measured - 0.0003;
     expect(runtimeSampleSupport(report, [violation]).get(metric)).toEqual({
       sampleCount: 10,
       supportingSamples: 2,
@@ -972,7 +1098,7 @@ describe("release benchmark contract", () => {
     }
 
     const exactMetrics = committedConfirmableRuntimeMetrics();
-    expect(exactMetrics).toHaveLength(111);
+    expect(exactMetrics).toHaveLength(114);
     for (const metric of exactMetrics) {
       expect(runtimeMaterialityPolicy(metric)).not.toBeNull();
       const violation = runtimeViolation(metric);

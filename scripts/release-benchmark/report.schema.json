@@ -10,7 +10,7 @@
     "benchmark": { "const": "mex-release-performance" },
     "generatedAt": { "type": "string", "format": "date-time", "maxLength": 40 },
     "environment": { "type": "object", "maxProperties": 5 },
-    "configuration": { "type": "object", "maxProperties": 6 },
+    "configuration": { "type": "object", "maxProperties": 7 },
     "assets": { "$ref": "#/$defs/assets" },
     "profiles": {
       "type": "object",
@@ -231,7 +231,8 @@
       "required": ["elapsedMs", "peakRssBytes"],
       "properties": {
         "elapsedMs": { "$ref": "#/$defs/summary10" },
-        "peakRssBytes": { "$ref": "#/$defs/summary5" }
+        "peakRssBytes": { "$ref": "#/$defs/summary5" },
+        "cpuMs": { "$ref": "#/$defs/summary10" }
       }
     },
     "maintenanceSummaries": {

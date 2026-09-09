@@ -12,12 +12,12 @@ edges:
     condition: "when changing the graph data plane or its consumers"
   - target: "context/conventions.md"
     condition: "when verifying a graph implementation change"
-last_updated: 2026-09-07
+last_updated: 2026-09-09
 mex:
   id: mx_01M1M0CJP81C590FCKTSN5HA3Q
   type: pattern
   status: promoted
-  revision: 3
+  revision: 4
   title: safe-graph-snapshot-evolution
   grounds_to:
     - node: function:57e8797d70bfb28e3f0bb1d6e065a84b
@@ -82,6 +82,17 @@ only to explicit maintenance workflows.
 10. Normalize evaluator provenance field-by-field. Exclude only explicitly
     operational snapshot fields; malformed or future snapshot shapes must fail
     closed instead of disappearing from the semantic graph hash.
+11. Use `upsertFingerprintsInOwnedTransaction(db, entries)` only where the caller
+    owns complete publication rollback and lets every failure reach it. Keep
+    `FingerprintStore.upsert` and `upsertMany` independently atomic even if an
+    enclosing caller catches a failure and continues. Preserve duplicate
+    last-entry behavior, stable references, aliases, constraints, and untouched
+    rows. Graph publication never accepts a new Markdown grounding baseline.
+12. Reuse only a fixed, owned set of synchronous storage statements on their
+    original connection. Keep dynamic queries and caller-owned iterators
+    independent; a generic global SQL cache can reuse an active iterator or
+    retain closed databases. Fingerprint point reads use weak connection
+    ownership; GraphStore hot statements belong to the store instance.
 
 ## Gotchas
 
@@ -131,6 +142,15 @@ only to explicit maintenance workflows.
 - Wall-clock status timings vary by machine and process-start overhead. Keep
   the benchmark non-gating, record its environment, and protect correctness
   with deterministic race, non-mutation, and bounded-work tests.
+- An active outer transaction does not establish rollback ownership. Omitting
+  the nested fingerprint savepoint is safe only for the explicit full-publisher
+  path. A failed multi-value bucket statement may have written a partial prefix;
+  standalone writes must restore the entire batch before returning an error.
+- Construction in a child process does not transfer the parent's maintenance
+  lease or publication authority. Wait for child `close` before candidate or
+  workspace cleanup and recheck directory identity, including full-width
+  device/inode values. A parent-lifetime pipe can stop a busy child after parent
+  death; it cannot run cleanup in a parent killed by `SIGKILL`.
 
 ## Verify
 
@@ -145,6 +165,11 @@ only to explicit maintenance workflows.
 - [ ] Source/config symlink escape, retarget, atomic replacement, and ABA tests
       preserve the prior snapshot.
 - [ ] Failed parse/stage/publication tests preserve prior facts and metadata.
+- [ ] Fingerprint foreign-key and partial bucket failures restore complete
+      batches when caught inside an outer transaction; publisher failures roll
+      back all graph facts. Duplicate/ref/alias output remains identical.
+- [ ] Reused statements remain correct after rollback and while independent
+      iterators are active; closing one connection never affects another.
 - [ ] Candidate replacement, candidate WAL, rollback, maintenance-lock, and
       first-publication failure tests leave either the prior graph or no graph.
 - [ ] Ordinary check, doctor, dashboard, and status paths do not change graph
@@ -165,6 +190,12 @@ test fails, verify which layer re-read the filesystem after secure discovery;
 fix that boundary instead of adding timing delays.
 
 ## Update Scaffold
+
+The 2026-09-09 update records the owned-transaction and statement-lifetime
+contracts from the branch implementation. Existing `grounds_to` fingerprints and
+`bodyHash` values are retained unchanged; this upkeep does not authorize baseline
+renewal. See `docs/design/code-graph-performance-implementation.md` for evidence
+and remaining process/memory limits.
 
 - [ ] Update `.mex/ROUTER.md` when freshness, refresh, or recovery capabilities
       move from "Not Built" to "Working".

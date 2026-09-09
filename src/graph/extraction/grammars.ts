@@ -90,10 +90,13 @@ export async function initRuntime(): Promise<void> {
  * documented WASM-heap race when grammars load concurrently on Node.
  */
 export async function loadGrammars(languages: Language[]): Promise<void> {
-  await initRuntime();
   const toLoad = [...new Set(languages)].filter(
     (lang) => lang in WASM_GRAMMAR_FILES && !languageCache.has(lang),
   );
+  // Successful compiler-only extraction has no tree-sitter work. In a fresh
+  // candidate process, initializing its WASM runtime here would be wasted.
+  if (toLoad.length === 0) return;
+  await initRuntime();
   for (const lang of toLoad) {
     const wasmFile = WASM_GRAMMAR_FILES[lang]!;
     const grammar = await WasmLanguage.load(grammarWasmPath(wasmFile));

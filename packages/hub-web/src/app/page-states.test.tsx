@@ -264,6 +264,7 @@ describe("Home states", () => {
     const determinateProgress = within(await screen.findByRole("region", { name: "Active operation" })).getByRole("progressbar");
     expect(determinateProgress).toHaveAccessibleName("Graph refresh · Parse");
     expect(determinateProgress).toHaveAttribute("aria-valuenow", "68");
+    expect(screen.getByText("124 / 183 files parsed")).toBeVisible();
     determinate.unmount();
 
     renderRoute("/", createFixtureApi({ overviewFixture: "job-indeterminate" }));
@@ -273,13 +274,32 @@ describe("Home states", () => {
     expect(screen.getByText("37 completed")).toBeVisible();
   });
 
+  it.each(["resolve", "validate", "publish"] as const)("keeps Overview indeterminate after parsing during %s", async (phase) => {
+    const fixture = createFixtureApi({ overviewFixture: "job-determinate" });
+    const overview = await fixture.getOverview();
+    if (overview.operation.availability !== "available" || !overview.operation.active) {
+      throw new Error("The determinate fixture must supply an active graph operation.");
+    }
+    overview.operation.active = {
+      ...overview.operation.active,
+      phase,
+      progress: { completed: 183, total: 183 },
+    };
+    renderRoute("/", apiWith({ getOverview: async () => overview }));
+    const operation = within(await screen.findByRole("region", { name: "Active operation" }));
+    expect(operation.getByText("183 / 183 files parsed")).toBeVisible();
+    const progress = operation.getByRole("progressbar");
+    expect(progress).toHaveAccessibleName(`Graph refresh · ${phase[0].toUpperCase()}${phase.slice(1)}`);
+    expect(progress).not.toHaveAttribute("aria-valuenow");
+  });
+
   it("shows only the bounded relevant failed operation when no newer success supersedes it", async () => {
     renderRoute("/", createFixtureApi({ overviewFixture: "failure" }));
 
     expect(await screen.findByRole("heading", { name: "Operation needs attention" })).toBeVisible();
     const progress = within(screen.getByRole("region", { name: "Operation needs attention" })).getByRole("progressbar");
     expect(progress).toHaveAccessibleName("Graph refresh · Failed");
-    expect(progress).toHaveAttribute("aria-valuenow", "96");
+    expect(progress).not.toHaveAttribute("aria-valuenow");
     expect(screen.getByText("The previous trustworthy Graph index was preserved.")).toBeVisible();
     expect(within(screen.getByRole("region", { name: "Operation needs attention" }))
       .getByRole("button", { name: "View operation" })).toHaveAttribute(
@@ -960,6 +980,19 @@ describe("Health states", () => {
 });
 
 describe("Jobs states", () => {
+  it.each(["parse", "resolve", "validate", "publish"] as const)("shows parsed files without claiming overall completion during %s", async (phase) => {
+    const fixture = createFixtureApi();
+    const original = (await fixture.getJobs()).items[0]!;
+    const job: JobSummary = { ...original, kind: "graph_refresh", state: "running", phase, progress: { completed: 10, total: 10 } };
+    renderRoute("/jobs", apiWith({
+      getJobs: async () => ({ items: [job], nextCursor: null }),
+      subscribeToJob: () => ({ close: () => undefined }),
+    }));
+    expect(await screen.findByText("10 / 10 files parsed")).toBeVisible();
+    if (phase === "parse") expect(screen.getByRole("progressbar", { name: "100% of files parsed" })).toBeVisible();
+    else expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
   it("renders its loading state while persisted summaries are pending", async () => {
     renderRoute("/jobs", apiWith({ getJobs: () => pending<JobsResponse>() }));
 

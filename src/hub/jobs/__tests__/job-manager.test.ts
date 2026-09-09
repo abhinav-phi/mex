@@ -201,6 +201,33 @@ describe("HubJobManager", () => {
     unsubscribe();
   });
 
+  it("retains parsed file counts through later graph phases and suppresses duplicate phase updates", async () => {
+    const root = tempProject();
+    let context: HubJobExecutorContext | undefined;
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => { finish = resolve; });
+    const manager = new HubJobManager({
+      localState: localState(root),
+      now: () => NOW,
+      generateId: () => JOB_A,
+      executors: { graph_refresh: async (received) => { context = received; await pending; } },
+    });
+    manager.initialize();
+    const queued = manager.start({ kind: "graph_refresh" });
+    await waitForState(manager, queued.id, "running");
+    context!.reportProgress({ phase: "parse", completed: 2, total: 2 });
+    expect(manager.get(queued.id)?.progress).toEqual({ completed: 2, total: 2 });
+    context!.reportProgress({ phase: "resolve" });
+    const resolving = manager.get(queued.id);
+    expect(resolving).toMatchObject({ phase: "resolve", progress: { completed: 2, total: 2 } });
+    context!.reportProgress({ phase: "resolve" });
+    expect(manager.get(queued.id)).toEqual(resolving);
+    context!.reportProgress({ phase: "validate" });
+    expect(manager.get(queued.id)).toMatchObject({ phase: "validate", progress: { completed: 2, total: 2 } });
+    finish();
+    expect(await waitForState(manager, queued.id, "succeeded")).toMatchObject({ progress: { completed: 2, total: 2 } });
+  });
+
   it("does not persist or publish an identical progress snapshot", async () => {
     const root = tempProject();
     const store = localState(root);

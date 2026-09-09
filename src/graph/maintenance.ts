@@ -37,6 +37,7 @@ import {
 } from "./status.js";
 import { GRAPH_SNAPSHOT_METADATA_KEY } from "./snapshot.js";
 import { tryEnsureSetupIgnoreProtection } from "../setup/ignore.js";
+import { GraphCandidateProcessError, runGraphCandidateProcess, type GraphCandidateProcessOptions } from "./candidate-process.js";
 
 const LOCK_FILE = "graph.db.lock";
 const LOCK_GATE_FILE = "graph.db.lock.gate";
@@ -149,8 +150,6 @@ interface StatIdentity {
 interface ValidatedCandidate {
   status: GraphStatus;
   identity: DatabaseIdentity;
-  snapshotRaw: string;
-  snapshotHash: string;
 }
 
 interface LockOwner {
@@ -166,6 +165,7 @@ interface MaintenanceLock {
 }
 
 interface GraphMaintenanceInternalHooks {
+  candidateProcess?: GraphCandidateProcessOptions["__internal"];
   token?: () => string;
   now?: () => Date;
   inspectStatus?: typeof inspectGraphStatus;
@@ -185,7 +185,12 @@ interface GraphMaintenanceInternalHooks {
   afterLockGateAcquired?: (gatePath: string) => void;
 }
 
-type InternalMaintenanceOptions = GraphMaintenanceOptions & {
+/** Internal execution policy; the CLI retains its existing in-process default. */
+export type GraphMaintenanceExecutionOptions = GraphMaintenanceOptions & {
+  candidateExecution?: "process";
+};
+
+type InternalMaintenanceOptions = GraphMaintenanceExecutionOptions & {
   /** Deterministic fault/race seams. Deliberately absent from public declarations. */
   __internal?: GraphMaintenanceInternalHooks;
 };
@@ -217,8 +222,8 @@ export type GraphMaintenanceLeaseMode = "refresh" | "rebuild" | "repair";
 export interface GraphMaintenanceLease {
   readonly projectRoot: string;
   readonly databasePath: string;
-  refresh(options?: GraphMaintenanceOptions): Promise<GraphMaintenanceResult>;
-  rebuild(options?: GraphMaintenanceOptions): Promise<GraphMaintenanceResult>;
+  refresh(options?: GraphMaintenanceExecutionOptions): Promise<GraphMaintenanceResult>;
+  rebuild(options?: GraphMaintenanceExecutionOptions): Promise<GraphMaintenanceResult>;
   repair(options?: GraphMaintenanceOptions): Promise<GraphRepairResult>;
   release(): void;
 }
@@ -226,7 +231,7 @@ export interface GraphMaintenanceLease {
 export function acquireGraphMaintenanceLease(
   projectRoot: string,
   mode: GraphMaintenanceLeaseMode = "refresh",
-  options: GraphMaintenanceOptions = {},
+  options: GraphMaintenanceExecutionOptions = {},
 ): GraphMaintenanceLease {
   const internalOptions = options as InternalMaintenanceOptions;
   const paths = resolveMaintenancePaths(projectRoot, mode === "rebuild");
@@ -258,7 +263,7 @@ export function acquireGraphMaintenanceLease(
   let active = false;
   const run = async (
     operation: "refresh" | "rebuild" | "repair",
-    operationOptions: GraphMaintenanceOptions,
+    operationOptions: GraphMaintenanceExecutionOptions,
   ): Promise<GraphMaintenanceResult | GraphRepairResult> => {
     if (released) throw new Error("The graph maintenance lease has already been released.");
     if (active) {
@@ -275,6 +280,7 @@ export function acquireGraphMaintenanceLease(
       // retaining acquisition-time deterministic hooks.
       const merged = {
         ...operationOptions,
+        candidateExecution: resolved.candidateExecution ?? internalOptions.candidateExecution,
         __internal: resolved.__internal ?? internalOptions.__internal,
       } as InternalMaintenanceOptions;
       await merged.__internal?.afterLockAcquired?.();
@@ -304,7 +310,7 @@ export function acquireGraphMaintenanceLease(
 /** Explicit correctness-first refresh. Reads never call this function. */
 export async function refreshGraph(
   projectRoot: string,
-  options: GraphMaintenanceOptions = {},
+  options: GraphMaintenanceExecutionOptions = {},
 ): Promise<GraphMaintenanceResult> {
   const lease = acquireGraphMaintenanceLease(projectRoot, "refresh", options);
   try {
@@ -511,7 +517,7 @@ async function refreshGraphWithLease(
 /** Explicit isolated rebuild for missing, incompatible, or corrupt indexes. */
 export async function rebuildGraph(
   projectRoot: string,
-  options: GraphMaintenanceOptions = {},
+  options: GraphMaintenanceExecutionOptions = {},
 ): Promise<GraphMaintenanceResult> {
   const lease = acquireGraphMaintenanceLease(projectRoot, "rebuild", options);
   try {
@@ -613,6 +619,7 @@ async function refreshCandidate(
   options: InternalMaintenanceOptions,
 ): Promise<BuildResult> {
   progress(options, "stage", "Checking exact graph provenance and restaging the corpus when required.");
+  if (options.candidateExecution === "process") return runIsolatedCandidate(paths, candidatePath, "refresh", options);
   const engine = maintenanceEngine(paths, candidatePath, options);
   try {
     // The empty-hint sync path performs the exact corpus, semantic-input,
@@ -630,11 +637,47 @@ async function rebuildCandidate(
   options: InternalMaintenanceOptions,
 ): Promise<BuildResult> {
   progress(options, "stage", "Building the graph in an isolated same-directory candidate.");
+  if (options.candidateExecution === "process") return runIsolatedCandidate(paths, candidatePath, "rebuild", options);
   const engine = maintenanceEngine(paths, candidatePath, options);
   try {
     return await engine.build(paths.projectRoot);
   } finally {
     engine.close();
+  }
+}
+
+async function runIsolatedCandidate(
+  paths: MaintenancePaths,
+  candidatePath: string,
+  operation: "refresh" | "rebuild",
+  options: InternalMaintenanceOptions,
+): Promise<BuildResult> {
+  options.__internal?.beforeCandidateDatabaseOpen?.(candidatePath);
+  assertMaintenanceDirectoryUnchanged(paths);
+  assertNotAborted(options.signal);
+  try {
+    return await runGraphCandidateProcess({
+      projectRoot: paths.projectRoot,
+      candidatePath,
+      operation,
+      signal: options.signal,
+      onProgress: (update) => {
+        assertNotAborted(options.signal);
+        options.onProgress?.({
+          ...update,
+          message: update.phase === "parse"
+            ? "Extracting graph source files."
+            : "Resolving references and writing the graph candidate.",
+        });
+      },
+      __internal: options.__internal?.candidateProcess,
+    });
+  } catch (error) {
+    if (error instanceof GraphCandidateProcessError) {
+      if (error.category === "cancelled") throw new GraphMaintenanceError("GRAPH_MAINTENANCE_CANCELLED", error.message);
+      if (error.category === "unsafe") throw new GraphMaintenanceError("GRAPH_MAINTENANCE_PATH_UNSAFE", error.message);
+    }
+    throw error;
   }
 }
 
@@ -1715,8 +1758,11 @@ async function validateCandidate(
   assertMaintenanceDirectoryUnchanged(paths);
   assertStatus(status);
   assertClearSidecars(candidatePath);
-  const snapshot = readExactSnapshot(candidatePath);
+  // This pair of full-byte identities brackets both the complete inspection
+  // and its snapshot read. Nested hashes around the same read add no evidence.
+  assertSnapshotWithinIdentityCheck(candidatePath);
   const identityAfter = captureDatabaseIdentity(candidatePath);
+  assertClearSidecars(candidatePath);
   if (!sameDatabaseIdentity(identityBefore, identityAfter)) {
     throw new GraphMaintenanceError(
       "GRAPH_CANDIDATE_INVALID",
@@ -1727,8 +1773,6 @@ async function validateCandidate(
   return {
     status,
     identity: identityAfter,
-    snapshotRaw: snapshot.raw,
-    snapshotHash: snapshot.hash,
   };
 }
 
@@ -1738,10 +1782,11 @@ function assertCandidateUnchanged(candidatePath: string, candidate: ValidatedCan
   }
   assertClearSidecars(candidatePath);
   const identity = captureDatabaseIdentity(candidatePath);
-  const snapshot = readExactSnapshot(candidatePath);
-  if (!sameDatabaseIdentity(identity, candidate.identity)
-    || snapshot.raw !== candidate.snapshotRaw
-    || snapshot.hash !== candidate.snapshotHash) {
+  assertClearSidecars(candidatePath);
+  // Exact whole-database byte equality includes the validated snapshot row.
+  // Reopening SQLite and hashing the entire file twice again to compare that
+  // one row cannot strengthen this identity-bound publication check.
+  if (!sameDatabaseIdentity(identity, candidate.identity)) {
     throw new GraphMaintenanceError(
       "GRAPH_MAINTENANCE_RACE",
       "The graph candidate changed after validation and was not published.",
@@ -1750,11 +1795,10 @@ function assertCandidateUnchanged(candidatePath: string, candidate: ValidatedCan
   }
 }
 
-function readExactSnapshot(path: string): { raw: string; hash: string } {
+/** Called only inside validateCandidate's complete before/after byte binding. */
+function assertSnapshotWithinIdentityCheck(path: string): void {
   assertClearSidecars(path);
-  const before = captureDatabaseIdentity(path);
   const db = openSqlite(path, { readOnly: true, immutable: true });
-  let raw: string;
   try {
     const row = db.prepare(
       "SELECT value FROM project_metadata WHERE key = ?",
@@ -1765,18 +1809,9 @@ function readExactSnapshot(path: string): { raw: string; hash: string } {
         "The graph candidate is missing exact graph_snapshot_v1 provenance.",
       );
     }
-    raw = row.value;
   } finally {
     db.close();
   }
-  const after = captureDatabaseIdentity(path);
-  if (!sameDatabaseIdentity(before, after)) {
-    throw new GraphMaintenanceError(
-      "GRAPH_CANDIDATE_INVALID",
-      "The graph candidate changed while its snapshot token was being read.",
-    );
-  }
-  return { raw, hash: createHash("sha256").update(raw).digest("hex") };
 }
 
 function shouldCloneForContinuity(status: GraphStatus): boolean {
@@ -1789,6 +1824,7 @@ function shouldCloneForContinuity(status: GraphStatus): boolean {
 }
 
 function isContinuityCloneCompatibilityFailure(error: unknown): boolean {
+  if (error instanceof GraphCandidateProcessError) return error.category === "compatibility";
   if (error instanceof GraphSourceStagingError || error instanceof GraphMaintenanceError) return false;
   const code = errorCode(error).toUpperCase();
   const name = error instanceof Error ? error.name : "";

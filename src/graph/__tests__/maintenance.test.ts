@@ -11,6 +11,7 @@ import {
   symlinkSync,
   statSync,
   unlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -59,6 +60,22 @@ async function buildBaseline(root: string): Promise<string> {
 
 function sha256(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function tamperSnapshotWithRestoredMtime(path: string): Buffer {
+  const before = statSync(path);
+  const bytes = readFileSync(path);
+  const marker = Buffer.from('"indexedAt":"');
+  const offset = bytes.indexOf(marker);
+  expect(offset).toBeGreaterThanOrEqual(0);
+  // Change only one timestamp digit inside valid JSON/SQLite, preserving the
+  // inode and byte length. A cached mtime/size is not publication authority.
+  bytes[offset + marker.length] = bytes[offset + marker.length] === 50 ? 49 : 50;
+  writeFileSync(path, bytes);
+  utimesSync(path, before.atimeMs / 1000, before.mtimeMs / 1000);
+  expect(statSync(path).size).toBe(before.size);
+  expect(statSync(path).mtimeMs).toBeCloseTo(before.mtimeMs, 1);
+  return bytes;
 }
 
 function ownedArtifacts(root: string): string[] {
@@ -532,6 +549,45 @@ describe("graph maintenance", () => {
     expect(readFileSync(dbPath)).toEqual(externalBytes);
     expect(ownedArtifacts(root)).toEqual([]);
   });
+
+  it("rejects same-size snapshot tampering with restored mtime after candidate validation", async () => {
+    const root = temporaryRoot();
+    source(root, "service.py", "def service():\n    return 1\n");
+    const database = await buildBaseline(root);
+    const before = sha256(database);
+    source(root, "service.py", "def service():\n    return 2\n");
+    await expect(refreshGraph(root, {
+      __internal: { afterCandidateValidated: tamperSnapshotWithRestoredMtime },
+    } as GraphMaintenanceOptions)).rejects.toMatchObject({ code: "GRAPH_MAINTENANCE_RACE" });
+    expect(sha256(database)).toBe(before);
+    expect(ownedArtifacts(root)).toEqual([]);
+  });
+
+  it.each(["candidate", "live", "rollback"] as const)(
+    "revalidates exact %s bytes after the final publish progress callback",
+    async (target) => {
+      const root = temporaryRoot();
+      source(root, "service.py", "def service():\n    return 1\n");
+      const database = await buildBaseline(root);
+      const before = readFileSync(database);
+      source(root, "service.py", "def service():\n    return 2\n");
+      let candidate = "";
+      let rollback = "";
+      let replacement: Buffer | undefined;
+      await expect(refreshGraph(root, {
+        onProgress(progress) {
+          if (progress.phase !== "publish") return;
+          replacement = tamperSnapshotWithRestoredMtime(target === "live" ? database : target === "candidate" ? candidate : rollback);
+        },
+        __internal: {
+          afterCandidateValidated(path: string) { candidate = path; },
+          afterRollbackCreated(path: string) { rollback = path; },
+        },
+      } as GraphMaintenanceOptions)).rejects.toMatchObject({ code: "GRAPH_MAINTENANCE_RACE" });
+      expect(readFileSync(database)).toEqual(target === "live" ? replacement : before);
+      expect(ownedArtifacts(root)).toEqual([]);
+    },
+  );
 
   it("aborts on a nonempty candidate WAL instead of unlinking it into publication", async () => {
     const root = temporaryRoot();

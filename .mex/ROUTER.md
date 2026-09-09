@@ -16,7 +16,7 @@ edges:
     condition: when starting a task — check the pattern index for a matching pattern file
   - target: patterns/release-readme-visuals.md
     condition: when refreshing the release README, badges, community links, or architecture illustrations
-last_updated: 2026-09-08
+last_updated: 2026-09-09
 ---
 
 # Session Bootstrap
@@ -116,8 +116,11 @@ Then read this file fully before doing anything else in this session.
   Ordinary Wiki creation/synthesis retain explicit provenance or capture the
   operation actor/time/session; completed plain creates replay without duplicate
   records. Legacy Team/Spec recovery bytes stay unchanged. This is local
-  implementation on `codex/0.8.1`; Settings heap calibration on the pinned runner remains an
-  explicit release gate alongside the existing release requirements.
+  implementation on `codex/0.8.1`. The three missing Settings heap limits are now
+  calibrated from retained pinned Linux run `34286120355`; a clean enforcing
+  run after correction remains a release gate. Evidence is in
+  `docs/design/settings-heap-calibration.json`. The separately accepted Graph
+  isolation timing calibration below changes only its five owned time limits.
 - Phase 5 narrows shared artifact I/O to exact bytes by default, with explicit
   checkout-neutral reads for canonical Team records. Wiki/local revisions remain
   exact through Inbox preview and recovery; legacy Timeline IDs remain stable
@@ -132,6 +135,23 @@ Then read this file fully before doing anything else in this session.
   the isolated Windows changes. Runner verification is attached to the PR.
 - Explicit graph status, refresh, and isolated rebuild/recovery commands preserve
   the last trustworthy index behind one cross-process maintenance lease.
+- Graph performance work is implemented separately on
+  `codex/0.8.1-graph-performance`: outer-owned fingerprint publication, fixed
+  statement reuse, smaller continuity/reference staging, and disposable Hub
+  candidate construction. The parent retains validation and publication;
+  ordinary CLI construction remains in process. Implementation, verification,
+  and actual Hub measurements are in
+  `docs/design/code-graph-performance-implementation.md`. This targets the
+  release branch and is not a published release.
+- Corrected graph performance PR #180 run `34288560611` passed Node 22/24,
+  browser, and Windows/macOS portability checks. Two independent pinned runners
+  confirmed five material Graph timing failures. The product decision accepts
+  disposable-worker startup latency for a responsive Hub and compiler-memory
+  release after jobs. Only those five time limits are recalibrated from retained
+  pinned evidence in `docs/design/graph-maintenance-timing-calibration.json`;
+  all memory and other limits stay unchanged. A clean enforcing run on the new
+  calibrated head remains required. Local same-code memory/latency evidence is
+  retained in `docs/design/graph-isolation-diagnostic.json`.
 - Targeted graph get/query/impact consumers use one provenance-bound immutable
   snapshot and discard output if graph or exact source identity changes.
 - The graph half of Checkpoint 2 is working in the Project Hub: grouped symbol
@@ -228,6 +248,17 @@ Then read this file fully before doing anything else in this session.
 - Public package-root exports for the provisional team contracts.
 
 **Known Issues:**
+- Graph construction still rebuilds the full eligible corpus after source
+  changes and has no peak-memory quota. The branch's actual Hub probe peaked at
+  about 1,963 MiB combined RSS and retained multi-second pauses around initial
+  checks and validation/publication despite responsive compiler-phase polling.
+  Fatal parent exit may leave owned temporary artifacts. The historical
+  `docs/design/code-graph-resource-investigation.md` explains the bottleneck and
+  retained-memory experiments; neither it nor the implementation rules out all
+  native, slow, or repository-specific leaks. Process isolation can increase
+  aggregate peak memory even while reducing memory left in the surviving Hub.
+  Corrected PR #180 platform and browser suites passed; runtime release
+  enforcement remains pending the accepted five-leaf timing calibration.
 - Graph schema v4 is operational in this checkout, with two partially parsed
   source files and no failed files. Treat partial graph evidence as degraded and
   narrow or fall back to source discovery when needed.

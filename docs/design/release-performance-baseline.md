@@ -117,14 +117,72 @@ unavailable page cannot satisfy measurement. Settings must remain outside the
 initial shell and Home closures. Only its additive asset limits may be copied
 from the final deterministic build using `ceil(bytes * 1.05)`.
 
-Settings heap calibration is pending: the three Settings heap budget leaves
-remain absent until a retained Ubuntu 24.04/Node 22 report supplies the usual
-`ceil(p95 * 1.15)` candidates. Measurement therefore emits `budget_missing`
-and blocks release; missing calibration is not a zero-cost or passing route.
-The schemas accept Settings as an additive optional field so historical
-reports stay valid. Every previously frozen budget and formula remains
-unchanged. A clean enforcing pinned run on the final exact head is still
-required after calibration.
+At the Phase 4 checkpoint, the three Settings heap budget leaves remained
+absent, so enforcement emitted `budget_missing` and blocked release. Initial
+PR #180 CI run
+[`34286120355`](https://github.com/mex-memory/mex/actions/runs/34286120355)
+then supplied the retained, schema-valid measurement report on Ubuntu 24.04,
+Linux x64, Node 22.22.0. Artifact `10079816681` measured PR head
+`6e12e6dd34a3bb11735ce3580aece8d37e2e8043` through synthetic merge commit
+`8c046500e2969463014e12dc5844abf76ae403ce`; the raw report SHA-256 was verified as
+`98007786b450eb7a6142d0ce43cf2bb6fc85c287d6e0a8837850318d5924fd04`.
+
+Only the three missing Settings heap leaves and calibration-status metadata
+are now added using the frozen `ceil(p95 * 1.15)` formula:
+
+| Profile | Measured Settings heap p95 | New limit |
+|---|---:|---:|
+| Small | 5,480,428 bytes | 6,302,493 bytes |
+| Medium | 5,482,104 bytes | 6,304,420 bytes |
+| Large | 5,486,028 bytes | 6,308,933 bytes |
+
+The [retained calibration evidence](settings-heap-calibration.json) records all
+five raw samples per profile, exact report identity, formula, and a hash of
+every unowned budget. Existing Graph and other runtime/asset limits, sample
+counts, material thresholds, and confirmation rules remain unchanged. Settings
+stays an additive optional schema field so historical reports remain valid.
+
+That first CI run still failed enforcement: the missing leaves produced an
+immediate hard failure and suppressed runtime confirmation. Its first-pass
+Graph maintenance crossings are unconfirmed, not a runtime pass or an
+established regression. A clean enforcing run on the corrected final head must
+apply the ordinary fresh-runner confirmation rule; calibration alone does not
+satisfy the release gate.
+
+### Accepted graph isolation timing tradeoff
+
+Corrected PR #180 run
+[`34288560611`](https://github.com/mex-memory/mex/actions/runs/34288560611)
+passed browser, Node 22/24, and Windows/macOS portability checks. Its two
+independently allocated pinned runners confirmed exactly five material Graph
+maintenance timing failures on PR head
+`4d6683eec1a0bdcafe99d7b431d84cde7f02864d`, synthetic merge
+`6d92bb04d757c8a00693ef679d1f4281669a9b57`. Repeated memory crossings remained
+advisory under the existing materiality/sample-support rules; no memory or
+other metric produced a final material failure.
+
+The product decision explicitly accepts disposable-worker startup latency for
+Hub responsiveness and compiler-memory release after each job. This is a real
+small-job regression. Only the five confirmed timing leaves are recalibrated
+from the first healthy corrected report using the existing `ceil(p95 * 1.15)`
+formula; the second allocation supplies independent confirmation.
+
+| Graph operation | Prior limit (ms) | First p95 (ms) | Confirmation p95 (ms) | New limit (ms) |
+|---|---:|---:|---:|---:|
+| Small refresh | 984 | 1420.610 | 1853.568 | 1634 |
+| Small rebuild | 496 | 1468.480 | 1608.501 | 1689 |
+| Medium refresh | 1237 | 1600.897 | 1714.770 | 1842 |
+| Medium rebuild | 743 | 1581.908 | 1550.249 | 1820 |
+| Large rebuild | 1229 | 1980.154 | 2074.786 | 2278 |
+
+The [calibration record](graph-maintenance-timing-calibration.json) retains
+runner identities, both raw-report hashes and samples, prior limits, and a hash
+guard for every unowned budget. Large refresh, all memory/asset/read/Wiki
+limits, fixtures, formulas, sample counts, and confirmation rules remain
+unchanged. The [local diagnostic](graph-isolation-diagnostic.json) attributes
+the fixed startup cost using identical optimized code and parent validation;
+its Mac timings are not calibration inputs. A clean enforcing CI run on the
+new calibrated head remains required before release.
 
 ## Runner contract
 

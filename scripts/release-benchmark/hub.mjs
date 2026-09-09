@@ -1,12 +1,12 @@
-import { spawn, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { performance } from "node:perf_hooks";
+import { requestJson } from "./http.mjs";
+import { startProcessTreeSampler } from "./process-tree.mjs";
+import { validateBenchmarkJob, waitForHubJobTerminal } from "./job-events.mjs";
 
 const MAX_CHILD_OUTPUT_BYTES = 128 * 1024;
-const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const HUB_START_TIMEOUT_MS = 30_000;
 const JOB_TIMEOUT_MS = 180_000;
-const PROCESS_SAMPLE_INTERVAL_MS = 10;
 const IDLE_WINDOW_MS = 2_000;
 const TERMINAL_JOB_STATES = new Set(["succeeded", "failed", "interrupted"]);
 const REVISION_PATTERN = /^[a-f0-9]{64}$/u;
@@ -97,13 +97,12 @@ export async function authenticateHub(server) {
   const url = new URL(server.bootstrapUrl);
   const token = new URLSearchParams(url.hash.slice(1)).get("token");
   if (!token) throw new Error("Hub readiness output omitted its bootstrap token.");
-  const response = await fetch(`${server.origin}/api/v1/session/bootstrap`, {
+  const { response, body } = await requestJson(`${server.origin}/api/v1/session/bootstrap`, {
     method: "POST",
     redirect: "error",
     headers: { "content-type": "application/json", origin: server.origin },
     body: JSON.stringify({ token }),
   });
-  const body = await boundedJson(response, "Hub bootstrap");
   if (response.status !== 201 || typeof body.expiresAt !== "string") {
     throw new Error(`Hub bootstrap failed with HTTP ${response.status}.`);
   }
@@ -115,22 +114,16 @@ export async function authenticateHub(server) {
 }
 
 export async function measureIdleProcess(server) {
-  const initialRss = readProcessRssBytes(server.child.pid);
-  const initialCpu = readProcessCpuMs(server.child.pid);
-  let peakRss = initialRss;
-  const timer = setInterval(() => {
-    peakRss = Math.max(peakRss, readProcessRssBytes(server.child.pid));
-  }, PROCESS_SAMPLE_INTERVAL_MS);
+  const sampler = await startProcessTreeSampler(server.child.pid);
+  let measured;
   try {
     await delay(IDLE_WINDOW_MS);
   } finally {
-    clearInterval(timer);
+    measured = await sampler.stop();
   }
-  const finalRss = readProcessRssBytes(server.child.pid);
-  const finalCpu = readProcessCpuMs(server.child.pid);
   return {
-    rssBytes: Math.max(initialRss, finalRss, peakRss),
-    cpuMs: Math.max(0, finalCpu - initialCpu),
+    rssBytes: measured.peakRssBytes,
+    cpuMs: measured.cpuMs,
     windowMs: IDLE_WINDOW_MS,
   };
 }
@@ -286,70 +279,51 @@ export async function measureMaintenance({
   for (const kind of ["graph_refresh", "graph_rebuild", "wiki_refresh", "wiki_rebuild"]) {
     const elapsedMs = [];
     const peakRssBytes = [];
+    const cpuMs = [];
     for (let sample = 0; sample < timingSamples; sample += 1) {
       if (kind === "graph_refresh") beforeGraphRefresh();
       if (kind === "wiki_refresh") beforeWikiRefresh();
       const measured = await runMaintenanceJob(server, auth, kind);
       elapsedMs.push(measured.elapsedMs);
+      cpuMs.push(measured.cpuMs);
       if (sample < memorySamples) peakRssBytes.push(measured.peakRssBytes);
     }
-    output[kind] = { elapsedMs, peakRssBytes };
+    output[kind] = { elapsedMs, peakRssBytes, cpuMs };
   }
   return output;
 }
 
-export async function hubJson(server, path, auth, init = {}) {
+export async function hubJson(server, path, auth, init = {}, requestOptions) {
   const headers = new Headers(init.headers);
   headers.set("accept", "application/json, application/problem+json");
   if (auth?.cookie) headers.set("cookie", auth.cookie);
-  const response = await fetch(`${server.origin}${path}`, {
+  const { response, body } = await requestJson(`${server.origin}${path}`, {
     ...init,
     headers,
     redirect: "error",
-  });
-  const body = await boundedJson(response, path);
+  }, requestOptions);
   if (!response.ok) {
     throw new Error(`${path} failed with HTTP ${response.status}: ${bounded(JSON.stringify(body))}`);
   }
   return body;
 }
 
-export function readProcessRssBytes(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) throw new Error("Cannot sample a process without a PID.");
-  if (process.platform === "linux") {
-    const status = readFileSync(`/proc/${pid}/status`, "utf8");
-    const match = status.match(/^VmRSS:\s+(\d+)\s+kB$/mu);
-    if (!match) throw new Error(`Could not read VmRSS for process ${pid}.`);
-    return Number(match[1]) * 1024;
+export async function runMaintenanceJob(server, auth, kind, { timeoutMs = JOB_TIMEOUT_MS } = {}) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > JOB_TIMEOUT_MS) {
+    throw new Error("Invalid maintenance deadline.");
   }
-  const result = spawnSync("ps", ["-o", "rss=", "-p", String(pid)], { encoding: "utf8" });
-  const kib = Number(result.stdout.trim());
-  if (result.status !== 0 || !Number.isFinite(kib)) throw new Error(`Could not sample RSS for process ${pid}.`);
-  return kib * 1024;
-}
-
-export function readProcessCpuMs(pid) {
-  if (process.platform === "linux") {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/u);
-    const ticks = Number(fields[11]) + Number(fields[12]);
-    if (!Number.isFinite(ticks)) throw new Error(`Could not read CPU ticks for process ${pid}.`);
-    return ticks * 1_000 / clockTicksPerSecond();
-  }
-  const result = spawnSync("ps", ["-o", "time=", "-p", String(pid)], { encoding: "utf8" });
-  if (result.status !== 0) throw new Error(`Could not sample CPU time for process ${pid}.`);
-  return parsePsCpuTime(result.stdout.trim());
-}
-
-async function runMaintenanceJob(server, auth, kind) {
-  const baselineRss = readProcessRssBytes(server.child.pid);
-  let peakRss = baselineRss;
-  const timer = setInterval(() => {
-    peakRss = Math.max(peakRss, readProcessRssBytes(server.child.pid));
-  }, PROCESS_SAMPLE_INTERVAL_MS);
+  const sampler = await startProcessTreeSampler(server.child.pid);
   const startedAt = performance.now();
+  const deadline = startedAt + timeoutMs;
+  const requestOptions = () => {
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) throw new Error(`${kind} did not settle within ${timeoutMs} ms.`);
+    return { timeoutMs: Math.min(5_000, remaining) };
+  };
+  let measured;
+  let completedAt;
   try {
-    const job = await hubJson(server, "/api/v1/jobs", auth, {
+    const job = validateBenchmarkJob(await hubJson(server, "/api/v1/jobs", auth, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -357,37 +331,18 @@ async function runMaintenanceJob(server, auth, kind) {
         "x-mex-csrf": auth.csrfToken,
       },
       body: JSON.stringify({ kind }),
-    });
-    if (typeof job.id !== "string") throw new Error(`${kind} did not return a job ID.`);
-    let terminal = job;
-    const deadline = performance.now() + JOB_TIMEOUT_MS;
-    while (!TERMINAL_JOB_STATES.has(terminal.state)) {
-      if (performance.now() >= deadline) throw new Error(`${kind} did not settle within ${JOB_TIMEOUT_MS} ms.`);
-      await delay(20);
-      terminal = await hubJson(server, `/api/v1/jobs/${encodeURIComponent(job.id)}`, auth);
-    }
+    }, requestOptions()), { kind });
+    const terminal = TERMINAL_JOB_STATES.has(job.state)
+      ? job
+      : await waitForHubJobTerminal(server, auth, { id: job.id, kind, deadline });
     if (terminal.state !== "succeeded") {
       throw new Error(`${kind} settled as ${String(terminal.state)} (${String(terminal.problem?.code ?? "unknown")}).`);
     }
-    return {
-      elapsedMs: performance.now() - startedAt,
-      peakRssBytes: Math.max(peakRss, readProcessRssBytes(server.child.pid)),
-    };
+    completedAt = performance.now();
   } finally {
-    clearInterval(timer);
+    measured = await sampler.stop();
   }
-}
-
-async function boundedJson(response, label) {
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.byteLength > MAX_RESPONSE_BYTES) {
-    throw new Error(`${label} exceeded the ${MAX_RESPONSE_BYTES}-byte benchmark response bound.`);
-  }
-  try {
-    return JSON.parse(bytes.toString("utf8"));
-  } catch (error) {
-    throw new Error(`${label} did not return JSON: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  return { elapsedMs: completedAt - startedAt, peakRssBytes: measured.peakRssBytes, cpuMs: measured.cpuMs };
 }
 
 async function stopHub(child) {
@@ -403,25 +358,6 @@ async function stopHub(child) {
       resolve();
     });
   });
-}
-
-let cachedClockTicks;
-function clockTicksPerSecond() {
-  if (cachedClockTicks !== undefined) return cachedClockTicks;
-  const result = spawnSync("getconf", ["CLK_TCK"], { encoding: "utf8" });
-  const value = Number(result.stdout.trim());
-  cachedClockTicks = result.status === 0 && Number.isFinite(value) && value > 0 ? value : 100;
-  return cachedClockTicks;
-}
-
-function parsePsCpuTime(value) {
-  const match = value.match(/^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)$/u);
-  if (!match) throw new Error(`Could not parse process CPU time: ${value}`);
-  const days = Number(match[1] ?? 0);
-  const hours = Number(match[2] ?? 0);
-  const minutes = Number(match[3]);
-  const seconds = Number(match[4]);
-  return (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * 1_000;
 }
 
 function bounded(value) {
