@@ -155,6 +155,22 @@ try {
   }
 
   const cli = join(installed, "dist", "cli.js");
+  const beforeLoggingRead = snapshotProtectedProjectState(project);
+  const localBeforeLoggingRead = existsSync(join(project, ".mex", "local"));
+  const defaultLogging = JSON.parse(run(process.execPath, [cli, "logging", "--json"], project));
+  if (
+    defaultLogging?.schemaVersion !== 1
+    || defaultLogging?.command !== "logging"
+    || defaultLogging?.ok !== true
+    || defaultLogging?.scope !== "checkout"
+    || defaultLogging?.problem !== null
+    || JSON.stringify(defaultLogging?.data) !== JSON.stringify({ mode: "significant", revision: null, source: "default" })
+    || existsSync(join(project, ".mex", "local", "agent-preferences.json"))
+    || existsSync(join(project, ".mex", "local")) !== localBeforeLoggingRead
+    || JSON.stringify(snapshotProtectedProjectState(project)) !== JSON.stringify(beforeLoggingRead)
+  ) {
+    throw new Error("The packed logging getter did not return the quiet default without initializing state.");
+  }
   const cliHelp = run(process.execPath, [cli, "--help"], project);
   const skillSyncHelp = run(process.execPath, [cli, "skills", "sync", "--help"], project);
   if (
@@ -268,7 +284,9 @@ try {
     || relayExamples.length === 0
     || relayExamples[0]?.command !== "relay.draft.save"
     || JSON.stringify(Object.keys(sparseRelayDraft ?? {}).sort())
-      !== JSON.stringify(["recipients", "summary"])
+      !== JSON.stringify(["audience", "recipients", "summary"])
+    || sparseRelayDraft?.audience !== "team"
+    || JSON.stringify(sparseRelayDraft?.recipients) !== "[]"
     || !relayExamples.some((example) => (
       Array.isArray(example?.request?.action?.draft?.evidence)
       && example.request.action.draft.evidence.some((item) => item?.kind === "commit")
@@ -287,6 +305,8 @@ try {
   const normalizedSparseDraft = sparseRelayPreview?.data?.request?.action?.draft;
   if (
     sparseRelayPreview?.ok !== true
+    || normalizedSparseDraft?.audience !== "team"
+    || JSON.stringify(normalizedSparseDraft?.recipients) !== "[]"
     || Object.hasOwn(normalizedSparseDraft ?? {}, "workstream")
     || ![
       "completed",
@@ -301,6 +321,10 @@ try {
     ].every((key) => Array.isArray(normalizedSparseDraft?.[key]))
   ) {
     throw new Error("The packed Relay CLI did not normalize the sparse standalone draft.");
+  }
+  const relaySaveHelp = run(process.execPath, [cli, "relay", "draft", "save", "--help"], project);
+  if (!relaySaveHelp.includes("--from <draft-file>") || !relaySaveHelp.includes("--operation-id <id>")) {
+    throw new Error("The packed Relay help omitted the sparse local quick-save surface.");
   }
   const packedCapabilitiesOutput = run(
     process.execPath,
@@ -394,6 +418,12 @@ try {
   const sessionBody = await session.json();
   if (!session.ok || typeof sessionBody.csrfToken !== "string") {
     throw new Error("The packaged Hub session API did not load.");
+  }
+  const logging = await fetch(`${url.origin}/api/v1/settings/logging`, {
+    headers: { cookie }, redirect: "error",
+  });
+  if (!logging.ok || JSON.stringify(await logging.json()) !== JSON.stringify(defaultLogging.data)) {
+    throw new Error("The packaged Hub logging read did not share the CLI's checkout default.");
   }
   const capabilities = await fetch(`${url.origin}/api/v1/capabilities`, {
     headers: { cookie },
@@ -825,6 +855,62 @@ try {
     throw new Error("Packaged Wiki maintenance mutated canonical Wiki, Graph, Activity, members, source, or Git state.");
   }
 
+  // Preference changes are checkout-only. Exercise both surfaces with exact
+  // revisions after ordinary-read/maintenance assertions, before stopping Hub.
+  const beforeLoggingUpdate = snapshotProtectedProjectState(project, {
+    includeRuntimeState: false, includeGraphIndex: true,
+  });
+  const settingsHeaders = {
+    cookie, origin: url.origin, "content-type": "application/json", "x-mex-csrf": sessionBody.csrfToken,
+  };
+  const savedLogging = await fetch(`${url.origin}/api/v1/settings/logging`, {
+    method: "POST", headers: settingsHeaders, redirect: "error",
+    body: JSON.stringify({ mode: "manual", expectedRevision: null }),
+  });
+  const savedLoggingBody = await savedLogging.json();
+  const cliLogging = JSON.parse(run(process.execPath, [cli, "logging", "--json"], project));
+  if (
+    savedLogging.status !== 200
+    || savedLoggingBody?.mode !== "manual"
+    || savedLoggingBody?.source !== "local"
+    || !/^[a-f0-9]{64}$/u.test(savedLoggingBody?.revision ?? "")
+    || cliLogging?.ok !== true
+    || JSON.stringify(cliLogging.data) !== JSON.stringify(savedLoggingBody)
+  ) {
+    throw new Error("The packaged Hub did not persist the same exact logging preference read by the CLI.");
+  }
+  const changedLogging = JSON.parse(run(process.execPath, [
+    cli, "logging", "checkpoints", "--expected-revision", savedLoggingBody.revision, "--json",
+  ], project));
+  if (
+    changedLogging?.ok !== true
+    || changedLogging?.scope !== "checkout"
+    || changedLogging?.data?.mode !== "checkpoints"
+    || changedLogging?.data?.source !== "local"
+    || !/^[a-f0-9]{64}$/u.test(changedLogging?.data?.revision ?? "")
+    || changedLogging.data.revision === savedLoggingBody.revision
+  ) {
+    throw new Error("The packed CLI did not update logging with the exact Hub revision.");
+  }
+  const staleLogging = await fetch(`${url.origin}/api/v1/settings/logging`, {
+    method: "POST", headers: settingsHeaders, redirect: "error",
+    body: JSON.stringify({ mode: "manual", expectedRevision: savedLoggingBody.revision }),
+  });
+  const currentLogging = await fetch(`${url.origin}/api/v1/settings/logging`, {
+    headers: { cookie }, redirect: "error",
+  });
+  if (
+    staleLogging.status !== 409
+    || (await staleLogging.json())?.code !== "REVISION_CONFLICT"
+    || !currentLogging.ok
+    || JSON.stringify(await currentLogging.json()) !== JSON.stringify(changedLogging.data)
+    || JSON.stringify(snapshotProtectedProjectState(project, {
+      includeRuntimeState: false, includeGraphIndex: true,
+    })) !== JSON.stringify(beforeLoggingUpdate)
+  ) {
+    throw new Error("Packaged logging lost a concurrent preference or changed canonical, index, Activity, or Git state.");
+  }
+
   child.kill("SIGTERM");
   const exit = await waitForExit(child, 8_000);
   child = undefined;
@@ -834,6 +920,53 @@ try {
     && exit.signal === "SIGTERM";
   if (!stoppedAsRequested && !terminatedAsRequestedOnWindows) {
     throw new Error(`The packaged Hub did not stop cleanly (${JSON.stringify(exit)}).`);
+  }
+  // Exercise the shortcut after the immutable Hub-read and maintenance checks.
+  // Only checkout-local state may change; Git, knowledge, Members and Activity stay exact.
+  const beforeQuickSave = snapshotProtectedProjectState(project, {
+    includeRuntimeState: false,
+    includeGraphIndex: true,
+  });
+  const quickDraftFile = join(work, "relay-quick-draft.json");
+  const quickSummary = "Resume the packed-install investigation when a teammate joins.";
+  writeFileSync(quickDraftFile, JSON.stringify({ summary: quickSummary }));
+  const quickSave = JSON.parse(run(process.execPath, [
+    cli, "relay", "draft", "save", "--from", quickDraftFile,
+    "--operation-id", "packed-relay-quick-save", "--json",
+  ], project));
+  const savedLocal = quickSave?.data?.localChanges?.[0];
+  if (
+    quickSave?.ok !== true
+    || quickSave?.command !== "relay.draft.save"
+    || quickSave?.mode !== "apply"
+    || quickSave?.data?.applied !== true
+    || quickSave?.data?.localChanges?.length !== 1
+    || savedLocal?.namespace !== "relay-draft"
+    || savedLocal?.beforeRevision !== null
+    || typeof savedLocal?.id !== "string"
+    || !/^[a-f0-9]{64}$/.test(savedLocal?.afterRevision ?? "")
+    || JSON.stringify(quickSave?.data?.changes) !== "[]"
+    || JSON.stringify(quickSave?.data?.relays) !== "[]"
+    || JSON.stringify(quickSave?.data?.events) !== "[]"
+  ) {
+    throw new Error("The packed Relay shortcut did not save exactly one local draft without publication.");
+  }
+  const savedDraft = JSON.parse(run(process.execPath, [
+    cli, "relay", "draft", "show", savedLocal.id, "--json",
+  ], project));
+  if (
+    savedDraft?.ok !== true
+    || savedDraft?.data?.id !== savedLocal.id
+    || savedDraft?.data?.revision !== savedLocal.afterRevision
+    || savedDraft?.data?.summary !== quickSummary
+    || savedDraft?.data?.input?.audience !== "team"
+    || JSON.stringify(savedDraft?.data?.input?.recipients) !== "[]"
+    || JSON.stringify(snapshotProtectedProjectState(project, {
+      includeRuntimeState: false,
+      includeGraphIndex: true,
+    })) !== JSON.stringify(beforeQuickSave)
+  ) {
+    throw new Error("The packed Relay shortcut lost its draft or changed protected project state.");
   }
   process.stdout.write("Packed Project Hub and official agent-skills smoke test passed.\n");
 } finally {
@@ -1314,8 +1447,12 @@ function verifyInstalledAgentAssets(project, installed, packageVersion) {
       || countOccurrences(instructions, "<!-- mex-agent:skills:end -->") !== 1
       || !client.explicit.every((invocation) => instructions.includes(invocation))
       || client.foreignExplicit.some((invocation) => instructions.includes(invocation))
-      || !instructions.includes("MEX context used: <specific records/files/entities consulted>.")
+      || !instructions.includes("mention MEX and the relevant finding naturally in your explanation")
       || !instructions.includes("Skill activation is not approval for canonical actions.")
+      || !instructions.includes("mex logging --json")
+      || !instructions.includes('mex timeline --query "subject phrase" --file src/example.ts --limit 10 --json')
+      || !["significant", "checkpoints", "manual"].every((mode) => instructions.includes(mode))
+      || !instructions.includes("historical evidence")
     ) {
       throw new Error(`The ${client.name} setup instruction block was missing or not client-specific.`);
     }

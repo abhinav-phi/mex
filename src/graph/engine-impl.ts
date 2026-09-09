@@ -62,7 +62,7 @@ import {
   type CompilerSemanticInput,
   type CompilerStagedInput,
 } from "./extraction/index.js";
-import { FingerprintStore } from "./fingerprint-store.js";
+import { FingerprintStore, upsertFingerprintsInOwnedTransaction } from "./fingerprint-store.js";
 import { createFingerprintBuilder } from "./fingerprint.js";
 import { MIN_TOKENS } from "./config.js";
 import { minhashJaccard } from "./reconcile-engine.js";
@@ -105,6 +105,14 @@ export interface GraphEngineOptions {
 }
 
 interface GraphEngineInternalHooks {
+  /** Parent-owned workspace for cleanup after a candidate process aborts. */
+  sourceSpoolDirectory?: string;
+  /** Numeric construction progress; never carries source paths or content. */
+  onBuildProgress?: (progress: {
+    phase: "parse" | "resolve";
+    completed?: number;
+    total?: number;
+  }) => void;
   afterSemanticInputsStaged?: () => void;
   afterCompilerExtraction?: () => void;
   afterFinalSemanticInputRead?: (path: string) => void;
@@ -155,9 +163,13 @@ export class GraphSourceStagingError extends Error {
  * retained as strings in the maintenance process.
  */
 class GraphSourceSpool {
-  private readonly directory = mkdtempSync(join(tmpdir(), "mex-graph-stage-"));
+  private readonly directory: string;
   private readonly entries = new Map<string, string>();
   private disposed = false;
+
+  constructor(parentDirectory = tmpdir()) {
+    this.directory = mkdtempSync(join(parentDirectory, "mex-graph-stage-"));
+  }
 
   stage(relPath: string, source: string): void {
     if (this.disposed) throw new Error("The graph source spool is closed.");
@@ -448,14 +460,8 @@ class GraphEngineImpl implements GraphEngine {
   ): Omit<BuildResult, "durationMs"> {
     this.internal.beforePublication?.();
     const store = this.getStore(true);
-    const oldNodes = store.getAllNodes();
-    const oldAliases = store.getAllAliases();
-    const priorFingerprintStore = new FingerprintStore(this.db!);
-    const oldFingerprints = new Map<string, Fingerprint>();
-    for (const node of oldNodes) {
-      const fingerprint = priorFingerprintStore.get(node.id);
-      if (fingerprint) oldFingerprints.set(node.id, fingerprint);
-    }
+    const freshNodes = staged.files.flatMap((file) => file.nodes);
+    const continuity = planCompatibilityAliases(store, freshNodes, new FingerprintStore(this.db!));
     // Continuity reads above may be substantial on a mature index. Re-probe
     // only after they finish, at the final synchronous boundary before the
     // snapshot is constructed and its publication transaction begins.
@@ -520,9 +526,9 @@ class GraphEngineImpl implements GraphEngine {
         for (const binding of file.imports) store.insertImportBinding(binding);
       }
 
-      new FingerprintStore(this.db!).upsertMany(staged.fingerprints);
+      upsertFingerprintsInOwnedTransaction(this.db!, staged.fingerprints);
       createCompatibilityAliases(
-        store, oldNodes, oldAliases, oldFingerprints, new FingerprintStore(this.db!),
+        store, continuity, freshNodes, new FingerprintStore(this.db!),
       );
       store.rebuildSearchIndex();
       store.validateInvariants(expectedNodes);
@@ -604,7 +610,7 @@ async function stageCorpus(
   internal: GraphEngineInternalHooks = {},
   compilerExtraction?: CompilerExtractionOptions,
 ): Promise<StagedCorpus> {
-  const sourceSpool = new GraphSourceSpool();
+  const sourceSpool = new GraphSourceSpool(internal.sourceSpoolDirectory);
   try {
     const { files: discovered, skipped } = discoverSourceFiles(root, sourceFileAccess, sourceSpool);
     const configSources = discoverGraphConfigSources(root);
@@ -637,6 +643,12 @@ async function stageCorpus(
     }
     compilerInputs.sort((left, right) => compareCodePoints(left.filePath, right.filePath));
     internal.afterSemanticInputsStaged?.();
+    const reportParsed = (completed: number): void => internal.onBuildProgress?.({
+      phase: "parse",
+      completed,
+      ...(discovered.length > 0 ? { total: discovered.length } : {}),
+    });
+    reportParsed(0);
 
     let compiler: CompilerExtractionResult;
     const semanticInputLedger = createGraphSemanticInputLedger();
@@ -659,7 +671,7 @@ async function stageCorpus(
           }
           return source;
         },
-      });
+      }, reportParsed);
     } catch (error) {
       if (error instanceof GraphSourceStagingError) throw error;
       throw new GraphSourceStagingError([sourceStagingFailure(".", "read", error)]);
@@ -685,12 +697,15 @@ async function stageCorpus(
       .map((file) => detectLanguage(file.relPath)))];
     await loadGrammars([...treeLanguages, ...fallbackLanguages]);
 
+    let parsed = compiler.files.length;
     const files = discovered.map((file) => {
       const source = sourceSpool.read(file);
       const compilerFile = compilerByPath.get(file.relPath);
-      return compilerFile
+      const staged = compilerFile
         ? stageCompilerFile(file, source, compilerFile)
         : stageTreeFile(file, source);
+      if (!compilerFile) reportParsed(++parsed);
+      return staged;
     });
     compilerByPath.clear();
     // Release project/file extraction arrays after their durable staged shape
@@ -698,6 +713,7 @@ async function stageCorpus(
     compiler.files.length = 0;
     compiler.projects.length = 0;
 
+    internal.onBuildProgress?.({ phase: "resolve" });
     stageFrameworkAndFallbackResolution(root, files, configSources, sourceSpool);
     validateStagedCorpus(files);
     const fingerprints = stageFingerprints(files, sourceSpool);
@@ -1017,6 +1033,23 @@ function stageCompilerFile(
   const edges: GraphEdge[] = [];
   const references: UnresolvedRefRecord[] = [];
   for (const ref of extraction.references) {
+    if (ref.status === "resolved" && ref.targetId) {
+      edges.push({
+        source: ref.sourceId,
+        target: ref.targetId,
+        kind: ref.kind,
+        metadata: { targetName: ref.targetName, targetQualifiedName: ref.targetQualifiedName },
+        line: ref.line + 1,
+        column: ref.column,
+        provenance: ref.provenance,
+        confidence: ref.confidence,
+        resolutionMethod: ref.resolutionMethod,
+        evidence: [ref.evidence],
+      });
+      continue;
+    }
+    // Resolved compiler references are fully represented by the edge above.
+    // Keep fallback references separately: import hydration still needs them.
     const reference: UnresolvedRefRecord = {
       refKey: ref.id,
       fromNodeId: ref.sourceId,
@@ -1036,20 +1069,6 @@ function stageCompilerFile(
       resolver: ref.resolutionMethod,
     };
     references.push(reference);
-    if (ref.status === "resolved" && ref.targetId) {
-      edges.push({
-        source: ref.sourceId,
-        target: ref.targetId,
-        kind: ref.kind,
-        metadata: { targetName: ref.targetName, targetQualifiedName: ref.targetQualifiedName },
-        line: ref.line + 1,
-        column: ref.column,
-        provenance: ref.provenance,
-        confidence: ref.confidence,
-        resolutionMethod: ref.resolutionMethod,
-        evidence: [ref.evidence],
-      });
-    }
   }
   const imports: ImportBindingRecord[] = extraction.importBindings.map((binding) => ({
     bindingKey: binding.id,
@@ -1200,16 +1219,32 @@ function fallbackBindings(reference: UnresolvedRefRecord): Array<{ localName: st
   });
 }
 
-function createCompatibilityAliases(
+interface CompatibilityAliasPlan {
+  oldAliases: NodeAliasRecord[];
+  canonicalMap: Map<string, string>;
+  direct: NodeAliasRecord[];
+  fingerprints: Array<{ id: string; kind: GraphNode["kind"]; baseline: Fingerprint }>;
+}
+
+/** Plan continuity while old rows exist; retain only data needed after replacement. */
+function planCompatibilityAliases(
   store: GraphStore,
-  oldNodes: GraphNode[],
-  oldAliases: NodeAliasRecord[],
-  oldFingerprints: ReadonlyMap<string, Fingerprint>,
-  freshFingerprints: FingerprintStore,
-): void {
-  const fresh = store.getAllNodes();
+  fresh: readonly GraphNode[],
+  fingerprints: FingerprintStore,
+): CompatibilityAliasPlan {
   const freshIds = new Set(fresh.map((node) => node.id));
-  const freshById = new Map(fresh.map((node) => [node.id, node]));
+  const oldIds = store.getAllNodeIds();
+  const plan: CompatibilityAliasPlan = {
+    oldAliases: store.getAllAliases(),
+    canonicalMap: new Map(oldIds.filter((id) => freshIds.has(id)).map((id) => [id, id])),
+    direct: [],
+    fingerprints: [],
+  };
+  // Body edits normally keep every identity. Avoid loading old descriptions,
+  // signatures and fingerprints merely to discover that each ID survived.
+  if (plan.canonicalMap.size === oldIds.length) return plan;
+
+  const oldNodes = store.getAllNodes();
   const byQualified = groupUnique(fresh, (node) => `${node.filePath}\0${node.kind}\0${node.qualifiedName}`);
   const oldBySignature = groupUnique(
     oldNodes.filter((node) => normalizedSignature(node.signature).length > 0),
@@ -1220,12 +1255,8 @@ function createCompatibilityAliases(
     compatibilitySignatureKey,
   );
   const byBody = groupUnique(fresh.filter((node) => node.bodyHash), (node) => `${node.kind}\0${node.bodyHash}`);
-  const canonicalMap = new Map<string, string>();
   for (const old of oldNodes) {
-    if (freshIds.has(old.id)) {
-      canonicalMap.set(old.id, old.id);
-      continue;
-    }
+    if (freshIds.has(old.id)) continue;
     const qualified = byQualified.get(`${old.filePath}\0${old.kind}\0${old.qualifiedName}`);
     const signatureKey = normalizedSignature(old.signature) ? compatibilitySignatureKey(old) : undefined;
     const oldSignature = signatureKey ? oldBySignature.get(signatureKey) : undefined;
@@ -1235,13 +1266,45 @@ function createCompatibilityAliases(
     const match = qualified?.length === 1 ? { node: qualified[0]!, method: "qualified-name", confidence: 1 }
       : signature?.length === 1 ? { node: signature[0]!, method: "signature", confidence: 0.98 }
       : body?.length === 1 ? { node: body[0]!, method: "body-hash", confidence: 0.95 }
-      : fingerprintAliasMatch(old, oldFingerprints.get(old.id), freshFingerprints, freshById);
-    if (!match) continue;
-    store.insertAlias(old.id, match.node.id, match.method, match.confidence);
-    canonicalMap.set(old.id, match.node.id);
+      : undefined;
+    if (match) {
+      plan.direct.push({
+        aliasId: old.id,
+        canonicalNodeId: match.node.id,
+        matchMethod: match.method,
+        confidence: match.confidence,
+      });
+      plan.canonicalMap.set(old.id, match.node.id);
+    } else {
+      const baseline = fingerprints.get(old.id);
+      if (baseline && baseline.tokenCount >= MIN_TOKENS) {
+        plan.fingerprints.push({ id: old.id, kind: old.kind, baseline });
+      }
+    }
   }
-  for (const alias of oldAliases) {
-    const canonical = canonicalMap.get(alias.canonicalNodeId);
+  return plan;
+}
+
+function createCompatibilityAliases(
+  store: GraphStore,
+  plan: CompatibilityAliasPlan,
+  fresh: readonly GraphNode[],
+  freshFingerprints: FingerprintStore,
+): void {
+  for (const alias of plan.direct) {
+    store.insertAlias(alias.aliasId, alias.canonicalNodeId, alias.matchMethod, alias.confidence);
+  }
+  if (plan.fingerprints.length > 0) {
+    const freshById = new Map(fresh.map((node) => [node.id, node]));
+    for (const old of plan.fingerprints) {
+      const match = fingerprintAliasMatch(old, old.baseline, freshFingerprints, freshById);
+      if (!match) continue;
+      store.insertAlias(old.id, match.node.id, match.method, match.confidence);
+      plan.canonicalMap.set(old.id, match.node.id);
+    }
+  }
+  for (const alias of plan.oldAliases) {
+    const canonical = plan.canonicalMap.get(alias.canonicalNodeId);
     if (canonical) store.insertAlias(alias.aliasId, canonical, alias.matchMethod, alias.confidence);
   }
 }
@@ -1256,7 +1319,7 @@ function compatibilitySignatureKey(node: GraphNode): string {
 }
 
 function fingerprintAliasMatch(
-  old: GraphNode,
+  old: Pick<GraphNode, "kind">,
   baseline: Fingerprint | undefined,
   freshFingerprints: FingerprintStore,
   freshById: ReadonlyMap<string, GraphNode>,
@@ -1277,7 +1340,7 @@ function fingerprintAliasMatch(
   return { node: best.node, method: "fingerprint", confidence: best.score };
 }
 
-function groupUnique<T>(values: T[], key: (value: T) => string): Map<string, T[]> {
+function groupUnique<T>(values: readonly T[], key: (value: T) => string): Map<string, T[]> {
   const grouped = new Map<string, T[]>();
   for (const value of values) {
     const bucket = grouped.get(key(value)) ?? [];

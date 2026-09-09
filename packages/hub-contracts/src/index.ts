@@ -97,6 +97,19 @@ const hubJobId = z.string()
   .regex(/^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$/, "Invalid Hub job ID.");
 const revision = z.string().regex(/^[a-f0-9]{64}$/, "Invalid SHA-256 revision.");
 
+export const AgentLoggingModeSchema = z.enum(["significant", "checkpoints", "manual"]);
+export const AgentLoggingPolicySchema = z.discriminatedUnion("source", [
+  z.object({ mode: z.literal("significant"), revision: z.null(), source: z.literal("default") }).strict(),
+  z.object({ mode: AgentLoggingModeSchema, revision, source: z.literal("local") }).strict(),
+]);
+export const AgentLoggingUpdateRequestSchema = z.object({
+  mode: AgentLoggingModeSchema,
+  expectedRevision: revision.nullable(),
+}).strict();
+export type AgentLoggingMode = z.infer<typeof AgentLoggingModeSchema>;
+export type AgentLoggingPolicy = z.infer<typeof AgentLoggingPolicySchema>;
+export type AgentLoggingUpdateRequest = z.infer<typeof AgentLoggingUpdateRequestSchema>;
+
 /** Shared primitives for route-private contract entry points. */
 export const HubIsoTimestampSchema = isoTimestamp;
 export const HubBoundedReasonSchema = boundedReason;
@@ -623,6 +636,7 @@ const teamIdentityActivityAction = z.discriminatedUnion("kind", [
   teamMemberAddAction,
   teamMemberUpdateAction,
   z.object({ kind: z.literal("member.deactivate"), memberId: teamMemberId }).strict(),
+  z.object({ kind: z.literal("member.reactivate"), memberId: teamMemberId }).strict(),
   z.object({ kind: z.literal("member.select"), memberId: teamMemberId }).strict(),
   z.object({ kind: z.literal("member.clear") }).strict(),
   z.object({
@@ -837,6 +851,12 @@ export const InboxSpecKindSchema = z.enum([
   "acceptance_criterion",
 ]);
 
+export const InboxKnowledgeKindSchema = z.enum([
+  "architecture", "component", "convention", "decision", "pattern", "guide",
+]);
+export const InboxEntityKindSchema = z.union([InboxKnowledgeKindSchema, InboxSpecKindSchema]);
+const inboxChangeKind = z.enum(["spec.create", "spec.update", "knowledge.create", "knowledge.update"]);
+
 export const InboxProposalStateSchema = z.enum([
   "pending",
   "approved",
@@ -950,9 +970,23 @@ export const InboxSpecUpdateChangeSchema = z.object({
   patch: inboxSpecUpdatePatch,
 }).strict();
 
+export const InboxKnowledgeCreateChangeSchema = inboxSpecCreateChangeObject
+  .omit({ relation: true })
+  .extend({ kind: z.literal("knowledge.create"), entityKind: InboxKnowledgeKindSchema })
+  .strict();
+
+export const InboxKnowledgeUpdateChangeSchema = z.object({
+  kind: z.literal("knowledge.update"),
+  target: inboxSpecRef.extend({ kind: InboxKnowledgeKindSchema }),
+  patch: inboxSpecUpdatePatch,
+}).strict();
+
+// Compatibility name: existing Spec envelopes retain their exact discriminators.
 export const InboxSpecChangeSchema = z.union([
   InboxSpecCreateChangeSchema,
   InboxSpecUpdateChangeSchema,
+  InboxKnowledgeCreateChangeSchema,
+  InboxKnowledgeUpdateChangeSchema,
 ]);
 
 const inboxEntityRevisionExpectation = z.object({
@@ -1014,10 +1048,10 @@ export const InboxEvidenceRefSchema = z.discriminatedUnion("kind", [
 ]);
 
 function inboxSpecDependencyIds(change: z.infer<typeof InboxSpecChangeSchema>): string[] {
-  if (change.kind === "spec.update") return [change.target.id];
+  if (change.kind === "spec.update" || change.kind === "knowledge.update") return [change.target.id];
   return [...new Set([
     ...(change.topics ?? []),
-    ...(change.relation ? [change.relation.target.id] : []),
+    ...(change.kind === "spec.create" && change.relation ? [change.relation.target.id] : []),
   ])].sort();
 }
 
@@ -1036,7 +1070,7 @@ function validateInboxDependencyCoverage(
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["targetRevisions"],
-      message: "Exact revisions must cover every Spec dependency once.",
+      message: "Exact revisions must cover every knowledge dependency once.",
     });
   }
 }
@@ -1060,8 +1094,8 @@ export const InboxDraftSummarySchema = z.object({
   id: InboxDraftIdSchema,
   revision,
   updatedAt: isoTimestamp,
-  changeKind: z.enum(["spec.create", "spec.update"]),
-  entityKind: InboxSpecKindSchema,
+  changeKind: inboxChangeKind,
+  entityKind: InboxEntityKindSchema,
   title: inboxText(512),
   rationaleExcerpt: utf8Text(240),
 }).strict();
@@ -1083,8 +1117,8 @@ const inboxProposalSummaryObject = z.object({
   revision,
   state: InboxProposalStateSchema,
   author: TeamActorRefSchema,
-  changeKind: z.enum(["spec.create", "spec.update"]),
-  entityKind: InboxSpecKindSchema,
+  changeKind: inboxChangeKind,
+  entityKind: InboxEntityKindSchema,
   title: inboxText(512),
   rationaleExcerpt: utf8Text(240),
   reviewer: TeamActorRefSchema.optional(),
@@ -1416,11 +1450,11 @@ const relayServiceActorRef = z.discriminatedUnion("kind", [
     context.addIssue({ code: z.ZodIssueCode.custom, message: "A Relay service Git actor requires a name or email." });
   }
 });
-const relayMemberSet = z.array(relayMemberRef).min(1).max(32).refine(
+const relayMemberSet = z.array(relayMemberRef).max(32).refine(
   (values) => new Set(values.map((value) => value.memberId)).size === values.length,
   "Relay recipients must be unique Members.",
 );
-const relayRecordedRecipientSet = z.array(relayRecordedActorRef).min(1).max(64).refine(
+const relayRecordedRecipientSet = z.array(relayRecordedActorRef).max(64).refine(
   (values) => new Set(values.map((value) => JSON.stringify(value))).size === values.length,
   "Recorded Relay recipients must be unique Actor references.",
 );
@@ -1559,6 +1593,7 @@ const relayRecordedEvidenceRef = z.discriminatedUnion("kind", [
 const relayRecordedEvidenceList = z.array(relayRecordedEvidenceRef).max(65);
 
 const relayDraftInputObject = z.object({
+  audience: z.enum(["team", "members"]).optional(),
   recipients: relayMemberSet,
   summary: relaySingleLineText(8 * 1024).refine((value) => value.length > 0, "Relay summary is required."),
   completed: relayTextList.default([]),
@@ -1572,7 +1607,14 @@ const relayDraftInputObject = z.object({
   nextActions: relayTextList.default([]),
 }).strict();
 
+function validateRelayDraftAudience(value: { audience?: "team" | "members"; recipients: readonly unknown[] }, context: z.RefinementCtx): void {
+  if (value.audience === "team" && value.recipients.length !== 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["recipients"], message: "Open-to-team Relays cannot also name recipients." });
+  }
+}
+
 const RelayDraftInputSchema = relayDraftInputObject.superRefine((value, context) => {
+  validateRelayDraftAudience(value, context);
   if (value.evidence.length > 64) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -1585,7 +1627,8 @@ const RelayDraftInputSchema = relayDraftInputObject.superRefine((value, context)
   }
 });
 
-const RelayDraftSummarySchema = z.object({
+const relayDraftSummaryObject = z.object({
+  audience: z.enum(["team", "members"]).optional(),
   id: RelayDraftIdSchema,
   revision,
   updatedAt: isoTimestamp,
@@ -1593,15 +1636,24 @@ const RelayDraftSummarySchema = z.object({
   recipients: relayMemberSet,
 }).strict();
 
-const RelayDraftDetailSchema = RelayDraftSummarySchema.extend({
+const RelayDraftSummarySchema = relayDraftSummaryObject.superRefine(validateRelayDraftAudience);
+
+const RelayDraftDetailSchema = relayDraftSummaryObject.extend({
   // Stored legacy drafts can grow slightly when sparse defaults are expanded
   // and Workstream is projected into reserved evidence. Reads stay field-
   // bounded; only caller-authored mutation input retains the 64 KiB ceiling.
   input: relayDraftInputObject,
-}).strict();
+}).strict().superRefine((value, context) => {
+  validateRelayDraftAudience(value, context);
+  validateRelayDraftAudience(value.input, context);
+  if (value.audience !== value.input.audience) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["audience"], message: "The draft audience must match its input." });
+  }
+});
 
 const relayDetailObject = z.object({
-  schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+  schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
+  audience: z.enum(["team", "members"]).optional(),
   ref: z.object({
     id: RelayIdSchema,
     kind: z.literal("relay"),
@@ -1635,7 +1687,8 @@ const relayDetailObject = z.object({
 
 function validateRelayLifecycle(
   value: {
-    schemaVersion: 1 | 2 | 3;
+    schemaVersion: 1 | 2 | 3 | 4;
+    audience?: "team" | "members";
     ref: { id: string };
     sourcePath: string;
     state: "published" | "acknowledged" | "closed";
@@ -1657,6 +1710,13 @@ function validateRelayLifecycle(
   if (value.sourcePath !== `.mex/relays/${value.ref.id}.md`) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["sourcePath"], message: "Relay source path must match its ID." });
   }
+  if (value.schemaVersion === 4) {
+    if (value.audience !== "team" || value.recipients.length !== 0) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["audience"], message: "Schema-v4 Relays must be open to team with no named recipients." });
+    }
+  } else if (value.audience !== undefined || value.recipients.length === 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["recipients"], message: "Legacy Relays require named recipients and omit audience." });
+  }
   if (value.schemaVersion === 1) {
     if (value.publishedAt !== null || value.publishedRepoState !== null || value.workstream === null) {
       context.addIssue({ code: z.ZodIssueCode.custom, message: "Schema-v1 Relays require a Workstream and omit publication time and repository state." });
@@ -1670,7 +1730,7 @@ function validateRelayLifecycle(
   } else if (value.publishedAt === null || value.publishedRepoState === null || value.workstream !== null) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "Schema-v3 Relays require publication time and repository state, without a Workstream." });
   }
-  if (value.schemaVersion === 2 || value.schemaVersion === 3) {
+  if (value.schemaVersion >= 2) {
     const v2MemberIds = value.recipients.flatMap((recipient) => recipient.kind === "member" ? [recipient.memberId] : []);
     if (value.recipients.length > 32
       || v2MemberIds.length !== value.recipients.length
@@ -1698,7 +1758,7 @@ function validateRelayLifecycle(
   if ((value.evidence?.length ?? 0) > 64) {
     const first = value.evidence?.[0];
     if (
-      value.schemaVersion !== 3
+      (value.schemaVersion !== 3 && value.schemaVersion !== 4)
       || first?.kind !== "entity"
       || first.entity.kind !== "workstream"
       || !teamWorkstreamId.safeParse(first.entity.id).success
@@ -1738,6 +1798,7 @@ function validateRelayLifecycle(
 const RelayDetailSchema = relayDetailObject.superRefine(validateRelayLifecycle);
 const RelaySummarySchema = relayDetailObject.pick({
   schemaVersion: true,
+  audience: true,
   ref: true,
   sourcePath: true,
   revision: true,
@@ -1841,6 +1902,7 @@ const RelayOperationPreviewRequestSchema = z.object({
     ? `local:${value.action.draftId}`
     : null;
   if (value.action.kind === "relay.draft.save") {
+    validateRelayDraftAudience(value.action.draft, context);
     if (value.action.draft.evidence.length > 64 && value.action.draftId === undefined) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -1862,7 +1924,6 @@ const RelayOperationPreviewRequestSchema = z.object({
     const legacyWorkstreamTargets = targets.filter((target) =>
       /^artifact:\.mex\/workstreams\/ws_[0-7][0-9A-HJKMNP-TV-Z]{25}\.md$/.test(target));
     if (localTargets.length !== 1
-      || memberTargets.length < 1
       || memberTargets.length > 32
       || targets.length !== localTargets.length + memberTargets.length) {
       context.addIssue({
@@ -2737,6 +2798,48 @@ export const WikiRelationSchema = z.object({
   note: wikiDisplayText(2_048, 0).nullable(),
 }).strict();
 
+/** A bounded whole-Context view, never a join of separately observed pages. */
+export const WikiGraphResponseSchema = z.object({
+  indexedRevision: revision,
+  observedAt: isoTimestamp,
+  nodes: z.array(WikiEntitySummarySchema).max(100),
+  relations: z.array(WikiRelationSchema).max(500),
+  coverage: z.object({
+    nodeLimit: z.literal(100),
+    relationLimit: z.literal(500),
+    nodesTruncated: z.boolean(),
+    relationsTruncated: z.boolean(),
+  }).strict(),
+}).strict().superRefine((value, context) => {
+  const ids = new Set(value.nodes.map((node) => node.id));
+  if (ids.size !== value.nodes.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["nodes"], message: "Context nodes must have distinct identities." });
+  }
+  if (value.relations.some((relation) => !ids.has(relation.source.id) || !ids.has(relation.target.id))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["relations"], message: "Context relationships must connect included nodes." });
+  }
+});
+
+export const WikiGroundedCodeResponseSchema = z.object({
+  indexedRevision: revision,
+  observedAt: isoTimestamp,
+  entityId: WikiEntityIdSchema,
+  graphRevision: revision.nullable(),
+  groundings: z.array(z.object({
+    requestedNode: wikiDisplayText(512),
+    resolvedNode: wikiDisplayText(512).nullable(),
+    health: WikiGroundingHealthSchema,
+    symbol: GraphSymbolSchema.nullable(),
+  }).strict()).max(50),
+  truncated: z.boolean(),
+}).strict().superRefine((value, context) => {
+  for (const grounding of value.groundings) {
+    if (grounding.symbol !== null && (value.graphRevision === null || grounding.symbol.id !== grounding.resolvedNode)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["groundings"], message: "A code symbol requires its matching resolved identity and Graph revision." });
+    }
+  }
+});
+
 export const WikiRelationHitSchema = z.object({
   direction: z.enum(["outgoing", "incoming"]),
   relation: WikiRelationSchema,
@@ -3169,6 +3272,10 @@ export type TeamOperationApplyRequest = z.infer<typeof TeamOperationApplyRequest
 export type TeamActivityEvent = z.infer<typeof TeamActivityEventSchema>;
 export type TeamOperationApplyResponse = z.infer<typeof TeamOperationApplyResponseSchema>;
 export type InboxSpecKind = z.infer<typeof InboxSpecKindSchema>;
+export type InboxKnowledgeKind = z.infer<typeof InboxKnowledgeKindSchema>;
+export type InboxEntityKind = z.infer<typeof InboxEntityKindSchema>;
+export type InboxKnowledgeCreateChange = z.infer<typeof InboxKnowledgeCreateChangeSchema>;
+export type InboxKnowledgeUpdateChange = z.infer<typeof InboxKnowledgeUpdateChangeSchema>;
 export type InboxProposalState = z.infer<typeof InboxProposalStateSchema>;
 export type InboxDraftId = z.infer<typeof InboxDraftIdSchema>;
 export type InboxProposalId = z.infer<typeof InboxProposalIdSchema>;
@@ -3253,6 +3360,8 @@ export type WikiRelationHit = z.infer<typeof WikiRelationHitSchema>;
 export type WikiRelationsRequest = z.infer<typeof WikiRelationsRequestSchema>;
 export type WikiBacklinksRequest = z.infer<typeof WikiBacklinksRequestSchema>;
 export type WikiRelationsResponse = z.infer<typeof WikiRelationsResponseSchema>;
+export type WikiGraphResponse = z.infer<typeof WikiGraphResponseSchema>;
+export type WikiGroundedCodeResponse = z.infer<typeof WikiGroundedCodeResponseSchema>;
 export type WikiBacklinksResponse = z.infer<typeof WikiBacklinksResponseSchema>;
 export type CodeKnowledgeRequest = z.infer<typeof CodeKnowledgeRequestSchema>;
 export type CodeKnowledgeHit = z.infer<typeof CodeKnowledgeHitSchema>;

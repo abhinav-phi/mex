@@ -5,6 +5,13 @@
   gap: 22px;
 }
 
+.headerActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
 .liveStatus {
   min-height: 0;
   margin-top: -14px;

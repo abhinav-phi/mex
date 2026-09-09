@@ -8,7 +8,7 @@
 export const RELEASE_ROUTE_MANIFEST_HINTS = Object.freeze({
   home: Object.freeze(["HomePage", "hub-contracts/dist/overview"]),
   search: Object.freeze(["SearchPage"]),
-  knowledge: Object.freeze(["KnowledgePage"]),
+  knowledge: Object.freeze(["ContextPage"]),
   knowledgeDetail: Object.freeze(["KnowledgePage"]),
   code: Object.freeze(["SearchPage"]),
   codeSymbol: Object.freeze(["SymbolPage"]),
@@ -23,6 +23,7 @@ export const RELEASE_ROUTE_MANIFEST_HINTS = Object.freeze({
   activity: Object.freeze(["ActivityPage"]),
   jobs: Object.freeze(["JobsPage"]),
   health: Object.freeze(["HealthPage"]),
+  settings: Object.freeze(["SettingsPage"]),
   notFound: Object.freeze(["CapabilityPage"]),
 });
 
@@ -45,6 +46,7 @@ export const RELEASE_ROUTE_PATTERNS = Object.freeze({
   activity: "activity",
   jobs: "jobs",
   health: "health",
+  settings: "settings",
   notFound: "*",
 });
 
@@ -70,6 +72,7 @@ export function releaseWorkbenchPaths({ knowledgeEntityId, specEntityId, codeSym
     activity: "/activity",
     jobs: "/jobs",
     health: "/health",
+    settings: "/settings",
     notFound: "/release-benchmark-not-found",
   };
 }

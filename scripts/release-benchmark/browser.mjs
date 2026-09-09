@@ -100,9 +100,15 @@ export async function measureWorkbenchHeap({
   };
 }
 
-async function assertReleaseRouteReady(page, route, teamFixture) {
+export async function assertReleaseRouteReady(page, route, teamFixture) {
   if (route === "home") {
     await page.locator('[data-overview-workbench="ready"]')
+      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
+  }
+  if (route === "knowledge") {
+    const graph = page.getByLabel("Context graph", { exact: true });
+    await graph.waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
+    await graph.getByRole("button", { name: /^Release benchmark knowledge 0000 · /u })
       .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
   }
   if (route === "workstreams") {
@@ -199,6 +205,14 @@ async function assertReleaseRouteReady(page, route, teamFixture) {
     await page.locator('[data-activity-workbench="ready"]')
       .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
     await page.locator('[role="article"][data-source]').first()
+      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
+  }
+  if (route === "settings") {
+    await page.getByRole("heading", { name: "Agent logging", exact: true })
+      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
+    const choices = page.getByRole("group", { name: "When to write notes", exact: true });
+    await choices.waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
+    await choices.locator('input[name="logging-mode"]:checked')
       .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
   }
 }

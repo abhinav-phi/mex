@@ -1,6 +1,6 @@
 {
   "name": "mex-agent",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Persistent project memory and deterministic local code graphs for AI coding agents",
   "type": "module",
   "main": "./dist/index.js",
@@ -24,6 +24,7 @@
     "templates",
     "LICENSE",
     "README.md",
+    "TELEMETRY.md",
     "COMPATIBILITY.md"
   ],
   "keywords": [
@@ -72,7 +73,9 @@
     "benchmark:graph-status": "npm run build && node scripts/benchmark-graph-status.mjs",
     "benchmark:release": "npm run build && node scripts/release-benchmark/enforce.mjs --output test-results/release-benchmark/report.json",
     "typecheck": "npm run typecheck --workspace @mex/hub-contracts && tsc --noEmit && npm run typecheck --workspace @mex/hub-web",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "benchmark:telemetry": "npm run build && node scripts/benchmark-telemetry.mjs",
+    "benchmark:telemetry:test": "node --test scripts/benchmark-telemetry.test.js"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.17",
@@ -82,7 +85,6 @@
     "glob": "^13.0.6",
     "hono": "^4.13.3",
     "ink": "^7.0.3",
-    "posthog-node": "^5.21.2",
     "react": "^19.2.6",
     "remark-frontmatter": "^5.0.0",
     "remark-parse": "^11.0.0",

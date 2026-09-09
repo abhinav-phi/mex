@@ -5,7 +5,8 @@ import { validateRelationRef, type WikiRelationRef } from "./relation.js";
 import { validateSource, type WikiSource } from "./source.js";
 import { isContentHash } from "./hash.js";
 import { isCanonicalRepoPath } from "./path.js";
-import { WIKI_ENTITY_TYPES, WIKI_LIFECYCLE_STATES, type WikiEntityType, type WikiLifecycleState } from "./entity.js";
+import { WIKI_ENTITY_TYPES, WIKI_LIFECYCLE_STATES, type WikiEntityType, type WikiLifecycleState, type WikiProvenance } from "./entity.js";
+import { MAX_AUTHORING_SOURCES, validateAuthoringProvenance, validateAuthoringSources } from "./authoring-evidence.js";
 import {
   contextDiagnostic,
   isPlainObject,
@@ -146,6 +147,8 @@ export interface CreateEntryPayload {
   topics?: EntityId[];
   relations?: WikiRelationRef[];
   sources?: WikiSource[];
+  /** Explicit original producer attribution; omitted for legacy creations. */
+  provenance?: WikiProvenance;
   groundsTo?: WikiGrounding[];
   /**
    * The entity's open metadata map, §8.3's extension point.
@@ -168,6 +171,8 @@ export interface UpdateEntryPayload {
   title?: string;
   summary?: string;
   body?: string;
+  /** Append evidence without replacing the original producer or source history. */
+  appendSources?: WikiSource[];
 }
 
 /**
@@ -383,12 +388,17 @@ const createEntryShape = validateShape<CreateEntryPayload>({
   topics: optional(validateArray(entityIdValidator)),
   relations: optional(validateArray(validateRelationRef)),
   sources: optional(validateArray(validateSource)),
+  provenance: optional(validateAuthoringProvenance),
   groundsTo: optional(validateArray(validateGrounding)),
   metadata: optional(metadataMapValidator),
   headingDepth: optional(validateInteger({ min: 1, max: 6 })),
 });
 
 const createEntryValidator: Validator<CreateEntryPayload> = (value, context) => {
+  if (isPlainObject(value) && value.sources !== undefined) {
+    const evidence = validateAuthoringSources(value.sources, { ...context, path: `${context.path}.sources` }, MAX_AUTHORING_SOURCES);
+    if (!evidence.ok) return evidence;
+  }
   const result = createEntryShape(value, context);
   if (!result.ok) return result;
   const payload = result.value;
@@ -431,11 +441,13 @@ const updateEntryValidator: Validator<UpdateEntryPayload> = (value, context) => 
     title: optional(validateString()),
     summary: optional(validateString()),
     body: optional(validateString({ allowEmpty: true })),
+    appendSources: optional(validateAuthoringSources),
   });
   const result = shape(value, context);
   if (!result.ok) return result;
-  if (result.value.title === undefined && result.value.summary === undefined && result.value.body === undefined) {
-    return reject(context, "INVALID_OPERATION_PAYLOAD", "update-entry must change at least one of title, summary or body.");
+  if (result.value.title === undefined && result.value.summary === undefined && result.value.body === undefined
+    && (result.value.appendSources?.length ?? 0) === 0) {
+    return reject(context, "INVALID_OPERATION_PAYLOAD", "update-entry must change title, summary, body, or append evidence.");
   }
   return result;
 };

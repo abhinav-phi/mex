@@ -11,12 +11,12 @@ edges:
     condition: "when the regression involves Hub routes, browser sessions, or jobs"
   - target: "patterns/safe-graph-snapshot-evolution.md"
     condition: "when changing Graph maintenance or corpus inspection"
-last_updated: 2026-09-03
+last_updated: 2026-09-09
 mex:
   id: mx_01M1M0CJNG4SW0WCJF3NB547HE
   type: pattern
   status: promoted
-  revision: 3
+  revision: 6
   title: release-performance-gate
   grounds_to:
     - node: function:5f86a557c717597b411a71a82c000ded
@@ -87,9 +87,29 @@ calibration environment.
   pagination.
 - Cross-tab job discovery must be event-driven. Do not restore continuous
   polling to repair cache invalidation.
-- Corpus byte caps prevent runaway allocation, but maintenance should also
-  release source bodies and parser state as each file or bounded compiler batch
-  completes.
+- Corpus byte caps bound admitted input, not process RAM. Compiler dependencies,
+  AST/checker state, graph materialization and native storage can amplify that
+  input; measure peak working set separately from post-cleanup retained memory.
+  A low heap cap can abort extraction rather than make it memory-efficient.
+- Synthetic fixture size is not repository scale. The current 48-file largest
+  fixture missed a real 708-file fingerprint write dominated by SQLite nested
+  savepoint bookkeeping. Separate fingerprint computation from persistence,
+  inspect native stacks, and verify both output equality and failure rollback.
+  See the [2026-09-09 investigation](../../docs/design/code-graph-resource-investigation.md).
+- A maintenance child must be included in aggregate CPU/RSS measurements.
+  Measure real HTTP/cancel responsiveness and parent-owned temporary cleanup;
+  fatal heap exhaustion bypasses JavaScript `finally` blocks. Process isolation
+  alone is not a reduction in total work or peak memory.
+  The release sampler now sums Hub and observed descendants. RSS can count
+  shared pages twice; sampled CPU can miss short-lived children and final exit
+  work. The separate graph characterization exercises overlapping projects,
+  installed declarations, inferred JavaScript and actual executable edits;
+  it does not recalibrate the frozen release gate.
+- Observe maintenance completion through the same bounded event subscription as
+  the Hub UI. Aggressive status polling opens extra SQLite readers once process
+  isolation makes the Hub responsive, adding observer work to the operation.
+  Keep POST-to-terminal elapsed time and child CPU/RSS included, retain the
+  absolute deadline, and record the observation method in report provenance.
 - Back-to-back confirmation processes on one hosted VM share CPU steal,
   throttling, and I/O contention. Keep the raw reports as artifacts, pass only
   a bounded retry decision between jobs, and make missing or same-allocation
@@ -98,6 +118,25 @@ calibration environment.
   budget. Replacing it with a real lazy workbench should initially fail only
   that route's owned leaves; do not reinterpret the placeholder budget as a
   calibration result.
+- A schema-valid pinned measurement report can fail enforcement because a new
+  route's owned budget leaves are missing. Verify its exact raw-report hash,
+  runner, commit, schema, and samples before using it to calibrate only those
+  leaves with the frozen formula; an operationally invalid report is not
+  calibration evidence. A hard `budget_missing` failure suppresses runtime
+  confirmation, so other first-pass crossings remain unconfirmed. Run ordinary
+  enforcement again after calibration instead of widening existing budgets or
+  treating the completed measurement as a green gate. PR #180's Settings-only
+  correction is recorded in `docs/design/settings-heap-calibration.json`.
+- Process isolation can deliberately trade small-job latency for responsiveness
+  and shorter compiler-memory lifetime. Confirm the regression on independent
+  pinned runners, distinguish peak aggregate RSS from surviving-parent RSS, and
+  record explicit acceptance of the product tradeoff before recalibration.
+  Use the first healthy report and existing formula for only the accepted,
+  confirmed timing leaves; restore their old values in the frozen-budget hash
+  projection so every unrelated limit stays protected. A local same-code
+  comparison explains the cost but never supplies release calibration numbers.
+  PR #180 retains both runner attempts in
+  `docs/design/graph-maintenance-timing-calibration.json`.
 
 ## Verify
 
@@ -119,6 +158,10 @@ and distinct hosted-job allocations; do not widen a budget until the retained
 raw samples show a real regression or stable shift.
 
 ## Update Scaffold
+
+The 2026-09-09 revision records valid calibration versus successful enforcement,
+and the explicitly accepted startup cost of graph process isolation. Existing
+grounding fingerprints and `bodyHash` baselines are retained unchanged.
 
 - [ ] Update `.mex/ROUTER.md` when the benchmark surface or pinned runner changes
 - [ ] Update `docs/design/release-performance-baseline.md` with the retained calibration

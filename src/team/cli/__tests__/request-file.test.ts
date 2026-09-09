@@ -35,6 +35,11 @@ describe("Team CLI request files", () => {
       action: { kind: "member.deactivate", memberId: MEMBER_ID },
       expectedRevisions: [memberExpectation()],
     }],
+    ["member.reactivate", {
+      operationId: "member-reactivate-001",
+      action: { kind: "member.reactivate", memberId: MEMBER_ID },
+      expectedRevisions: [memberExpectation()],
+    }],
     ["member.select", {
       operationId: "member-select-001",
       action: { kind: "member.select", memberId: MEMBER_ID },

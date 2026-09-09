@@ -10,7 +10,7 @@
 import { createHash } from "node:crypto";
 import type { EdgeKind, GraphEdge, GraphNode, Language, NodeKind, ReferenceKind } from "../types.js";
 import { identifierComponents, isLowValueGraphPath, planGraphQuery } from "../retrieval/query.js";
-import type { SqliteDatabase } from "./sqlite.js";
+import type { SqliteDatabase, SqliteStatement } from "./sqlite.js";
 
 /** An unresolved reference row: a name a node points at, bound after indexing. */
 export interface UnresolvedRefRecord {
@@ -233,7 +233,32 @@ function strongerEdge(left: GraphEdge, right: GraphEdge): GraphEdge {
   return canonicalString(edgeSupport(right)) < canonicalString(edgeSupport(left)) ? right : left;
 }
 
+type ReusableStatement =
+  | "insertNode"
+  | "findEdge"
+  | "updateEdge"
+  | "insertEdge"
+  | "upsertFile"
+  | "insertUnresolvedRef"
+  | "insertImportBinding"
+  | "insertAlias"
+  | "insertSourceChunk"
+  | "insertSourceChunkFts"
+  | "findSourceChunks"
+  | "deleteSourceChunkFts"
+  | "deleteSourceChunks"
+  | "getNodeById"
+  | "getFileRecord"
+  | "setMetadata"
+  | "getMetadata";
+
 export class GraphStore {
+  // Only this fixed set of synchronous run/get/all statements is retained.
+  // Dynamic queries and iterators prepare their own statements; an active
+  // cursor can never be reset by another store call. Closing the owning
+  // database finalizes these statements, and a new connection gets a new store.
+  private readonly statements: Partial<Record<ReusableStatement, SqliteStatement>> = {};
+
   constructor(private readonly db: SqliteDatabase) {}
 
   /** Run `fn` inside a single transaction (bulk-write speed + atomicity). */
@@ -241,11 +266,16 @@ export class GraphStore {
     return this.db.transaction(fn);
   }
 
+  private statement(name: ReusableStatement, sql: string): Pick<SqliteStatement, "run" | "get" | "all"> {
+    return this.statements[name] ??= this.db.prepare(sql);
+  }
+
   // --- Writes ---------------------------------------------------------------
 
   insertNode(node: GraphNode): void {
-    this.db
-      .prepare(
+    this
+      .statement(
+        "insertNode",
         `INSERT INTO nodes (
            id, kind, name, qualified_name, container_id, identity_key, file_path, language,
            start_line, end_line, start_column, end_column,
@@ -313,7 +343,8 @@ export class GraphStore {
 
   /** Insert an edge, skipping it unless both endpoints exist (FK safety). */
   insertEdge(edge: GraphEdge): boolean {
-    const existingRow = this.db.prepare(
+    const existingRow = this.statement(
+      "findEdge",
       `SELECT * FROM edges
        WHERE source = ? AND target = ? AND kind = ?
          AND IFNULL(line, -1) = IFNULL(?, -1)
@@ -324,7 +355,8 @@ export class GraphStore {
     if (existingRow) {
       const existing = rowToEdge(existingRow);
       const winner = strongerEdge(existing, edge);
-      this.db.prepare(
+      this.statement(
+        "updateEdge",
         `UPDATE edges SET metadata = ?, provenance = ?, confidence = ?,
            resolution_method = ?, evidence = ?
          WHERE source = ? AND target = ? AND kind = ?
@@ -345,8 +377,9 @@ export class GraphStore {
       return false;
     }
 
-    const result = this.db
-      .prepare(
+    const result = this
+      .statement(
+        "insertEdge",
         `INSERT INTO edges (
            source, target, kind, metadata, line, col, provenance,
            confidence, resolution_method, evidence
@@ -372,8 +405,9 @@ export class GraphStore {
   }
 
   upsertFile(file: FileRecord): void {
-    this.db
-      .prepare(
+    this
+      .statement(
+        "upsertFile",
         `INSERT INTO files (
            path, content_hash, language, size, modified_at, indexed_at, node_count,
            errors, parse_status, diagnostic_count, missing_count, error_coverage, extractor_version
@@ -410,8 +444,9 @@ export class GraphStore {
   }
 
   insertUnresolvedRef(ref: UnresolvedRefRecord): void {
-    this.db
-      .prepare(
+    this
+      .statement(
+        "insertUnresolvedRef",
         `INSERT INTO unresolved_refs (
            ref_key, from_node_id, reference_name, reference_kind, line, col,
            candidates, file_path, language, receiver, qualifier, import_source,
@@ -450,7 +485,8 @@ export class GraphStore {
   }
 
   insertImportBinding(binding: ImportBindingRecord): void {
-    this.db.prepare(
+    this.statement(
+      "insertImportBinding",
       `INSERT INTO import_bindings (
          binding_key, file_path, local_name, imported_name, module_specifier,
          resolved_file_path, target_id, is_type_only, metadata
@@ -468,7 +504,8 @@ export class GraphStore {
 
   insertAlias(aliasId: string, canonicalNodeId: string, matchMethod: string, confidence: number): boolean {
     if (aliasId === canonicalNodeId) return false;
-    return this.db.prepare(
+    return this.statement(
+      "insertAlias",
       `INSERT INTO node_aliases (alias_id, canonical_node_id, match_method, confidence, created_at)
        SELECT ?,?,?,?,? WHERE EXISTS (SELECT 1 FROM nodes WHERE id = ?)
        ON CONFLICT(alias_id) DO UPDATE SET
@@ -494,12 +531,14 @@ export class GraphStore {
       const pathTerms = splitIndexTerms(filePath).join(" ");
       const identifierTerms = splitIndexTerms(text).join(" ");
       const commentTerms = chunk.filter(isCommentLine).join(" ");
-      const inserted = this.db.prepare(
+      const inserted = this.statement(
+        "insertSourceChunk",
         `INSERT INTO source_chunks (
            file_path, start_line, end_line, content_hash, path_terms, identifier_terms, comment_terms
          ) VALUES (?,?,?,?,?,?,?)`,
       ).run(filePath, startLine, endLine, contentHash, pathTerms, identifierTerms, commentTerms);
-      this.db.prepare(
+      this.statement(
+        "insertSourceChunkFts",
         `INSERT INTO source_chunks_fts (
            rowid, path_terms, identifier_terms, comment_terms, source_text
          ) VALUES (?,?,?,?,?)`,
@@ -511,9 +550,9 @@ export class GraphStore {
   }
 
   deleteSourceChunks(filePath: string): void {
-    const rows = this.db.prepare("SELECT id FROM source_chunks WHERE file_path = ?").all(filePath) as Array<{ id: number }>;
-    for (const row of rows) this.db.prepare("DELETE FROM source_chunks_fts WHERE rowid = ?").run(row.id);
-    this.db.prepare("DELETE FROM source_chunks WHERE file_path = ?").run(filePath);
+    const rows = this.statement("findSourceChunks", "SELECT id FROM source_chunks WHERE file_path = ?").all(filePath) as Array<{ id: number }>;
+    for (const row of rows) this.statement("deleteSourceChunkFts", "DELETE FROM source_chunks_fts WHERE rowid = ?").run(row.id);
+    this.statement("deleteSourceChunks", "DELETE FROM source_chunks WHERE file_path = ?").run(filePath);
   }
 
   searchSourceChunks(query: string, limit = 40): SourceChunkHit[] {
@@ -614,7 +653,8 @@ export class GraphStore {
   // --- Reads ----------------------------------------------------------------
 
   getNodeById(id: string): GraphNode | null {
-    const row = this.db.prepare(
+    const row = this.statement(
+      "getNodeById",
       `SELECT nodes.* FROM nodes WHERE nodes.id = ?
        UNION ALL
        SELECT nodes.* FROM node_aliases JOIN nodes ON nodes.id = node_aliases.canonical_node_id
@@ -627,6 +667,12 @@ export class GraphStore {
 
   getAllNodes(): GraphNode[] {
     return (this.db.prepare("SELECT * FROM nodes").all() as NodeRow[]).map(rowToNode);
+  }
+
+  /** Identity-only continuity check; avoids decoding full prior node payloads. */
+  getAllNodeIds(): string[] {
+    return (this.db.prepare("SELECT id FROM nodes ORDER BY id").all() as Array<{ id: string }>)
+      .map((row) => row.id);
   }
 
   /**
@@ -701,7 +747,7 @@ export class GraphStore {
   }
 
   getFileRecord(path: string): FileRecord | null {
-    const row = this.db.prepare("SELECT * FROM files WHERE path = ?").get(path) as
+    const row = this.statement("getFileRecord", "SELECT * FROM files WHERE path = ?").get(path) as
       | {
           path: string;
           content_hash: string;
@@ -758,14 +804,15 @@ export class GraphStore {
   }
 
   setMetadata(key: string, value: string): void {
-    this.db.prepare(
+    this.statement(
+      "setMetadata",
       `INSERT INTO project_metadata (key, value, updated_at) VALUES (?,?,?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
     ).run(key, value, Date.now());
   }
 
   getMetadata(key: string): string | null {
-    const row = this.db.prepare("SELECT value FROM project_metadata WHERE key = ?").get(key) as
+    const row = this.statement("getMetadata", "SELECT value FROM project_metadata WHERE key = ?").get(key) as
       | { value: string }
       | undefined;
     return row?.value ?? null;

@@ -1,4 +1,5 @@
 import {
+  AgentLoggingPolicySchema,
   ActivityResponseSchema,
   BootstrapResponseSchema,
   CodeKnowledgeResponseSchema,
@@ -31,6 +32,8 @@ import {
   TeamWorkstreamIdSchema,
   TeamWorkstreamListResponseSchema,
   TeamWorkstreamSchema,
+  WikiGraphResponseSchema,
+  WikiGroundedCodeResponseSchema,
   WikiBacklinksResponseSchema,
   WikiEntityDetailResponseSchema,
   WikiEntityIdSchema,
@@ -39,6 +42,8 @@ import {
 } from "@mex/hub-contracts";
 import { createFixtureApi } from "virtual:mex-hub-fixture-api";
 import type {
+  AgentLoggingPolicy,
+  AgentLoggingUpdateRequest,
   ActivityRequest,
   ActivityResponse,
   BootstrapResponse,
@@ -91,6 +96,8 @@ import type {
   TeamWorkstream,
   TeamWorkstreamListRequest,
   TeamWorkstreamListResponse,
+  WikiGraphResponse,
+  WikiGroundedCodeResponse,
   WikiBacklinksRequest,
   WikiBacklinksResponse,
   WikiEntityDetailResponse,
@@ -100,6 +107,7 @@ import type {
   WikiRelationsResponse,
 } from "./types";
 import type { RelayTransport } from "./relay-client";
+import { isHubTelemetryPage, type HubTelemetryPage } from "./telemetry";
 
 const API_ROOT = "/api/v1";
 
@@ -158,6 +166,9 @@ export interface FixtureApiOptions {
 }
 
 export interface HubApi {
+  recordPageView?(page: HubTelemetryPage): Promise<void>;
+  getLoggingPolicy(): Promise<AgentLoggingPolicy>;
+  setLoggingPolicy(request: AgentLoggingUpdateRequest): Promise<AgentLoggingPolicy>;
   bootstrap(token: string): Promise<BootstrapResponse>;
   getSession(): Promise<SessionResponse>;
   getCapabilities(): Promise<CapabilitiesResponse>;
@@ -187,6 +198,8 @@ export interface HubApi {
   getActivity(request: ActivityRequest): Promise<ActivityResponse>;
   search(request: SearchRequest): Promise<SearchResponse>;
   getCodeSymbol(id: string, request: CodeWorkspaceRequest): Promise<CodeWorkspaceResponse>;
+  wikiGraph(): Promise<WikiGraphResponse>;
+  getWikiGroundedCode(id: string): Promise<WikiGroundedCodeResponse>;
   listWikiEntities(request: WikiEntityListRequest): Promise<WikiEntityListResponse>;
   getWikiEntity(id: string): Promise<WikiEntityDetailResponse>;
   getWikiRelations(id: string, request: WikiRelationsRequest): Promise<WikiRelationsResponse>;
@@ -309,6 +322,24 @@ export function clearBootstrapFragment(): void {
 
 export class HttpHubApi implements HubApi {
   #csrfToken: string | null = null;
+  #pageViewPending = false;
+
+  async recordPageView(page: HubTelemetryPage): Promise<void> {
+    if (!this.#csrfToken || this.#pageViewPending || !isHubTelemetryPage(page)) return;
+    this.#pageViewPending = true;
+    try {
+      await fetch(`${API_ROOT}/telemetry/page`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-MEX-CSRF": this.#csrfToken },
+        body: JSON.stringify({ page }),
+        credentials: "same-origin",
+        redirect: "error",
+        referrerPolicy: "no-referrer",
+        signal: AbortSignal.timeout(2_000),
+      });
+    } catch { /* A dropped local usage event must never disturb navigation. */ }
+    finally { this.#pageViewPending = false; }
+  }
   #relayTransport: RelayTransport = {
     request: (path, schema, init, mutation) => this.#request(path, schema, init, mutation),
     invalidIdentifier: (detail) => {
@@ -550,6 +581,14 @@ export class HttpHubApi implements HubApi {
     );
   }
 
+  wikiGraph(): Promise<WikiGraphResponse> {
+    return this.#request("/wiki/graph", WikiGraphResponseSchema);
+  }
+
+  getWikiGroundedCode(id: string): Promise<WikiGroundedCodeResponse> {
+    return this.#request(`/wiki/entities/${encodeURIComponent(assertSafeWikiEntityId(id))}/code`, WikiGroundedCodeResponseSchema);
+  }
+
   listWikiEntities(request: WikiEntityListRequest): Promise<WikiEntityListResponse> {
     const params = new URLSearchParams({ limit: String(request.limit) });
     if (request.kind) params.set("kind", request.kind);
@@ -599,6 +638,15 @@ export class HttpHubApi implements HubApi {
 
   getHealth(): Promise<HealthResponse> {
     return this.#request("/health", HealthResponseSchema);
+  }
+
+  getLoggingPolicy(): Promise<AgentLoggingPolicy> {
+    return this.#request("/settings/logging", AgentLoggingPolicySchema);
+  }
+
+  setLoggingPolicy(request: AgentLoggingUpdateRequest): Promise<AgentLoggingPolicy> {
+    return this.#request("/settings/logging", AgentLoggingPolicySchema,
+      { method: "POST", body: JSON.stringify(request) }, true);
   }
 
   getJobs(cursor?: string): Promise<JobsResponse> {

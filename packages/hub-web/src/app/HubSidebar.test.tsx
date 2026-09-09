@@ -49,11 +49,11 @@ describe("HubSidebar dynamic state", () => {
     const { capabilities, home } = await fixtureData();
     renderSidebar({ capabilities, home: homeWithCounts(home, count) });
 
-    const inbox = screen.getByRole("link", { name: /^Inbox/u });
+    expect(screen.getByRole("link", { name: /^Inbox/u })).toBeVisible();
     const relays = screen.getByRole("link", { name: /^Relays/u });
     const system = screen.getByRole("button", { name: /^System/u });
     const cases = [
-      [inbox, `${count} proposals awaiting team review.`],
+      [screen.getByRole("link", { name: /^Inbox/u }), `${count} proposals for team review.`],
       [relays, `${count} open Relays for you.`],
       [system, `${count} active system operations.`],
     ] as const;
@@ -72,7 +72,7 @@ describe("HubSidebar dynamic state", () => {
     const { capabilities, home } = await fixtureData();
     const first = renderSidebar({ capabilities });
 
-    expect(screen.getByRole("link", { name: "Inbox" })).toBeVisible();
+    expect(screen.getByRole("link", { name: /^Inbox/u })).toBeVisible();
     expect(screen.getByRole("link", { name: "Relays" })).toBeVisible();
     expect(screen.getByRole("button", { name: "System" })).toBeVisible();
     expect(screen.getByText("Set team identity")).toBeVisible();
@@ -89,7 +89,7 @@ describe("HubSidebar dynamic state", () => {
       },
     });
 
-    expect(screen.getByRole("link", { name: "Inbox" })).toBeVisible();
+    expect(screen.getByRole("link", { name: /^Inbox/u })).toBeVisible();
     expect(screen.getByRole("link", { name: "Relays" })).toBeVisible();
     expect(screen.queryByText("Unavailable")).not.toBeInTheDocument();
   });
@@ -97,29 +97,25 @@ describe("HubSidebar dynamic state", () => {
   it("lets capability unavailability win over counts and exposes its reason as a tooltip", async () => {
     const user = userEvent.setup();
     const { capabilities, home } = await fixtureData();
-    const reason = "Inbox reads are disconnected.";
+    const reason = "Relay reads are disconnected.";
     renderSidebar({
       capabilities: {
         ...capabilities,
-        inbox: {
-          ...capabilities.inbox,
-          read: { availability: "unavailable", reason },
-        },
         relays: {
           ...capabilities.relays,
-          read: { availability: "unavailable", reason: "Relay reads are disconnected." },
+          read: { availability: "unavailable", reason },
         },
         jobs: { availability: "unavailable", reason: "Job reads are disconnected." },
       },
       home: homeWithCounts(home, 9),
     });
 
-    const inbox = screen.getByRole("link", { name: "Inbox Unavailable" });
-    expect(inbox).toHaveAttribute("href", "/inbox");
-    expect(inbox).toHaveAccessibleDescription(reason);
-    expect(within(inbox).getByText("Unavailable")).toBeVisible();
-    expect(within(inbox).queryByLabelText("9 proposals awaiting team review.")).not.toBeInTheDocument();
-    inbox.focus();
+    const relays = screen.getByRole("link", { name: "Relays Unavailable" });
+    expect(relays).toHaveAttribute("href", "/relays");
+    expect(relays).toHaveAccessibleDescription(reason);
+    expect(within(relays).getByText("Unavailable")).toBeVisible();
+    expect(within(relays).queryByLabelText("9 open Relays for you.")).not.toBeInTheDocument();
+    relays.focus();
     expect(await screen.findByRole("tooltip")).toHaveTextContent(reason);
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();

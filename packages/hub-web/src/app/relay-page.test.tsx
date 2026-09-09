@@ -530,7 +530,7 @@ describe("Relay handoff workbench", () => {
     await userEvent.setup().click(await screen.findByRole("button", { name: "Take handoff" }));
     const dialog = await screen.findByRole("alertdialog", { name: "Take this handoff?" });
     expect(within(dialog).getByText(/sole claimant/i)).toBeVisible();
-    expect(within(dialog).getByText(/other eligible recipients.*no longer.*take/i)).toBeVisible();
+    expect(within(dialog).getByText(/other eligible Members.*no longer.*take/i)).toBeVisible();
     expect(within(dialog).getByText(/no unclaim or reassignment/i)).toBeVisible();
     expect(within(dialog).getByText(/pull the latest repository state/i)).toBeVisible();
     expect(within(dialog).getByText("Release evidence is ready for the final cross-platform gate.")).toBeVisible();
@@ -567,7 +567,7 @@ describe("Relay handoff workbench", () => {
     expect(await screen.findByRole("heading", { name: relay.summary })).toBeVisible();
     expect(screen.queryByRole("button", { name: "Take handoff" })).not.toBeInTheDocument();
     expect(screen.getByText(/This handoff is addressed to Grace Hopper/i)).toBeVisible();
-    expect(screen.getByText(/A listed recipient can take it after MEX resolves them to an active team identity/i)).toBeVisible();
+    expect(screen.getByText(/MEX must resolve an eligible, active team identity before taking it/i)).toBeVisible();
     expect(preview).not.toHaveBeenCalled();
   });
 
@@ -668,7 +668,7 @@ describe("Relay handoff workbench", () => {
     renderRoute(api, `/relays?view=${view}&state=open&relay=${RELAY_ID}`);
 
     expect(await screen.findByRole("heading", { name: relay.summary })).toBeVisible();
-    await waitFor(() => expect(screen.getByText(/Grace Hopper.*no longer an active team Member.*cannot be closed/i)).toBeVisible());
+    await waitFor(() => expect(screen.getByText(/Grace Hopper.*no longer an active team Member.*Reactivate/i)).toBeVisible());
     expect(screen.getByRole("button", { name: "Close handoff" })).toBeDisabled();
   });
 
@@ -715,7 +715,7 @@ describe("Relay handoff workbench", () => {
     const dialog = await screen.findByRole("alertdialog", { name: "Close this handoff?" });
     expect(within(dialog).getByText(/closing is irreversible/i)).toBeVisible();
     expect(within(dialog).getByText(/removes (?:this|the) handoff from open attention/i)).toBeVisible();
-    expect(within(dialog).getByText(/does not (?:complete|modify).*(?:Workstream|task)/i)).toBeVisible();
+    expect(within(dialog).getByText(/saved handoff remains readable in project history/i)).toBeVisible();
     const technical = within(dialog).getByRole("button", { name: "Technical details" });
     expect(technical).toHaveAttribute("aria-expanded", "false");
 
@@ -1393,6 +1393,79 @@ describe("Relay handoff workbench", () => {
     expect(apply).not.toHaveBeenCalled();
   });
 
+  it("saves an open-to-team draft without Member reads, then publishes only after exact review", async () => {
+    const user = userEvent.setup();
+    const api = createFixtureApi();
+    const members = vi.spyOn(api, "getMembers");
+    const member = vi.spyOn(api, "getMember");
+    const preview = vi.spyOn(api, "previewRelayOperation");
+    const apply = vi.spyOn(api, "applyRelayOperation");
+    renderRoute(api, "/relays?view=drafts");
+    await user.click(await screen.findByRole("button", { name: "Create manually" }));
+    const composer = await screen.findByRole("dialog", { name: "Create handoff draft" });
+    expect(within(composer).getByRole("combobox", { name: "Who can take this handoff?" })).toHaveValue("team");
+    expect(within(composer).queryByRole("combobox", { name: "Eligible recipients" })).not.toBeInTheDocument();
+    fireEvent.change(within(composer).getByRole("textbox", { name: "Summary" }), { target: { value: "Context for whoever joins this work next" } });
+    await user.click(within(composer).getByRole("button", { name: "Save draft" }));
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
+    expect(preview.mock.calls[0]![0]).toMatchObject({ action: { kind: "relay.draft.save", draft: { audience: "team", recipients: [] } }, expectedRevisions: [] });
+    expect(apply.mock.calls[0]![0]).toBe(await preview.mock.results[0]!.value);
+    await waitFor(() => expect(routeLocation()).toContain("draft=relay-draft-02"));
+    expect(await screen.findByText(/Saved only in this checkout/)).toBeVisible();
+    expect(members).not.toHaveBeenCalled();
+    expect(member).not.toHaveBeenCalled();
+    await user.click(await screen.findByRole("button", { name: "Publish handoff" }));
+    const review = await screen.findByRole("alertdialog", { name: "Publish this handoff?" });
+    const confirm = within(review).getByRole("button", { name: "Publish handoff" });
+    await waitFor(() => expect(confirm).toBeEnabled());
+    expect(within(review).getByText(/Any active Member, including teammates who join later/)).toBeVisible();
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(preview.mock.calls[1]![0].expectedRevisions).toEqual([{ target: { kind: "local", namespace: "relay-draft", id: "relay-draft-02" }, revision: "c".repeat(64) }]);
+    expect(members).not.toHaveBeenCalled();
+    expect(member).not.toHaveBeenCalled();
+    await user.click(confirm);
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(2));
+    expect(apply.mock.calls[1]![0]).toBe(await preview.mock.results[1]!.value);
+    expect(await screen.findByText("Published working-tree artifact.")).toBeVisible();
+    expect(screen.getByText(/MEX has not verified commit, push, or receipt/)).toBeVisible();
+    expect(screen.getByText(/Any active Member can take this handoff, including teammates who join later/)).toBeVisible();
+  });
+
+  it("allows a recipient-free named local draft but requires choosing an audience before publication", async () => {
+    const user = userEvent.setup();
+    const api = createFixtureApi();
+    const apply = vi.spyOn(api, "applyRelayOperation");
+    renderRoute(api, "/relays?view=drafts");
+    await user.click(await screen.findByRole("button", { name: "Create manually" }));
+    const composer = await screen.findByRole("dialog", { name: "Create handoff draft" });
+    await user.selectOptions(within(composer).getByRole("combobox", { name: "Who can take this handoff?" }), "members");
+    fireEvent.change(within(composer).getByRole("textbox", { name: "Summary" }), { target: { value: "Choose a recipient later" } });
+    await user.click(within(composer).getByRole("button", { name: "Save draft" }));
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(/Choose named Members or open this handoff to the team/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Publish handoff" })).toBeDisabled();
+  });
+
+  it("allows a newly joined active Member to review taking an open-to-team Relay", async () => {
+    const user = userEvent.setup();
+    const api = createFixtureApi();
+    const existing = await api.getRelay(RELAY_ID);
+    const relay: RelayDetail = { ...existing, schemaVersion: 4, audience: "team", recipients: [], summary: "Open handoff created before the teammate joined" };
+    mockSingleRelay(api, relay);
+    mockCurrentMember(api, "member_05000000000000000000000001", "New teammate");
+    const preview = vi.spyOn(api, "previewRelayOperation");
+    const apply = vi.spyOn(api, "applyRelayOperation");
+    renderRoute(api, `/relays?view=mine&relay=${RELAY_ID}`);
+    const take = await screen.findByRole("button", { name: "Take handoff" });
+    expect(take).toBeEnabled();
+    expect(screen.getByText(/including teammates who join later/)).toBeVisible();
+    await user.click(take);
+    const review = await screen.findByRole("alertdialog", { name: "Take this handoff?" });
+    await waitFor(() => expect(within(review).getByRole("button", { name: "Take handoff" })).toBeEnabled());
+    expect(preview.mock.calls[0]![0]).toMatchObject({ action: { kind: "relay.acknowledge", relayId: RELAY_ID }, expectedRevisions: [{ target: { kind: "artifact", path: relay.sourcePath }, revision: relay.revision }] });
+    expect(apply).not.toHaveBeenCalled();
+  });
+
   it("saves a standalone sparse draft without any Workstream query or payload field", async () => {
     const user = userEvent.setup();
     const api = createFixtureApi();
@@ -1406,6 +1479,7 @@ describe("Relay handoff workbench", () => {
     await waitFor(() => expect(trigger).toBeEnabled());
     await user.click(trigger);
     const composer = await screen.findByRole("dialog", { name: "Create handoff draft" });
+    await user.selectOptions(within(composer).getByRole("combobox", { name: "Who can take this handoff?" }), "members");
     const recipients = within(composer).getByRole("combobox", { name: "Eligible recipients" });
     await user.type(recipients, "Grace");
     await user.click(await screen.findByRole("option", { name: "Grace Hopper" }));
@@ -1419,6 +1493,7 @@ describe("Relay handoff workbench", () => {
     expect(request.action).toEqual({
       kind: "relay.draft.save",
       draft: {
+        audience: "members",
         recipients: [{ kind: "member", memberId: GRACE_ID, displayName: "Grace Hopper" }],
         summary: "Standalone local handoff for a teammate.",
         completed: [],
@@ -1455,6 +1530,7 @@ describe("Relay handoff workbench", () => {
 
     await user.click(await screen.findByRole("button", { name: "Create manually" }));
     const composer = await screen.findByRole("dialog", { name: "Create handoff draft" });
+    await user.selectOptions(within(composer).getByRole("combobox", { name: "Who can take this handoff?" }), "members");
     await user.click(within(composer).getByRole("button", { name: "Advanced" }));
     await user.type(within(composer).getByRole("textbox", { name: "Recipient Member ID" }), GRACE_ID);
     await user.click(within(composer).getByRole("button", { name: "Add recipient ID" }));
@@ -1497,9 +1573,9 @@ describe("Relay handoff workbench", () => {
     expect(member).toHaveBeenCalledWith(GRACE_ID);
     expect(workstreams).not.toHaveBeenCalled();
     expect(workstream).not.toHaveBeenCalled();
-    expect(within(dialog).getByText(/private checkout-local draft.*Git-tracked Relay/i)).toBeVisible();
+    expect(within(dialog).getByText(/writes a Relay Markdown artifact.*working tree/i)).toBeVisible();
     expect(within(dialog).getByText(/records branch, HEAD, clean or dirty state, and observation time/i)).toBeVisible();
-    expect(within(dialog).getByText(/commit and push.*teammates can receive/i)).toBeVisible();
+    expect(within(dialog).getByText(/commit and push.*share it/i)).toBeVisible();
     expect(within(dialog).getByText(/does not create a commit or capture source-file or local-change contents/i)).toBeVisible();
     expect(await within(dialog).findByText(/Acting as Ada Lovelace/i)).toBeVisible();
     const repositoryAtPublication = within(dialog).getByText(/codex\/hub-ux,/i).closest("p");

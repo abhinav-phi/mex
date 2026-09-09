@@ -1,8 +1,11 @@
 import { isArtifactId } from "../../artifacts/ulid.js";
 import { MexPortError } from "../../contracts/shared.js";
+import type { RepositoryWikiPort } from "../../../wiki/application-adapter.js";
 import {
   PROPOSAL_STATES,
   TEAM_INBOX_SPEC_LIMITS,
+  TEAM_INBOX_KNOWLEDGE_KINDS,
+  TEAM_INBOX_SPEC_KINDS,
   type ProposalState,
   type TeamInboxSpecApplyResult,
   type TeamInboxSpecDraftDetail,
@@ -53,6 +56,49 @@ export interface InboxProposalListFlags extends TeamPageFlags {
 export type InboxCliServiceSource =
   | TeamInboxSpecCliService
   | TeamInboxSpecCliServiceFactory;
+
+/** Resolve one existing Wiki record without exposing metadata or requiring Team state. */
+export async function runInboxTarget(
+  source: () => Pick<RepositoryWikiPort, "readInboxTarget"> | Promise<Pick<RepositoryWikiPort, "readInboxTarget">>,
+  id: string,
+  flags: TeamOutputFlags,
+  io: TeamCommandIo,
+): Promise<void> {
+  await execute("inbox.target", "read", flags, io, async () => {
+    if (!/^mx_[0-7][0-9A-HJKMNP-TV-Z]{25}$/u.test(id)) {
+      throw new TeamCliUsageError("Target ID must be an mx_ prefixed Wiki ULID.");
+    }
+    const entity = await (await source()).readInboxTarget(id);
+    if (entity === null) throw notFound("Knowledge target", id);
+    if (!([...TEAM_INBOX_KNOWLEDGE_KINDS, ...TEAM_INBOX_SPEC_KINDS, "topic"] as readonly string[]).includes(entity.ref.kind)) {
+      throw new TeamCliUsageError("This entity kind is not supported by Inbox.");
+    }
+    const data = {
+      target: { id: entity.ref.id, kind: entity.ref.kind, title: entity.title },
+      version: {
+        semanticRevision: entity.version.semanticRevision,
+        contentHash: entity.version.contentHash,
+      },
+      sourcePath: entity.location.path,
+      lifecycleState: entity.lifecycleState,
+      ...(entity.summary === undefined ? {} : { summary: entity.summary }),
+      body: entity.body,
+    };
+    const envelope = teamEnvelope({ command: "inbox.target", mode: "read", data });
+    if (Buffer.byteLength(renderTeamEnvelope(envelope), "utf8") > TEAM_INBOX_SPEC_LIMITS.maxEnvelopeBytes) {
+      throw new MexPortError({
+        title: "Knowledge target exceeds read bound", status: 413, code: "INVALID_REQUEST",
+        detail: "The complete target exceeds the 64 KiB Inbox read bound. Select a smaller section entity.",
+      });
+    }
+    return envelope;
+  }, (data, _envelope, output) => {
+    output.write(`${data.target.title} (${data.target.id})`);
+    output.write(`Source: ${data.sourcePath}`);
+    output.write(`Revision: ${data.version.semanticRevision} / ${data.version.contentHash}`);
+    output.write(data.body);
+  });
+}
 
 export async function runInboxDraftList(
   source: InboxCliServiceSource,

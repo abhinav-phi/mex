@@ -1,74 +1,119 @@
-# mex 0.8.0 — Project memory for the whole team
+# mex 0.8.1 — Explore context, share knowledge, keep work moving
 
-mex 0.8.0 connects repository-native memory, the local Code Graph and Wiki,
-and the Project Hub into one guarded team workflow. It also completes the
-fresh-project experience: setup now populates the scaffold with Claude Code or
-Codex, finishes both indexes, installs the official skills, validates the
-result, and stops at a clear Git checkpoint before Hub starts.
+MEX 0.8.1 makes project knowledge easier to explore and contribute to, makes
+Relays useful before you know who will pick up the work, and keeps compiler
+work from blocking the Hub during Graph construction.
 
 ## Highlights
 
-- **Project Hub and team workflows.** The loopback-only Hub now brings together
-  Members, immutable Activity, Workstreams, governed Inbox proposals for Spec
-  changes, and standalone Relay handoffs. Canonical changes use exact
-  preview/review/apply boundaries and successful mutations emit Activity;
-  member selection and drafts remain checkout-local.
-- **Governed Spec authoring and handoffs.** Inbox proposals cover one bounded
-  Spec create or update at a time, with explicit approval, rejection,
-  withdrawal, stale detection, and repair. Relays record durable handoffs with
-  publication-time repository context and an acknowledge/close lifecycle.
-- **Graph and Wiki lifecycle.** Setup builds the Graph and completes Wiki
-  migration and indexing after agent population. Hub Code, Knowledge, and Spec
-  views read stable index snapshots; ordinary reads never refresh, migrate, or
-  repair an index. Health surfaces expose only explicit maintenance actions
-  that are safe for the observed state.
-- **Official agent skills.** `mex-inbox` and `mex-relay` ship for Claude Code
-  and Codex. Setup installs the selected project copies and managed instruction
-  anchors; `mex skills sync` safely refreshes them after an upgrade without
-  overwriting user-authored instructions or unrelated skills.
-- **Agent-safe discovery.** `mex capabilities --json` reports the bounded
-  reads, previews, apply operations, and maintenance commands actually
-  available in the current checkout.
+- **Explore your project's Context graph.** See Wiki entities and recorded
+  relationships together, filter by type, and select an entity to reveal its
+  direct code groundings and details. A list view remains available. Inbox,
+  Relays, Team, and Activity stay in primary navigation; existing Specs and
+  Workstreams remain readable through their direct routes.
+- **Turn a discussion into project knowledge.** Inbox now handles additions
+  and corrections to existing architecture, components, conventions, decisions,
+  patterns, and guides. Use `mex-inbox` to prepare a local draft, publish a
+  Markdown proposal for review, and explicitly approve its contribution to the
+  Wiki. Evidence and attribution survive; routine knowledge upkeep can still
+  happen directly.
+- **Leave a Relay open to the team.** Eligible active Members can take an open-to-team
+  handoff, including someone who joins later. Drafts can defer recipient
+  selection, `mex relay draft save --from <draft.json>` shortens local saving,
+  and inactive Members can be reactivated with their original identity.
+  Audience and sharing states are visible in Hub and CLI.
+- **Choose how much agents log.** Hub Settings and `mex logging` offer a quiet
+  `significant` default, batched `checkpoints`, or `manual` logging. Updated
+  agent instructions retrieve relevant Timeline notes so useful context is
+  easier to reuse; a session note does not automatically become accepted Wiki
+  knowledge.
+- **Keep grounding changes deliberate.** A successful agent run no longer
+  resets drift baselines. Interactive sync asks you to accept individual
+  groundings and checks that the reviewed document and code still match.
+  Moving a symbol preserves evidence of earlier changes.
 
-## Fresh setup
+## Graph and reliability
 
-mex requires Node.js 22.5 or newer.
+Hub refresh/rebuild constructs its Graph candidate in a disposable process,
+allowing the Hub to respond during compiler work. The Hub still validates and
+publishes the result; initial checks and final publication can still pause it.
+Smaller temporary collections and reused database statements remove avoidable
+work. This does not add incremental indexing or a peak-memory quota: a changed
+source still triggers a build of the eligible corpus, and simultaneous Hub and
+worker memory can increase the combined peak. CLI builds remain in process.
+
+Targeted CLI Graph reads can now explain config drift, partial parses, and
+excluded changed source files while returning the remaining useful evidence.
+Hub reads retain strict freshness. Formatting or dependency-version-only
+changes to configuration no longer invalidate an otherwise unchanged graph.
+Maintenance can retain a useful graph with documented per-file gaps, and
+failures name the diagnostics that stopped publication.
+
+Other fixes preserve exact Wiki bytes and full-width filesystem identities on
+Windows, stop unknown context files being assumed to be architecture, improve
+write provenance, and report missing SQLite FTS5 support clearly. Explicit
+Graph/Wiki maintenance also installs ignore protection before creating stores.
+
+## Telemetry and feedback
+
+Usage events are **pseudonymous and opt-out**. Namespaced CLI outcomes and
+fixed Hub page/action/job events share a random installation UUID. Where
+available, events include the existing scaffold UUID and configured tool names
+from the allowlist: `claude`, `codex`, `copilot`, `cursor`, `opencode`, and
+`windsurf`. Configured tools describe setup, not the invoking agent; multiple
+installations on one scaffold are a shared-use signal, not proof of team size.
+
+Events exclude names, repository remotes, content, paths, queries, and contact
+details. A bounded local queue and cancellable delivery keep network waiting
+limited; delivery remains best effort. Inspect or disable it with:
 
 ```bash
-npx mex-agent@0.8.0 setup
+mex telemetry inspect
+mex telemetry disable
 ```
 
-Setup preserves existing authored scaffold files, protects
-`.mex/graph.db*`, `.mex/wiki.db*`, and `.mex/local/` from Git, and can launch
-the first selected available Claude Code or Codex CLI from the project root.
-Review the generated canonical files and use the scoped Git commands printed by
-setup. MEX does not stage, commit, push, or pull for you.
+`DO_NOT_TRACK=1` or `MEX_TELEMETRY=0` also disables collection and sending.
+[TELEMETRY.md](TELEMETRY.md) explains the complete catalog, identifiers, limits,
+and opt-outs. `mex feedback` now opens the Hub's existing Help shape MEX form;
+any contact details you choose to provide there are separate from telemetry,
+and MEX adds no analytics identity to the form URL.
 
-`mex hub` intentionally remains blocked until the current
-`.mex/config.json` bytes are committed at Git `HEAD`. The Graph and Wiki
-databases and `.mex/local/` state are disposable checkout-local data and should
-not be committed.
+## Install and upgrade
 
-## Upgrade and compatibility
+MEX requires Node.js 22.5 or newer **with SQLite FTS5 support**. The Node version
+alone does not guarantee FTS5; [COMPATIBILITY.md](COMPATIBILITY.md#sqlite-fts5)
+includes a check for your Node build.
+
+Start a new project with:
 
 ```bash
-npm install -g mex-agent@0.8.0
+npx mex-agent@0.8.1 setup
+```
+
+For an existing project:
+
+```bash
+npm install -g mex-agent@0.8.1
+mex skills sync --dry-run
 mex skills sync
+mex graph status
 ```
 
-Installing the npm package alone does not modify a repository. Run
-`mex skills sync` only in projects where you want to activate or refresh the
-packaged skills, then start a new Claude Code or Codex session so it loads the
-new project instructions.
+Run `mex skills sync` inside each project whose installed skills and managed
+agent instructions you want to update. Review the dry run and any conflicts
+before applying, then start a new agent session. Package installation alone
+does not change your project's instructions. A completed 0.8.0 setup does not
+need to run again solely for this upgrade; follow any explicit maintenance
+action reported by `mex graph status`.
 
-Compatible schema-v2 and complete schema-v3 Graph stores upgrade losslessly to
-schema v4 during explicit maintenance. Schema-v1, partial, or ambiguous stores
-require a safe rebuild. Read-only commands never perform the migration.
-Existing Markdown scaffolds remain valid.
+**Update teammates before using open-to-team Relays.** Those new handoffs use
+schema v4 and require MEX 0.8.1. Existing named v1–v3 Relays remain supported;
+new named handoffs continue using v3. Legacy Spec proposals also remain usable.
+The Graph store stays at schema v4, and ordinary reads never migrate or repair
+an index.
 
-Before a team publishes new schema-v3 Relays, every teammate should update to
-mex 0.8.0 because older binaries cannot parse that Relay format.
-
-The team workflow contracts remain internal rather than new package-root API
-exports. Project Hub remains local-only, and Playbook/Catch Up product surfaces,
-general Wiki editing UI, and external Relay delivery remain future work.
+Project Hub remains local. Local drafts belong to the checkout; published
+proposals and handoffs are working-tree files that require Git commit/push/pull
+to share. MEX does not perform those Git operations or verify delivery. Tracked
+Wiki Markdown remains canonical. Graph/Wiki indexes are rebuildable; drafts
+and other `.mex/local/` state stay in the checkout and must not be committed.

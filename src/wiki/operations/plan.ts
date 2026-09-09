@@ -152,6 +152,12 @@ export type PlanResult =
 
 export interface PlanOptions extends LocateOptions {
   scaffoldRoot: string;
+  /**
+   * Stamp newly authored content from this operation's explicit authority.
+   * Off by default so legacy low-level plans and recovery keep their bytes.
+   * Adoption and existing entities never infer an original creator.
+   */
+  captureCreationProvenance?: boolean;
   registry?: EntityTypeRegistry;
   /** `wiki.readOnly` globs. Enforced here, before any preview exists. */
   readOnly?: readonly string[];
@@ -297,6 +303,15 @@ export function planOperation(envelope: unknown, options: PlanOptions): PlanResu
     options,
     scaffoldRoot,
     located,
+    ...(options.captureCreationProvenance === true ? {
+      creationProvenance: {
+        createdBy: { kind: operation.actor.kind, id: operation.actor.id },
+        createdAt: operation.timestamp,
+        ...(operation.actor.kind === "agent" && operation.actor.sessionId !== undefined
+          ? { agentSessionId: operation.actor.sessionId }
+          : {}),
+      },
+    } : {}),
     mintId: options.generateId ?? generateEntityId,
     locate: (path) => locateFile(options, path),
     locateEntity: (id) => locateEntity(id, options),

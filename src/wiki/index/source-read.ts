@@ -51,17 +51,17 @@ export function readContainedSource(
 
   let fd: number | undefined;
   try {
-    const rootLexical = lstatSync(root);
+    const rootLexical = lstatSync(root, { bigint: true });
     if (!rootLexical.isDirectory() || rootLexical.isSymbolicLink()) throw new WikiSourceReadError(label);
     const realRoot = realpathSync(root);
-    const rootStats = lstatSync(realRoot);
+    const rootStats = lstatSync(realRoot, { bigint: true });
     const parent = dirname(target);
-    const parentLexical = lstatSync(parent);
+    const parentLexical = lstatSync(parent, { bigint: true });
     if (!parentLexical.isDirectory() || parentLexical.isSymbolicLink()) throw new WikiSourceReadError(label);
     const realParent = realpathSync(parent);
     const parentRel = relative(realRoot, realParent);
     if (parentRel === ".." || parentRel.startsWith(`..${sep}`)) throw new WikiSourceReadError(label);
-    const parentStats = lstatSync(realParent);
+    const parentStats = lstatSync(realParent, { bigint: true });
 
     fd = openSync(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const opened = fstatSync(fd, { bigint: true });
@@ -71,24 +71,24 @@ export function readContainedSource(
     }
     options.afterOpen?.();
 
-    const rootNowLexical = lstatSync(root);
+    const rootNowLexical = lstatSync(root, { bigint: true });
     const realRootNow = realpathSync(root);
-    const rootNow = lstatSync(realRootNow);
-    const parentNowLexical = lstatSync(parent);
+    const rootNow = lstatSync(realRootNow, { bigint: true });
+    const parentNowLexical = lstatSync(parent, { bigint: true });
     const realParentNow = realpathSync(parent);
-    const parentNow = lstatSync(realParentNow);
+    const parentNow = lstatSync(realParentNow, { bigint: true });
     const leafNow = lstatSync(target, { bigint: true });
     if (
       !rootNowLexical.isDirectory()
       || rootNowLexical.isSymbolicLink()
       || realRootNow !== realRoot
-      || Number(rootNow.dev) !== Number(rootStats.dev)
-      || Number(rootNow.ino) !== Number(rootStats.ino)
+      || rootNow.dev !== rootStats.dev
+      || rootNow.ino !== rootStats.ino
       || !parentNowLexical.isDirectory()
       || parentNowLexical.isSymbolicLink()
       || realParentNow !== realParent
-      || Number(parentNow.dev) !== Number(parentStats.dev)
-      || Number(parentNow.ino) !== Number(parentStats.ino)
+      || parentNow.dev !== parentStats.dev
+      || parentNow.ino !== parentStats.ino
       || leafNow.isSymbolicLink()
       || leafNow.dev !== opened.dev
       || leafNow.ino !== opened.ino
@@ -119,24 +119,24 @@ export function readContainedSource(
     // same-inode edit or parent/leaf swap cannot enter a supposedly exact
     // corpus observation.
     const afterRead = fstatSync(fd, { bigint: true });
-    const rootAfterLexical = lstatSync(root);
+    const rootAfterLexical = lstatSync(root, { bigint: true });
     const realRootAfter = realpathSync(root);
-    const rootAfter = lstatSync(realRootAfter);
-    const parentAfterLexical = lstatSync(parent);
+    const rootAfter = lstatSync(realRootAfter, { bigint: true });
+    const parentAfterLexical = lstatSync(parent, { bigint: true });
     const realParentAfter = realpathSync(parent);
-    const parentAfter = lstatSync(realParentAfter);
+    const parentAfter = lstatSync(realParentAfter, { bigint: true });
     const leafAfter = lstatSync(target, { bigint: true });
     if (
       !rootAfterLexical.isDirectory()
       || rootAfterLexical.isSymbolicLink()
       || realRootAfter !== realRoot
-      || Number(rootAfter.dev) !== Number(rootStats.dev)
-      || Number(rootAfter.ino) !== Number(rootStats.ino)
+      || rootAfter.dev !== rootStats.dev
+      || rootAfter.ino !== rootStats.ino
       || !parentAfterLexical.isDirectory()
       || parentAfterLexical.isSymbolicLink()
       || realParentAfter !== realParent
-      || Number(parentAfter.dev) !== Number(parentStats.dev)
-      || Number(parentAfter.ino) !== Number(parentStats.ino)
+      || parentAfter.dev !== parentStats.dev
+      || parentAfter.ino !== parentStats.ino
       || leafAfter.isSymbolicLink()
       || leafAfter.dev !== opened.dev
       || leafAfter.ino !== opened.ino

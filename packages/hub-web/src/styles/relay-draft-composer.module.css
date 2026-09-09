@@ -106,6 +106,42 @@
   line-height: 1.5;
 }
 
+.audienceSelect {
+  position: relative;
+  width: 100%;
+}
+
+.audienceSelect select {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 4px 32px 4px 10px;
+  color: var(--foreground);
+  font: inherit;
+  font-size: 12px;
+  appearance: none;
+  background: var(--background);
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  outline: none;
+}
+
+.audienceSelect select:focus-visible {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 35%, transparent);
+}
+
+.audienceSelect > svg {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  width: 14px;
+  height: 14px;
+  color: var(--muted-foreground);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
 .recipientChips {
   width: 100%;
   min-height: 40px;

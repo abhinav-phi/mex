@@ -75,6 +75,67 @@ describe("readLegacyTimeline", () => {
     expect(readLegacyTimeline(root).entries[0]?.timestamp).toBe("2026-08-23T01:02:03.000Z");
   });
 
+  it("preserves LF IDs through CRLF blank, malformed, and duplicate rows without changing the file", () => {
+    const valid = JSON.stringify({
+      timestamp: "2026-08-23T01:02:03.000Z",
+      kind: "note",
+      message: "Retain history 🌱",
+      files: [],
+    });
+    const rows = ["", "not-json-😀", "\t ", valid, "", valid];
+    const results = ["\n", "\r\n"].map((newline) => {
+      const root = temporaryRoot();
+      const eventsDir = join(root, ".mex", "events");
+      mkdirSync(eventsDir, { recursive: true });
+      const file = join(eventsDir, "decisions.jsonl");
+      // Leave the last duplicate unterminated to cover EOF as well as newlines.
+      writeFileSync(file, rows.join(newline));
+      const before = readFileSync(file);
+      const beforeStat = statSync(file, { bigint: true });
+      const result = readLegacyTimeline(root);
+      expect(readFileSync(file)).toEqual(before);
+      expect(statSync(file, { bigint: true }).mtimeNs).toBe(beforeStat.mtimeNs);
+      expect(result.entries.map((entry) => entry.sourceLine)).toEqual([4, 6]);
+      expect(result.entries[0]!.id).not.toBe(result.entries[1]!.id);
+      expect(result.diagnostics).toMatchObject([
+        { code: "LEGACY_ACTIVITY_MALFORMED", detail: { line: 2 } },
+        { code: "LEGACY_ACTIVITY_DUPLICATE", detail: { line: 6, firstLine: 4 } },
+      ]);
+      expect(result.truncated).toBe(false);
+      return result;
+    });
+    expect(results[1]).toEqual(results[0]);
+  });
+
+  it("counts CR in raw line limits while retaining LF offsets after an oversized row", () => {
+    const valid = JSON.stringify({
+      timestamp: "2026-08-23T01:02:03.000Z",
+      kind: "note",
+      message: "bounded",
+      files: [],
+    });
+    const results = ["\n", "\r\n"].map((newline) => {
+      const root = temporaryRoot();
+      const eventsDir = join(root, ".mex", "events");
+      mkdirSync(eventsDir, { recursive: true });
+      const file = join(eventsDir, "decisions.jsonl");
+      writeFileSync(file, `${valid.padEnd(64 * 1024, " ")}${newline}${valid}${newline}`);
+      const before = readFileSync(file);
+      const beforeStat = statSync(file, { bigint: true });
+      const result = readLegacyTimeline(root);
+      expect(readFileSync(file)).toEqual(before);
+      expect(statSync(file, { bigint: true }).mtimeNs).toBe(beforeStat.mtimeNs);
+      return result;
+    });
+    expect(results[0]!.entries).toHaveLength(2);
+    expect(results[0]!.diagnostics).toEqual([]);
+    expect(results[1]!.entries).toHaveLength(1);
+    expect(results[1]!.entries[0]).toEqual(results[0]!.entries[1]);
+    expect(results[1]!.diagnostics).toMatchObject([
+      { code: "LEGACY_ACTIVITY_MALFORMED", detail: { line: 1 } },
+    ]);
+  });
+
   it("uses byte offsets for stable IDs with multibyte preceding lines", () => {
     const root = temporaryRoot();
     const eventsDir = join(root, ".mex", "events");

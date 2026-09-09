@@ -51,16 +51,16 @@ describe("packaged official agent skills", () => {
     expect(metadata.interface?.default_prompt).toContain(`$${name}`);
   });
 
-  it("bounds Inbox activation to governed Spec-family proposals", () => {
+  it("routes explicit knowledge contributions while keeping routine upkeep outside Inbox", () => {
     const { frontmatter, body } = readSkill("mex-inbox");
     const description = String(frontmatter.description);
-    for (const positive of ["requirement", "constraint", "acceptance criterion", "team review"]) {
+    for (const positive of ["project knowledge", "addition or correction", "team review"]) {
       expect(description.toLowerCase()).toContain(positive);
     }
-    for (const negative of ["email inboxes", "openapi", "vague brainstorming", "arbitrary wiki pages"]) {
+    for (const negative of ["email inboxes", "brainstorming alone", "routine grow upkeep", "session logs"]) {
       expect(description.toLowerCase()).toContain(negative);
     }
-    expect(body).toContain("exactly one `spec.create` or `spec.update`");
+    expect(body).toContain("one `knowledge.create` or `knowledge.update`");
     expect(body).toContain("/inbox?view=drafts&draft=<id>");
   });
 

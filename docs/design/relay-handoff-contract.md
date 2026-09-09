@@ -1,6 +1,6 @@
 # Relay Handoff Contract
 
-Status: standalone schema-v3 Relay contract implemented; pinned release calibration retained and final enforcement gated
+Status: 0.8.1 team-audience and Member recovery extension in progress; pinned release enforcement remains gated
 
 This brief freezes the repository-native Relay product: a checkout-local draft
 becomes one canonical handoff, one eligible recipient takes it, and the original
@@ -8,9 +8,10 @@ sender or claimant closes it. A Relay is standalone team memory. It can carry
 structured progress and related context, but it does not belong to a Workstream,
 deliver messages, start agents, notify external systems, or execute work.
 
-Repositories that will publish schema-v3 Relays must first update MEX for every
-teammate. Older binaries cannot parse the strict v3 artifact. Existing schema-v1
-and schema-v2 Relays remain compatible and are never rewritten or backfilled.
+Repositories publishing open-to-team schema-v4 Relays must use the 0.8.1-capable
+CLI across the team. Older binaries cannot parse this new strict format.
+Existing schema-v1, v2, and v3 Relays retain their original named recipients
+and are never rewritten or backfilled.
 
 ## Lifecycle and authority
 
@@ -24,7 +25,8 @@ Draft reads and save/update/delete are checkout-local. They require no current
 Member, Git identity, Wiki index, Workstream service, GitHub access, or network
 request. A new draft requires only:
 
-- one to 32 unique canonical Member recipients; and
+- an intended audience and an optional selection of up to 32 unique Member
+  recipients (an empty array is valid locally); and
 - a non-empty bounded, single-line summary.
 
 The optional `completed`, `inProgress`, `decisions`, `blockers`,
@@ -45,13 +47,18 @@ at 64 entries.
 
 Publication resolves the current actor to one active canonical Member, through
 either the explicit checkout-local selection or one unique active Git alias. It
-also proves that every recipient is active. Its exact expectation set is the
+also proves that every named recipient is active. An explicit `team` audience
+requires an empty recipient array and only the exact local draft revision.
+A `members` audience requires one to 32 named recipients at publication; an
+omitted audience retains this legacy meaning. Its exact expectation set is the
 local draft revision plus every unique recipient Member revision: no Workstream,
 duplicate, omission, semantic revision, or unrelated target is accepted. The
 same facts are checked under the repository workflow lease immediately before
 publication and when an unpublished intent is recovered.
 
-Any listed active recipient may Take a published Relay. Exact Relay-revision
+Any listed active recipient may Take a named Relay. An open-to-team Relay allows
+any current active project Member, including one who joined after publication.
+Exact Relay-revision
 conflict semantics make the first successful acknowledgement the sole claimant.
 Two unsynchronized clones can still attempt claims and later encounter a Git
 conflict; Relay does not provide a global network lock. Close requires
@@ -60,8 +67,10 @@ close, and both recorded principals must remain active. Closing only removes
 the handoff from open attention and does not complete or modify a Workstream or
 task. Authorization compares stable `memberId` values, never display names or
 whole actor objects. Legacy Git, unknown, or inactive principals remain
-readable but cannot act; reactivation is the only recovery for a stranded
-Relay.
+readable but cannot act. Explicit `member.reactivate` restores an inactive
+Member with the same ID through a revision-bound preview/apply and one
+`member.reactivated` Activity. Alias collisions and stale state fail closed;
+reactivation never rewrites recorded actors or changes local Member selection.
 
 ## Canonical artifacts and Activity
 
@@ -72,10 +81,13 @@ Relay artifacts are a strict schema-discriminated union:
 - schema v2 requires `workstream` and `published_at`, with no
   `published_repo_state`;
 - schema v3 rejects `workstream` and requires both `published_at` and
-  `published_repo_state`.
+  `published_repo_state`;
+- schema v4 has the same standalone publication context, requires
+  `audience: team`, and requires an empty recipient array.
 
-New publications always write schema v3. Their public Hub and CLI projections
-expose `schemaVersion: 1 | 2 | 3`, `workstream: EntityRef | null`, and
+Named publications still write schema v3; open-to-team publications write v4.
+Their public Hub and CLI projections expose `schemaVersion: 1 | 2 | 3 | 4`,
+optional `audience`, `workstream: EntityRef | null`, and
 `publishedRepoState: RepoState | null`. Legacy v1/v2 values retain their
 recorded Workstream and return no publication repository state. V3 returns a
 null Workstream and its immutable publication state. Acknowledge and Close
@@ -101,7 +113,7 @@ not a reproducible source snapshot. Preview/apply revalidation detects branch,
 HEAD, or clean/dirty changes, but cannot detect dirty tree A changing into dirty
 tree B.
 
-Publication writes the v3 Relay and exactly one `relay.published` Activity
+Publication writes the v3 or v4 Relay and exactly one `relay.published` Activity
 before deleting the exact local draft. That Activity has the Relay as subject,
 omits Workstream, and records the same timestamp and repository state as the
 Relay publication. Take and Close each write exactly one Activity with their
@@ -153,6 +165,22 @@ request and apply only the complete successful wrapper through
 `--apply <preview-envelope>`; request fragments, altered wrappers,
 reconstructed receipts, and mismatched action commands are rejected before a
 repository service is opened.
+
+New local drafts also support `mex relay draft save --from <draft.json>
+[--operation-id <id>] --json`. The bounded file contains only sparse draft
+content. Omitted audience and recipient fields default to open-to-team; an
+explicit named audience remains named even when its local recipient selection
+is empty. The shortcut performs the same signed preview/apply internally and
+requires a preview that only creates one local draft. It cannot publish, update,
+or delete. Before applying, it saves the exact preview in an owner-only file
+under `.mex/local/relay-previews/`; new saves stop at 64 occupied entries,
+each limited to 64 KiB. Recovery permits one additional private staging file
+left between atomic publication and cleanup. Staging files remain inert and
+count against new-save capacity. Successful saves remove their exact pending file.
+Interrupted saves retain it and can resume using the same operation ID and
+unchanged content, or the returned exact `--apply` command. Conflicting requests
+never replace an existing receipt. This content remains checkout-local and is
+excluded from Git; it is not added to the metadata-only workflow journal.
 
 Because Relay was not merged to `origin/main`, included in a release tag, or
 externally released before v3 implementation, the pre-release request/catalog

@@ -52,6 +52,44 @@ shipping new versions.
 If you only use the `mex` CLI, most of this still applies, but CLI flags
 themselves are best-effort (see [CLI surface](#cli-surface) below).
 
+## Upgrading to 0.8.1
+
+Install `mex-agent@0.8.1`, then run `mex skills sync --dry-run` and
+`mex skills sync` in each project whose managed agent skills and instructions
+you want to update. Review conflicts with locally edited instructions and start
+a new agent session afterward. An already completed 0.8.0 setup does not need
+to run setup again just for this package upgrade. Installing the package alone
+does not change the repository.
+
+New **open-to-team Relays use artifact schema v4**. Upgrade teammates to 0.8.1
+before exchanging these handoffs; 0.8.0 cannot read the new format. Existing
+schema-v1, v2, and v3 Relays remain supported, and newly published named-recipient
+Relays continue to use v3. This Relay artifact version is separate from Graph
+and checkout-local database schema versions.
+
+Tracked Markdown remains canonical. Graph/Wiki indexes and `.mex/local/` stay
+checkout-local and ignored by Git. Follow the explicit action reported by
+`mex graph status` after upgrading; ordinary reads never rebuild or migrate an
+index. A successful agent session no longer authorizes replacing a grounding
+baseline: existing baselines change only through explicit, scoped acceptance.
+
+Telemetry now includes CLI and Hub events under one random installation UUID,
+with the existing scaffold UUID and configured AI-tool names when available.
+These are pseudonymous usage signals, not verified people or team sizes. Use
+`mex telemetry inspect` to inspect the catalog and `mex telemetry disable` to
+opt out; `DO_NOT_TRACK=1` and `MEX_TELEMETRY=0` also disable collection and
+sending. See [TELEMETRY.md](TELEMETRY.md) for payloads, exclusions, and delivery
+limits. Existing opt-out preferences remain effective.
+
+### Nix source package
+
+The source `flake.nix` takes its version from `package.json`, but its fixed
+`npmDepsHash` predates the current dependency lockfile and needs regeneration
+and a successful `nix build` before that package can be considered verified.
+The 0.8.1 release checks cover the npm installation path; they do not establish
+Nix build support. The helper `prefetch-npm-deps package-lock.json` can compute
+the dependency hash in an environment where it is available.
+
 ## The public API
 
 The only public surface is what's exported from the package entry point:

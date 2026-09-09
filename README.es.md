@@ -26,6 +26,8 @@ MEX mantiene la arquitectura, las decisiones, los requisitos y los traspasos de 
 
 </div>
 
+> La descripción principal de esta traducción sigue correspondiendo a 0.8.0. Los comandos de instalación y las indicaciones de actualización se han ajustado para 0.8.1; los cambios de producto se documentan en el [README en inglés](README.md) y en las [notas de la versión 0.8.1](RELEASE_NOTES.md).
+
 ---
 
 Una persona del equipo sabe por qué existe una restricción. Otra conoce el historial de depuración. Un agente de programación encontró un caso límite importante en una sesión que nadie más leerá. El siguiente compañero tiene que reconstruir todo ese contexto.
@@ -100,7 +102,7 @@ MEX requiere **Node.js 22.5 o posterior** y un repositorio Git. El flujo habitua
 Ejecuta lo siguiente desde la raíz del repositorio:
 
 ```bash
-npx mex-agent@0.8.0 setup
+npx mex-agent@0.8.1 setup
 ```
 
 La configuración conserva las instrucciones existentes, construye el Code Graph local e instala las integraciones seleccionadas. Puede iniciar una CLI disponible de Claude Code o Codex que hayas seleccionado para poblar la memoria; si este paso queda incompleto, muestra el prompt y se pausa. Una vez poblada la memoria, captura los vínculos al código, construye el índice de la Wiki, valida el resultado y muestra el punto de control de Git. Los agentes conectados tienen sus propios requisitos de instalación, cuenta y red.
@@ -115,7 +117,7 @@ Revisa y ejecuta exactamente los comandos `git add` que muestra la configuració
 
 ```bash
 git commit -m "chore: initialize MEX"
-npx mex-agent@0.8.0 hub
+npx mex-agent@0.8.1 hub
 ```
 
 ![Tres pasos para dejar listo el proyecto: ejecutar la configuración, poblar la memoria y después revisar y guardar el punto de control con un commit antes de abrir Hub.](docs/diagrams/readme/setup.svg)
@@ -132,9 +134,9 @@ Comparte el commit de configuración revisado mediante un push siguiendo el fluj
 Clona el repositorio y la rama del equipo, o actualízalos con un pull de Git. Si la configuración de 0.8 está completa y guardada en un commit, construye los índices derivados en tu propia copia de trabajo y abre Hub:
 
 ```bash
-npx mex-agent@0.8.0 graph rebuild
-npx mex-agent@0.8.0 wiki rebuild-index
-npx mex-agent@0.8.0 hub
+npx mex-agent@0.8.1 graph rebuild
+npx mex-agent@0.8.1 wiki rebuild-index
+npx mex-agent@0.8.1 hub
 ```
 
 Reutiliza la memoria compartida del proyecto; no la regeneres solo para incorporarte. En Team/Members, comprueba la identidad efectiva y, si hace falta, selecciona tu registro de Member existente para establecerla localmente. Si aún no tienes un registro, créalo explícitamente mediante el flujo con revisión y comparte sus archivos canónicos. Members sirve para atribuir contribuciones, no es un sistema de inicio de sesión ni de permisos.
@@ -147,7 +149,7 @@ Para configuraciones antiguas o incompletas, sigue primero las instrucciones de 
 <summary><strong>¿Prefieres una instalación global?</strong></summary>
 
 ```bash
-npm install -g mex-agent@0.8.0
+npm install -g mex-agent@0.8.1
 mex setup
 ```
 
@@ -162,14 +164,14 @@ La oferta interactiva de instalación global al final de la configuración utili
 <summary><strong>¿Usas MEX para un agente operativo persistente?</strong></summary>
 
 ```bash
-npx mex-agent@0.8.0 setup --mode agent-memory
+npx mex-agent@0.8.1 setup --mode agent-memory
 ```
 
 Esta plantilla independiente aplica el modelo de enrutamiento y mantenimiento de MEX a laboratorios domésticos, infraestructura y espacios de trabajo de agentes de larga duración. Añade un contrato `HEARTBEAT.md` y convenciones de limpieza; el flujo de Code Graph, Wiki y Hub de equipo descrito en este README corresponde al modo predeterminado `code-repo`.
 
 </details>
 
-Los ejemplos usan `mex` para facilitar la lectura. Instálalo globalmente como se indica arriba o sustitúyelo por `npx mex-agent@0.8.0`.
+Los ejemplos usan `mex` para facilitar la lectura. Instálalo globalmente como se indica arriba o sustitúyelo por `npx mex-agent@0.8.1`.
 
 <a id="how-mex-works"></a>
 
@@ -357,12 +359,14 @@ Usa `mex capabilities --json` para descubrir las capacidades en un formato legib
 Para una instalación global, actualiza la CLI y las copias de las skills seleccionadas de Claude Code/Codex:
 
 ```bash
-npm install -g mex-agent@0.8.0
+npm install -g mex-agent@0.8.1
 mex skills sync --dry-run
 mex skills sync
 ```
 
-Inicia una nueva sesión del agente después de sincronizar las skills. Actualizar el paquete y las skills no basta para que un repositorio antiguo esté listo para Hub. La implementación de 0.8 permite volver a ejecutar la configuración sobre una estructura ya poblada y conservar los archivos escritos, pero las notas de la versión describen la configuración como un proceso para instalaciones nuevas, no como una garantía de migración universal. Evalúa el proceso de preparación completo con una ejecución de prueba antes de aplicarlo:
+Si ya completaste la configuración con 0.8.0, estos comandos actualizan las skills y las instrucciones administradas del agente; no hace falta volver a ejecutar setup solo por actualizar el paquete. Revisa los conflictos que se indiquen con instrucciones editadas localmente y después inicia una nueva sesión del agente.
+
+Actualizar el paquete y las skills no basta para que un repositorio antiguo o incompleto esté listo para Hub. Para esos repositorios, evalúa setup con una ejecución de prueba antes de aplicarlo; setup conserva los archivos existentes y sigue requiriendo la revisión de sus cambios:
 
 ```bash
 mex setup --dry-run
@@ -376,7 +380,7 @@ Revisa cada cambio generado antes de hacer commit. En particular, confirma que `
 Las estructuras de Markdown existentes siguen siendo válidas y las lecturas del Graph nunca migran un almacén de forma implícita. Los almacenes compatibles con schema-v2 y los almacenes completos con schema-v3 pueden actualizarse mediante una reparación explícita; los almacenes con schema-v1, parciales, ambiguos, malformados o corruptos requieren una reconstrucción. Sigue la acción exacta que indique `mex graph status`. No añadas una regla general para ignorar `.mex/`: ocultaría la memoria canónica que tu equipo debe compartir.
 
 > [!WARNING]
-> Coordina la actualización a 0.8 en todo el equipo antes de intercambiar Relays con schema-v3: los binarios anteriores a 0.8 no pueden interpretarlos. Quienes usen Node 20 deben permanecer en MEX 0.6.3 hasta que puedan pasar a Node 22.5 o posterior.
+> Actualiza a todo el equipo a **0.8.1 antes de compartir nuevos Relays abiertos al equipo**, que usan schema-v4. Los Relays existentes con schema-v1 a schema-v3 siguen siendo compatibles, y los traspasos con destinatarios concretos siguen usando schema-v3. MEX requiere Node 22.5 o posterior con [SQLite FTS5 disponible](COMPATIBILITY.md#sqlite-fts5). Quienes usen Node 20 deben permanecer en MEX 0.6.3 hasta que puedan pasar a una compilación compatible de Node.
 
 <a id="privacy-and-trust-model"></a>
 
@@ -384,17 +388,17 @@ Las estructuras de Markdown existentes siguen siendo válidas y las lecturas del
 
 MEX no sube sus registros canónicos, Graph, índice de la Wiki, borradores, selección de identidad ni sesiones de Hub a un servicio de MEX. No ofrece transporte automático entre miembros del equipo: el contenido se comparte mediante las operaciones habituales de Git que tú realizas. Hub escucha en la interfaz de loopback y la capa de recuperación local de MEX no requiere credenciales de modelos.
 
-MEX tiene **telemetría seudónima de uso de la CLI**, activada por defecto salvo que la desactives. Cada invocación que cumpla las condiciones envía como máximo un evento. Los campos permitidos por MEX son un identificador aleatorio de la máquina, el nombre del comando, la versión de MEX, el sistema operativo, la versión de Node y, cuando existe una identidad disponible, un identificador de la estructura de MEX; el SDK de PostHog también añade metadatos con el nombre y la versión de su biblioteca. MEX no añade argumentos de comandos, rutas de archivos, nombres de repositorios, contenido de archivos ni direcciones IP al contenido enviado, aunque el servicio receptor puede observar los metadatos habituales del transporte.
+MEX tiene **telemetría seudónima de uso de la CLI y del Hub**, activada por defecto salvo que la desactives. Registra nombres de comandos, resultados, acciones explícitas del Hub, categorías de páginas y resultados de trabajos. Ambos usan un UUID aleatorio de instalación para medir el uso recurrente. Cuando están disponibles, también se envían el UUID existente del scaffold para estimar el uso compartido de un proyecto y los nombres de las herramientas de IA seleccionadas en su configuración; estos datos no identifican al agente que ejecuta el comando ni demuestran el tamaño de un equipo. Quien tenga acceso a la configuración puede asociar el UUID del scaffold con ese proyecto. No se envían nombres, remotos de repositorios, argumentos, rutas, contenido, búsquedas ni datos de contacto. El servicio receptor puede observar los metadatos habituales del transporte. Una cola local limitada y una espera breve al terminar la CLI permiten posponer el envío sin cambiar el resultado del comando.
 
 Consulta o desactiva la telemetría con:
 
 ```bash
 mex telemetry inspect
 mex telemetry status
-mex config set telemetry off
+mex telemetry disable
 ```
 
-También puedes desactivarla con `MEX_TELEMETRY=0` o `DO_NOT_TRACK=1`. Consulta la [política de telemetría](https://github.com/mex-memory/mex/blob/v0.8.0/TELEMETRY.md) para conocer los controles y el contenido exacto que se envía. Los agentes de programación conectados a MEX pueden tener su propio comportamiento de red y telemetría; eso depende de esas herramientas, no de MEX.
+También puedes desactivarla con `MEX_TELEMETRY=0` o `DO_NOT_TRACK=1`. Consulta la [política de telemetría](TELEMETRY.md) para conocer los controles y el contenido exacto que se envía. Los agentes de programación conectados a MEX pueden tener su propio comportamiento de red y telemetría; eso depende de esas herramientas, no de MEX.
 
 <a id="what-mex-is-not"></a>
 

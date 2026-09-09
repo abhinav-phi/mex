@@ -10,8 +10,8 @@ import {
   CircleDashed,
   ExternalLink,
   GitBranch,
-  Inbox,
   LoaderCircle,
+  Network,
   RadioTower,
   RefreshCw,
   ScrollText,
@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { useState, type CSSProperties, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { InboxProposalIdSchema, RelayIdSchema } from "@mex/hub-contracts/ids";
+import { RelayIdSchema } from "@mex/hub-contracts/ids";
 import { useHubApi } from "../api/context";
 import type { ActivityItem, OverviewResponse } from "../api/types";
 import {
@@ -124,14 +124,20 @@ function HomeHeader({
       title="Overview"
       description={data ? `Last checked ${formatDate(data.observedAt)}` : undefined}
       actions={(
-        <Button disabled={refreshing} onClick={onRefresh} size="sm" type="button" variant="outline">
-          <RefreshCw
-            aria-hidden="true"
-            className={refreshing ? homeStyles.refreshingIcon : undefined}
-            data-icon="inline-start"
-          />
-          {refreshing ? "Refreshing…" : "Refresh"}
-        </Button>
+        <div className={homeStyles.headerActions}>
+          <Button nativeButton={false} render={<Link to="/knowledge" />} size="sm">
+            <Network aria-hidden="true" data-icon="inline-start" />
+            Explore Context
+          </Button>
+          <Button disabled={refreshing} onClick={onRefresh} size="sm" type="button" variant="outline">
+            <RefreshCw
+              aria-hidden="true"
+              className={refreshing ? homeStyles.refreshingIcon : undefined}
+              data-icon="inline-start"
+            />
+            {refreshing ? "Refreshing…" : "Refresh"}
+          </Button>
+        </div>
       )}
     />
   );
@@ -192,15 +198,6 @@ function actorAttentionDescription(data: OverviewResponse): string {
     return "Your saved identity choice no longer resolves cleanly in this checkout.";
   }
   return "Review the team identity MEX uses for shared actions in this checkout.";
-}
-
-function proposalRoute(source: FocusPanel["inbox"]): string {
-  if (source.availability !== "available") return "/inbox?view=review";
-  const proposal = source.items[0];
-  const parsed = proposal ? InboxProposalIdSchema.safeParse(proposal.ref.id) : null;
-  return parsed?.success
-    ? `/inbox?view=review&proposal=${encodeURIComponent(parsed.data)}`
-    : "/inbox?view=review";
 }
 
 function relayRoute(source: FocusPanel["relays"], kind: "ready" | "claimed"): string {
@@ -267,16 +264,6 @@ function buildFocusItems(data: OverviewResponse): FocusItemView[] {
       icon: UserRound,
     });
   }
-  if (focus?.inbox.availability === "available" && focus.inbox.teamReviewCount > 0) {
-    const count = focus.inbox.teamReviewCount;
-    items.push({
-      id: "inbox",
-      title: count === 1 ? "Review one proposed Spec change" : `Review ${count} proposed Spec changes`,
-      action: "Open Inbox",
-      route: proposalRoute(focus.inbox),
-      icon: Inbox,
-    });
-  }
   if (focus?.relays.availability === "available" && focus.relays.readyToTakeCount > 0) {
     const count = focus.relays.readyToTakeCount;
     items.push({
@@ -335,9 +322,6 @@ function focusWarnings(data: OverviewResponse): Array<{ label: string; reason: s
   if (data.focus.identity.availability === "unavailable") {
     warnings.push({ label: "Identity focus", reason: data.focus.identity.reason });
   }
-  if (data.focus.inbox.availability === "unavailable") {
-    warnings.push({ label: "Inbox focus", reason: data.focus.inbox.reason });
-  }
   if (data.focus.relays.availability === "unavailable") {
     warnings.push({ label: "Relay focus", reason: data.focus.relays.reason });
   }
@@ -371,42 +355,6 @@ function FocusTechnicalDetails({ data }: { data: OverviewResponse }) {
             ))}
           </>
         ) : <div><dt>Identity source</dt><dd>{data.identity.reason}</dd></div>}
-        {focus?.inbox.availability === "available" ? (
-          <>
-            <div><dt>Inbox revision</dt><dd><code>{focus.inbox.deterministicRevision}</code></dd></div>
-            <div><dt>Inbox source truncated</dt><dd>{focus.inbox.sourceTruncated ? "Yes" : "No"}</dd></div>
-            <div><dt>Inbox diagnostics truncated</dt><dd>{focus.inbox.diagnosticsTruncated ? "Yes" : "No"}</dd></div>
-            {focus.inbox.diagnostics.map((diagnostic, index) => (
-              <div key={`inbox:${diagnostic.code}:${diagnostic.path ?? "none"}:${index}`}>
-                <dt>{diagnostic.code}</dt>
-                <dd>{diagnostic.path ? <code>{diagnostic.path}</code> : diagnostic.message}</dd>
-              </div>
-            ))}
-          </>
-        ) : null}
-        {focus?.inbox.availability === "unavailable" ? (
-          <>
-            <div><dt>Inbox source</dt><dd>{focus.inbox.reason}</dd></div>
-            {focus.inbox.deterministicRevision ? (
-              <div><dt>Inbox revision</dt><dd><code>{focus.inbox.deterministicRevision}</code></dd></div>
-            ) : null}
-            {focus.inbox.truncated !== undefined ? (
-              <div><dt>Inbox corpus truncated</dt><dd>{focus.inbox.truncated ? "Yes" : "No"}</dd></div>
-            ) : null}
-            {focus.inbox.sourceTruncated !== undefined ? (
-              <div><dt>Inbox source truncated</dt><dd>{focus.inbox.sourceTruncated ? "Yes" : "No"}</dd></div>
-            ) : null}
-            {focus.inbox.diagnosticsTruncated !== undefined ? (
-              <div><dt>Inbox diagnostics truncated</dt><dd>{focus.inbox.diagnosticsTruncated ? "Yes" : "No"}</dd></div>
-            ) : null}
-            {focus.inbox.diagnostics?.map((diagnostic, index) => (
-              <div key={`inbox:${diagnostic.code}:${diagnostic.path ?? "none"}:${index}`}>
-                <dt>{diagnostic.code}</dt>
-                <dd>{diagnostic.path ? <code>{diagnostic.path}</code> : diagnostic.message}</dd>
-              </div>
-            ))}
-          </>
-        ) : null}
         {focus?.relays.availability === "available" ? (
           <>
             <div><dt>Relay revision</dt><dd><code>{focus.relays.deterministicRevision}</code></dd></div>
@@ -458,6 +406,12 @@ function FocusCard({ data, onRetry }: { data: OverviewResponse; onRetry: () => v
     <Card className={homeStyles.focusCard} role="region" aria-labelledby="overview-focus-heading">
       <CardHeader className={homeStyles.panelHeader}>
         <CardTitle><h2 id="overview-focus-heading">Attention</h2></CardTitle>
+        <CardAction>
+          <Button nativeButton={false} render={<Link to="/relays" />} size="sm" variant="ghost">
+            View Relays
+            <ArrowRight aria-hidden="true" data-icon="inline-end" />
+          </Button>
+        </CardAction>
       </CardHeader>
       <CardContent className={homeStyles.focusContent}>
         {primary && PrimaryIcon ? (
@@ -479,9 +433,9 @@ function FocusCard({ data, onRetry }: { data: OverviewResponse; onRetry: () => v
               <EmptyTitle>You’re caught up</EmptyTitle>
             </EmptyHeader>
             <EmptyContent>
-              <Button nativeButton={false} render={<Link to="/search" />} size="sm" variant="outline">
-                <BookOpenText aria-hidden="true" data-icon="inline-start" />
-                Browse project memory
+              <Button nativeButton={false} render={<Link to="/knowledge" />} size="sm" variant="outline">
+                <Network aria-hidden="true" data-icon="inline-start" />
+                Browse shared knowledge
               </Button>
             </EmptyContent>
           </Empty>
@@ -559,18 +513,7 @@ function ActivityRow({ item }: { item: ActivityItem }) {
   );
 }
 
-/**
- * Where the signup lives, and why the Hub never sees the address.
- *
- * The form is hosted; this card only opens it. That is not a shortcut — the Hub
- * serves itself under a policy that permits neither an outbound `fetch` nor a
- * cross-origin form post (`src/hub/app.ts`, `connect-src 'self'`,
- * `form-action 'self'`), so an input here could not submit anywhere without
- * loosening the rule that makes "Runs locally" in the sidebar true. Opening a
- * link is a navigation rather than a connection, so it stays inside the policy.
- *
- * The consequence worth stating: **no email address ever passes through mex.**
- */
+/** Hosted voluntary feedback; no address or installation ID passes through the Hub. */
 const UPDATES_FORM = "https://tally.so/r/KYjv4k";
 
 /**
@@ -584,12 +527,12 @@ function UpdatesSignupCard() {
     <Card className={homeStyles.updatesCard} role="region" aria-labelledby="overview-updates-heading">
       <CardHeader className={homeStyles.panelHeader}>
         <div>
-          <CardTitle><h2 id="overview-updates-heading">Help make MEX better</h2></CardTitle>
+          <CardTitle><h2 id="overview-updates-heading">Help shape MEX</h2></CardTitle>
         </div>
       </CardHeader>
       <CardContent className={homeStyles.updatesContent}>
         <p className={homeStyles.updatesBody}>
-          A short form about how you&rsquo;re using it. Your answers help shape mex :)
+          Tell us how you use MEX and what we should improve.
         </p>
         <div className={homeStyles.updatesActions}>
           {/*
@@ -602,7 +545,7 @@ function UpdatesSignupCard() {
             size="sm"
             variant="outline"
           >
-            Open the form
+            Share feedback
             <ExternalLink aria-hidden="true" data-icon="inline-end" />
           </Button>
         </div>
@@ -635,7 +578,7 @@ function LatestActivityCard({ activity, onRetry }: { activity: OverviewResponse[
                 <EmptyMedia variant="icon"><ScrollText aria-hidden="true" /></EmptyMedia>
                 <EmptyHeader>
                   <EmptyTitle>No team memory yet</EmptyTitle>
-                  <EmptyDescription>Shared MEX changes, including agent-prepared Spec proposals and handoffs, will appear here automatically.</EmptyDescription>
+                  <EmptyDescription>Recorded team changes, handoffs, and project notes will appear here.</EmptyDescription>
                 </EmptyHeader>
               </Empty>
             ) : (
@@ -924,7 +867,8 @@ function OperationCard({ operation }: { operation: OverviewResponse["operation"]
   const job = operation.active ?? operation.latestRelevantFailure;
   if (job === null) return null;
   const isActive = operation.active !== null;
-  const percent = job.progress?.total === undefined
+  const graph = job.kind === "graph_refresh" || job.kind === "graph_rebuild";
+  const percent = job.progress?.total === undefined || (graph && job.phase !== "parse")
     ? null
     : Math.round((job.progress.completed / job.progress.total) * 100);
   return (
@@ -952,7 +896,9 @@ function OperationCard({ operation }: { operation: OverviewResponse["operation"]
             <Progress value={percent}>
               <ProgressLabel>{sentenceCase(job.kind)} · {sentenceCase(job.phase)}</ProgressLabel>
               <ProgressValue>
-                {() => percent !== null
+                {() => graph && job.progress
+                  ? `${job.progress.completed}${job.progress.total === undefined ? "" : ` / ${job.progress.total}`} files parsed`
+                  : percent !== null
                   ? `${job.progress!.completed} / ${job.progress!.total}`
                   : job.progress ? `${job.progress.completed} completed` : "In progress"}
               </ProgressValue>

@@ -60,6 +60,40 @@ async function expectLoadedActivity(page: Page, count: number): Promise<void> {
 }
 
 test.describe("populated development fixture", () => {
+  for (const viewport of [{ width: 1024, height: 768 }, { width: 1440, height: 900 }]) {
+    test(`changes checkout logging settings accessibly at ${viewport.width}px`, async ({ page }, testInfo) => {
+      const errors = watchBrowserErrors(page);
+      await page.setViewportSize(viewport);
+      await page.goto("/settings?fixture=populated");
+      await expect(page.getByRole("heading", { name: "Agent logging", exact: true })).toBeVisible();
+      const significant = page.getByRole("radio", { name: "Significant events", exact: true });
+      await expect(significant).toBeChecked();
+      await expect(page.getByRole("button", { name: "Save preference" })).toBeDisabled();
+      await expectAccessible(page);
+      await expectNoHorizontalOverflow(page, viewport.width);
+      await page.screenshot({ path: testInfo.outputPath("settings-default.png"), fullPage: true });
+      await significant.focus();
+      await page.keyboard.press("ArrowDown");
+      await expect(page.getByRole("radio", { name: "Task checkpoints", exact: true })).toBeChecked();
+      const save = page.getByRole("button", { name: "Save preference" });
+      await save.focus();
+      await page.keyboard.press("Enter");
+      const notice = page.getByText("Logging preference saved for this checkout.");
+      await expect(notice).toBeFocused();
+      await expect(save).toBeDisabled();
+      await page.getByRole("radio", { name: "Only when asked", exact: true }).check();
+      await page.getByRole("button", { name: "Cancel", exact: true }).click();
+      await expect(page.getByRole("radio", { name: "Task checkpoints", exact: true })).toBeChecked();
+      await expectAccessible(page);
+      await expectNoHorizontalOverflow(page, viewport.width);
+      await page.screenshot({ path: testInfo.outputPath("settings-saved.png"), fullPage: true });
+      await page.getByRole("link", { name: /Read project notes in Activity/ }).click();
+      await expect(page).toHaveURL(/\/activity\?source=legacy$/);
+      await expect(page.getByRole("heading", { name: "Activity", exact: true })).toBeVisible();
+      expect(errors).toEqual([]);
+    });
+  }
+
   test("renders the deterministic Home workbench", async ({ page }) => {
     const errors = watchBrowserErrors(page);
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -68,11 +102,14 @@ test.describe("populated development fixture", () => {
     await expect(page.getByRole("heading", { name: "Overview", exact: true })).toBeVisible();
 
     const focus = page.getByRole("region", { name: "Attention", exact: true });
-    await expect(focus.getByRole("heading", { name: "Review 3 proposed Spec changes" })).toBeVisible();
-    await expect(focus.getByRole("button", { name: "Open Inbox" })).toHaveAttribute(
+    await expect(page.getByRole("button", { name: "Explore Context" })).toHaveAttribute("href", "/knowledge");
+    await expect(focus.getByRole("button", { name: "View Relays" })).toHaveAttribute("href", "/relays");
+    await expect(focus.getByRole("heading", { name: "Take the handoff waiting for you" })).toBeVisible();
+    await expect(focus.getByRole("button", { name: "Open handoff" })).toHaveAttribute(
       "href",
-      "/inbox?view=review&proposal=proposal_01000000000000000000001720",
+      `/relays?view=mine&state=open&relay=${readyRelayId}`,
     );
+    await expect(focus.getByRole("button", { name: "Open Inbox" })).toHaveCount(0);
     await expect(focus.getByText("Take the handoff waiting for you", { exact: true })).toBeVisible();
     await expect(focus.getByText("Continue the handoff you took", { exact: true })).toBeVisible();
     await expect(focus.getByText("Review local context health", { exact: true })).toBeVisible();
@@ -98,10 +135,8 @@ test.describe("populated development fixture", () => {
   test("keeps Overview focus priorities and exact destinations honest", async ({ page }) => {
     await page.goto("/?fixture=populated&overviewFixture=pending-review");
     await expect(page.locator('[data-overview-workbench="ready"]')).toBeVisible();
-    await expect(page.getByRole("region", { name: "Attention", exact: true }).getByRole("button", { name: "Open Inbox" })).toHaveAttribute(
-      "href",
-      "/inbox?view=review&proposal=proposal_01000000000000000000001720",
-    );
+    await expect(page.getByRole("region", { name: "Attention", exact: true }).getByRole("button", { name: "Open Inbox" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Explore Context" })).toHaveAttribute("href", "/knowledge");
 
     await page.goto("/?fixture=populated&overviewFixture=relay-ready");
     await expect(page.locator('[data-overview-workbench="ready"]')).toBeVisible();
@@ -141,7 +176,7 @@ test.describe("populated development fixture", () => {
     await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
     const caughtUp = page.getByRole("region", { name: "Attention", exact: true });
     await expect(caughtUp.getByText("You’re caught up", { exact: true })).toBeVisible();
-    await expect(caughtUp.getByRole("button", { name: "Browse project memory" })).toHaveAttribute("href", "/search");
+    await expect(caughtUp.getByRole("button", { name: "Browse shared knowledge" })).toHaveAttribute("href", "/knowledge");
     await expect(page.getByRole("region", { name: "Active operation" })).toHaveCount(0);
 
     await page.goto("/?fixture=populated&overviewFixture=indexes-missing");
@@ -169,7 +204,8 @@ test.describe("populated development fixture", () => {
     const determinate = page.getByRole("region", { name: "Active operation" });
     const determinateProgress = determinate.getByRole("progressbar");
     await expect(determinateProgress).toHaveAttribute("aria-valuenow", "68");
-    await expect(determinate.getByText("124 / 183", { exact: true })).toBeVisible();
+    await expect(determinateProgress).toHaveAccessibleName("Graph refresh · Parse");
+    await expect(determinate.getByText("124 / 183 files parsed", { exact: true })).toBeVisible();
     await expect(determinate.getByRole("button", { name: "View operation" })).toHaveAttribute(
       "href",
       `/jobs?job=${runningJobId}`,
@@ -179,6 +215,7 @@ test.describe("populated development fixture", () => {
     await expect(page.locator('[data-overview-workbench="ready"]')).toBeVisible();
     const indeterminate = page.getByRole("region", { name: "Active operation" });
     const indeterminateProgress = indeterminate.getByRole("progressbar");
+    await expect(indeterminateProgress).toHaveAccessibleName("Wiki refresh · Discover");
     await expect(indeterminateProgress).not.toHaveAttribute("aria-valuenow");
     await expect(indeterminate.getByText("37 completed", { exact: true })).toBeVisible();
   });
@@ -187,7 +224,8 @@ test.describe("populated development fixture", () => {
     await page.goto("/?fixture=populated&overviewFixture=partial");
     await expect(page.locator('[data-overview-workbench="ready"]')).toBeVisible();
     const focus = page.getByRole("region", { name: "Attention", exact: true });
-    await expect(focus.getByRole("heading", { name: "Review 2 proposed Spec changes" })).toBeVisible();
+    await expect(focus.getByRole("heading", { name: "Review local context health" })).toBeVisible();
+    await expect(focus.getByRole("button", { name: "Open Health" })).toHaveAttribute("href", "/health");
     await expect(focus.getByText("Relay focus unavailable", { exact: true })).toBeVisible();
     await expect(focus.getByRole("button", { name: "Try loading Relay focus again" })).toBeVisible();
 
@@ -272,6 +310,8 @@ test.describe("populated development fixture", () => {
     await expectAccessible(page);
     expect(errors).toEqual([]);
     if (hasReviewedHubVisualBaselines) {
+      await expect(page.locator('aside[aria-label="Project Hub navigation"]')
+        .getByText("Ada Lovelace", { exact: true })).toBeVisible();
       await expect(page).toHaveScreenshot("hub-search.png", { fullPage: true });
     }
   });
@@ -279,10 +319,10 @@ test.describe("populated development fixture", () => {
   test("browses, filters, paginates, and restores URL-backed Knowledge state", async ({ page }) => {
     const errors = watchBrowserErrors(page);
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.goto("/knowledge?fixture=populated");
+    await page.goto("/knowledge?fixture=populated&view=list");
 
-    await expect(page.getByRole("heading", { name: "Knowledge", exact: true })).toBeVisible();
-    await expect(page.getByText("Browse durable project memory", { exact: false })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Context", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "List", exact: true })).toHaveAttribute("aria-pressed", "true");
     const summary = page.getByText("All Knowledge records", { exact: true }).locator("..");
     await expect(summary).toBeFocused();
     await expect(page.getByText("2 loaded", { exact: true })).toBeVisible();
@@ -301,6 +341,7 @@ test.describe("populated development fixture", () => {
 
     await page.getByRole("button", { name: "Clear search and filters" }).click();
     await expect(page).not.toHaveURL(/kind=/);
+    await expect(page).toHaveURL(/view=list/);
     await expect(page.getByText("All Knowledge records", { exact: true }).locator("..")).toBeFocused();
     const searchbox = page.getByRole("searchbox", { name: "Search titles, summaries, and bodies" });
     await expect(searchbox).toHaveValue("");
@@ -548,7 +589,9 @@ test.describe("populated development fixture", () => {
     await page.goto(`/jobs?fixture=populated&job=${runningJobId}`);
     await expect(page.getByRole("heading", { name: "Jobs", exact: true })).toBeVisible();
     await expect(page.getByRole("complementary", { name: "Job detail" })).toBeVisible();
-    await expect(page.getByRole("complementary", { name: "Job detail" }).getByRole("progressbar", { name: "68% complete" })).toBeVisible();
+    const detail = page.getByRole("complementary", { name: "Job detail" });
+    await expect(detail.getByRole("progressbar", { name: "68% of files parsed" })).toHaveAttribute("aria-valuenow", "68");
+    await expect(detail.getByText("124 / 183 files parsed", { exact: true })).toBeVisible();
     await expect(page.getByLabel("Graph operation phases").getByText("Parse", { exact: true })).toHaveAttribute("aria-current", "step");
     await expect(page.getByRole("button", { name: /^Refresh graph/ })).toBeDisabled();
     await expect(page.getByRole("button", { name: /^Rebuild graph/ })).toBeDisabled();
@@ -1013,6 +1056,26 @@ test.describe("populated development fixture", () => {
     }
   }
 
+  test("saves a knowledge contribution as a local Inbox draft", async ({ page }) => {
+    const errors = watchBrowserErrors(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/inbox?fixture=populated&view=drafts");
+    await page.getByRole("button", { name: "Create manually", exact: true }).click();
+    const editor = page.getByRole("dialog", { name: "Create local knowledge draft" });
+    await expect(editor).toBeVisible();
+    await editor.getByLabel("Knowledge kind", { exact: true }).selectOption("decision");
+    await editor.getByLabel("Title", { exact: true }).fill("Keep shared context in Git");
+    await editor.getByLabel("Knowledge body", { exact: true }).fill("Accepted project knowledge lives in tracked Markdown.");
+    await editor.getByLabel("Rationale", { exact: true }).fill("Capture the decision from our working session.");
+    await expectAccessible(page);
+    await editor.getByRole("button", { name: "Save draft", exact: true }).click();
+    await expect(editor).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Selected Inbox draft detail" })
+      .getByRole("heading", { level: 2, name: "Keep shared context in Git", exact: true })).toBeVisible();
+    await expect(page).toHaveURL(/view=drafts.*draft=/);
+    expect(errors).toEqual([]);
+  });
+
   test("renders Inbox as a review-first semantic desk with honest action policy", async ({ page }) => {
     const errors = watchBrowserErrors(page);
     await page.emulateMedia({ reducedMotion: "reduce" });
@@ -1036,7 +1099,7 @@ test.describe("populated development fixture", () => {
     await expect(teammate).toHaveAttribute("aria-current", "true");
     const detail = page.getByRole("region", { name: "Selected Inbox review detail" });
     await expect(detail.getByRole("heading", { level: 2, name: "Clarify release evidence review" })).toBeVisible();
-    await expect(detail.getByText("Spec change", { exact: true })).toBeVisible();
+    await expect(detail.getByText("Knowledge change", { exact: true })).toBeVisible();
     await expect(detail.getByText("Published by Grace Hopper", { exact: true })).toBeVisible();
     await expect(detail.getByRole("heading", { name: "What will change" })).toBeVisible();
     await expect(detail.getByRole("region", { name: "Summary comparison" }).getByText("Current")).toBeVisible();
@@ -1074,7 +1137,7 @@ test.describe("populated development fixture", () => {
     await stale.click();
     await expect(detail.getByRole("heading", { level: 2, name: "Refresh the stale review boundary" })).toBeVisible();
     await expect(detail.getByText(
-      "The referenced Spec content changed after this proposal was published.",
+      "The referenced knowledge content changed after this proposal was published.",
       { exact: true },
     )).toBeVisible();
     await expect(detail.getByRole("button", { name: "Approve change" })).toHaveCount(0);
@@ -1091,7 +1154,7 @@ test.describe("populated development fixture", () => {
 
     await expect(page.getByRole("tab", { name: /For review/ })).toHaveAttribute("aria-selected", "true");
     await expect(page.getByText("You’re all caught up", { exact: true })).toBeVisible();
-    await expect(page.getByText("No Spec changes currently need review.", { exact: true })).toBeVisible();
+    await expect(page.getByText("No knowledge changes currently need review.", { exact: true })).toBeVisible();
     await expect(page.locator("[data-inbox-proposal-id]")).toHaveCount(0);
     await expectAccessible(page);
     expect(errors).toEqual([]);
@@ -1239,7 +1302,7 @@ test.describe("populated development fixture", () => {
         await expect(page.getByRole("navigation", { name: "Primary" })).toBeHidden();
       } else {
         await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
-        const reviewQueue = page.getByRole("region", { name: "Spec changes" });
+        const reviewQueue = page.getByRole("region", { name: "Knowledge changes" });
         const reviewDetail = page.getByRole("region", { name: "Selected Inbox review detail" });
         await expect(reviewQueue).toBeVisible();
         await expect(reviewDetail.getByRole("heading", { level: 2, name: "Clarify release evidence review" })).toBeVisible();
@@ -1408,7 +1471,8 @@ test.describe("populated development fixture", () => {
     })).toBeVisible();
     await expect(detail.getByRole("button", { name: "Take handoff" })).toHaveCount(0);
     await expect(detail.getByText("This handoff is addressed to Grace Hopper.", { exact: true })).toBeVisible();
-    await expect(detail.getByText(/listed recipient can take it.*active team identity/i)).toBeVisible();
+    await expect(detail.getByText("Only the named recipients can take this handoff, while their Member records are active.", { exact: true })).toBeVisible();
+    await expect(detail.getByText(/MEX must resolve an eligible, active team identity before taking it/i)).toBeVisible();
     await expect(detail.getByText("Detached HEAD", { exact: true })).toBeVisible();
     await expect(detail.getByText("3456789a", { exact: true })).toBeVisible();
 
@@ -1582,6 +1646,92 @@ test.describe("populated development fixture", () => {
     expect(errors).toEqual([]);
   });
 
+  for (const viewport of [{ width: 1024, height: 768 }, { width: 1440, height: 900 }]) {
+    test(`saves and publishes an open-to-team Relay at ${viewport.width}px`, async ({ page }, testInfo) => {
+      const errors = watchBrowserErrors(page);
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await page.setViewportSize(viewport);
+      await page.goto("/relays?fixture=populated&view=drafts");
+      const create = page.getByRole("button", { name: "Create manually" });
+      await create.focus();
+      await page.keyboard.press("Enter");
+      const composer = page.getByRole("dialog", { name: "Create handoff draft" });
+      await expect(composer.getByRole("combobox", { name: "Who can take this handoff?" })).toHaveValue("team");
+      await expect(composer.getByRole("combobox", { name: "Eligible recipients" })).toHaveCount(0);
+      await expect(composer.getByText(/including teammates who join later/)).toBeVisible();
+      await composer.getByRole("textbox", { name: "Summary" }).fill("Context for whoever picks up this work later");
+      await expectNoHorizontalOverflow(page, viewport.width);
+      await expectAccessible(page);
+      await page.screenshot({ path: testInfo.outputPath("relay-team-draft.png"), fullPage: true });
+      await composer.getByRole("button", { name: "Save draft" }).click();
+      await expect(composer).toBeHidden();
+      await expect(page).toHaveURL(/view=drafts.*draft=relay-draft-02/);
+      const local = page.getByRole("region", { name: "Selected handoff draft detail" });
+      await expect(local.getByRole("heading", { name: "Context for whoever picks up this work later" })).toBeVisible();
+      await expect(local.getByText(/Saved only in this checkout/)).toBeVisible();
+      await expect(local.getByText("Open to team", { exact: true })).toBeVisible();
+      const publish = local.getByRole("button", { name: "Publish handoff" });
+      await publish.click();
+      const review = page.getByRole("alertdialog", { name: "Publish this handoff?" });
+      await expect(review.getByText(/Any active Member, including teammates who join later/)).toBeVisible();
+      await expect(review.getByText(/MEX does not verify delivery/)).toBeVisible();
+      await expect.poll(() => review.evaluate((element) => element.contains(document.activeElement))).toBe(true);
+      await expectNoHorizontalOverflow(page, viewport.width);
+      await expectAccessible(page);
+      await page.screenshot({ path: testInfo.outputPath("relay-team-publication-review.png"), fullPage: true });
+      await page.keyboard.press("Escape");
+      await expect(review).toBeHidden();
+      await expect(publish).toBeFocused();
+      await publish.click();
+      const confirm = review.getByRole("button", { name: "Publish handoff" });
+      await expect(confirm).toBeEnabled();
+      await confirm.focus();
+      await page.keyboard.press("Enter");
+      await expect(page).toHaveURL(/view=sent.*relay=relay_02000000000000000000000001/);
+      const published = page.getByRole("region", { name: "Selected handoff detail" });
+      await expect(published.getByText("Published working-tree artifact.")).toBeVisible();
+      await expect(published.getByText(/MEX has not verified commit, push, or receipt/)).toBeVisible();
+      await expect(published.getByText(/including teammates who join later/)).toBeVisible();
+      await expect(published.getByRole("button", { name: "Take handoff" })).toBeEnabled();
+      await expectNoHorizontalOverflow(page, viewport.width);
+      await expectAccessible(page);
+      expect(errors).toEqual([]);
+    });
+
+    test(`reactivates an inactive Member with reviewed Git sharing at ${viewport.width}px`, async ({ page }, testInfo) => {
+      const errors = watchBrowserErrors(page);
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await page.setViewportSize(viewport);
+      await page.goto(`/members?fixture=populated&status=inactive&member=${inactiveMemberId}`);
+      const detail = page.getByRole("region", { name: "Selected Member detail" });
+      await expect(detail.getByRole("heading", { name: "Lin Chen", exact: true })).toBeVisible();
+      const reactivate = detail.getByRole("button", { name: "Reactivate Member" });
+      await reactivate.focus();
+      await page.keyboard.press("Enter");
+      const review = page.getByRole("alertdialog", { name: "Reactivate Lin Chen?" });
+      await expect(review.getByText(/Their identity and recorded history stay the same/)).toBeVisible();
+      await expect(review.getByText(/Commit and push to share it through Git/)).toBeVisible();
+      await expectNoHorizontalOverflow(page, viewport.width);
+      await expectAccessible(page);
+      await page.screenshot({ path: testInfo.outputPath("member-reactivation-review.png"), fullPage: true });
+      await page.keyboard.press("Escape");
+      await expect(review).toBeHidden();
+      await expect(reactivate).toBeFocused();
+      await reactivate.click();
+      const confirm = review.getByRole("button", { name: "Reactivate Member" });
+      await expect(confirm).toBeEnabled();
+      await confirm.focus();
+      await page.keyboard.press("Enter");
+      await expect(page).toHaveURL(new RegExp(`status=active.*member=${inactiveMemberId}`));
+      await expect(page.getByText("Member reactivated", { exact: true })).toBeVisible();
+      await expect(detail.getByText("Active team member", { exact: true })).toBeVisible();
+      await expect(detail.getByRole("button", { name: "Reactivate Member" })).toHaveCount(0);
+      await expectNoHorizontalOverflow(page, viewport.width);
+      await expectAccessible(page);
+      expect(errors).toEqual([]);
+    });
+  }
+
   test("keeps Relay draft review, searchable recipients, disclosures, overflow, and focus complete", async ({ page }) => {
     const errors = watchBrowserErrors(page);
     const requests: string[] = [];
@@ -1702,7 +1852,7 @@ test.describe("populated development fixture", () => {
     await close.click();
     const closeDialog = page.getByRole("alertdialog", { name: "Close this handoff?" });
     await expect(closeDialog.getByText(/closing is irreversible/i)).toBeVisible();
-    await expect(closeDialog.getByText(/does not complete or modify the Workstream or task/i)).toBeVisible();
+    await expect(closeDialog.getByText(/saved handoff remains readable in project history/i)).toBeVisible();
     await expect(closeDialog.getByRole("button", { name: "Technical details" })).toHaveAttribute("aria-expanded", "false");
     await closeDialog.getByRole("button", { name: "Close handoff" }).click();
     await expect(page.getByText(
@@ -1717,7 +1867,7 @@ test.describe("populated development fixture", () => {
     const publish = page.getByRole("button", { name: "Publish handoff" });
     await publish.click();
     const publishDialog = page.getByRole("alertdialog", { name: "Publish this handoff?" });
-    await expect(publishDialog.getByText(/private checkout-local draft into a Git-tracked Relay/i)).toBeVisible();
+    await expect(publishDialog.getByText(/writes a Relay Markdown artifact in your working tree/i)).toBeVisible();
     await expect(publishDialog.getByText(/records branch, HEAD, clean or dirty state, and observation time/i)).toBeVisible();
     await expect(publishDialog.getByText(/does not create a commit or capture source-file or local-change contents/i)).toBeVisible();
     await expect(publishDialog.getByText(/Commit and push are still required/i)).toBeVisible();
@@ -1855,23 +2005,19 @@ test.describe("populated development fixture", () => {
     const sidebar = page.locator('aside[aria-label="Project Hub navigation"]');
     const primary = page.getByRole("navigation", { name: "Primary" });
     const utilities = page.getByRole("navigation", { name: "Project utilities" });
-    const projectMemory = primary.getByRole("region", { name: "Project Memory" });
+    const projectMemory = primary.getByRole("region", { name: "Project", exact: true });
     const teamwork = primary.getByRole("region", { name: "Teamwork" });
-    const comingSoon = primary.getByRole("region", { name: "Coming Soon" });
     const system = utilities.getByRole("region", { name: /^System/ });
-    const projectMemoryDisclosure = projectMemory.getByRole("button", { name: "Project Memory" });
+    const projectMemoryDisclosure = projectMemory.getByRole("button", { name: "Project", exact: true });
     const teamworkDisclosure = teamwork.getByRole("button", { name: "Teamwork" });
-    const comingSoonDisclosure = comingSoon.getByRole("button", { name: "Coming Soon" });
     const systemDisclosure = system.getByRole("button", { name: /^System/ });
 
     await expect(sidebar.getByRole("link", { name: "Search project", exact: true }))
       .toHaveAttribute("aria-keyshortcuts", "/");
     await expect(projectMemoryDisclosure).toHaveAttribute("aria-expanded", "true");
     await expect(teamworkDisclosure).toHaveAttribute("aria-expanded", "true");
-    await expect(comingSoonDisclosure).toHaveAttribute("aria-expanded", "false");
     await expect(systemDisclosure).toHaveAttribute("aria-expanded", "false");
 
-    await comingSoonDisclosure.click();
     await systemDisclosure.click();
     const primaryItems = await primary.getByRole("link").evaluateAll((links) => links.map((link) => ({
       href: link.getAttribute("href"),
@@ -1881,15 +2027,12 @@ test.describe("populated development fixture", () => {
     })));
     expect(primaryItems).toEqual([
       { href: "/", label: "Overview" },
-      { href: "/knowledge", label: "Knowledge" },
-      { href: "/specs", label: "Specs" },
+      { href: "/knowledge", label: "Context" },
       { href: "/code", label: "Code" },
-      { href: "/workstreams", label: "Workstreams" },
       { href: "/inbox", label: "Inbox" },
       { href: "/relays", label: "Relays" },
       { href: "/activity", label: "Activity" },
-      { href: "/playbooks", label: "Playbooks" },
-      { href: "/catch-up", label: "Catch Up" },
+      { href: "/members", label: "Team" },
     ]);
     const utilityItems = await utilities.getByRole("link").evaluateAll((links) => links.map((link) => ({
       href: link.getAttribute("href"),
@@ -1898,40 +2041,36 @@ test.describe("populated development fixture", () => {
       ))?.textContent,
     })));
     expect(utilityItems).toEqual([
-      { href: "/members", label: "Team" },
       { href: "/health", label: "Health" },
+      { href: "/settings", label: "Settings" },
       { href: "/jobs", label: "Jobs" },
     ]);
-    await expect(comingSoon.getByRole("link", { name: "Playbooks Soon" })).toBeVisible();
-    await expect(comingSoon.getByRole("link", { name: "Catch Up Soon" })).toBeVisible();
 
     await projectMemoryDisclosure.click();
     await expect(projectMemoryDisclosure).toHaveAttribute("aria-expanded", "false");
     await expect(teamworkDisclosure).toHaveAttribute("aria-expanded", "true");
-    await expect(comingSoonDisclosure).toHaveAttribute("aria-expanded", "true");
     await expect(systemDisclosure).toHaveAttribute("aria-expanded", "true");
 
     await page.reload();
     await expect(page.locator('[data-overview-workbench="ready"]')).toBeVisible();
     await expect(projectMemoryDisclosure).toHaveAttribute("aria-expanded", "true");
     await expect(teamworkDisclosure).toHaveAttribute("aria-expanded", "true");
-    await expect(comingSoonDisclosure).toHaveAttribute("aria-expanded", "false");
     await expect(systemDisclosure).toHaveAttribute("aria-expanded", "false");
   });
 
   test("opens deep-linked groups, preserves nested aria-current, and marks a collapsed active group", async ({ page }) => {
     await page.goto("/knowledge/mx_01K36WVM6H7JK8M9NPQRSTVVWX?fixture=populated");
-    const projectMemory = page.getByRole("region", { name: "Project Memory" });
-    const projectMemoryDisclosure = projectMemory.getByRole("button", { name: "Project Memory" });
+    const projectMemory = page.getByRole("region", { name: "Project", exact: true });
+    const projectMemoryDisclosure = projectMemory.getByRole("button", { name: "Project", exact: true });
     await expect(projectMemoryDisclosure).toHaveAttribute("aria-expanded", "true");
-    await expect(projectMemory.getByRole("link", { name: "Knowledge", exact: true }))
+    await expect(projectMemory.getByRole("link", { name: "Context", exact: true }))
       .toHaveAttribute("aria-current", "page");
     await projectMemoryDisclosure.click();
     await expect(projectMemoryDisclosure).toHaveAttribute("aria-expanded", "false");
     await expect(projectMemoryDisclosure).toHaveAttribute("data-active", "true");
 
     await page.goto("/code/symbols/sym.createHubServer?fixture=populated");
-    await expect(page.getByRole("region", { name: "Project Memory" })
+    await expect(page.getByRole("region", { name: "Project", exact: true })
       .getByRole("link", { name: "Code", exact: true })).toHaveAttribute("aria-current", "page");
 
     await page.goto("/jobs?fixture=populated");
@@ -1940,9 +2079,6 @@ test.describe("populated development fixture", () => {
     await expect(system.getByRole("link", { name: "Jobs", exact: true })).toHaveAttribute("aria-current", "page");
 
     await page.goto("/catch-up?fixture=populated");
-    const comingSoon = page.getByRole("region", { name: "Coming Soon" });
-    await expect(comingSoon.getByRole("button", { name: "Coming Soon" })).toHaveAttribute("aria-expanded", "true");
-    await expect(comingSoon.getByRole("link", { name: "Catch Up Soon" })).toHaveAttribute("aria-current", "page");
     await expect(page.getByText(
       "A personalized summary of project changes and team activity is planned but is not available in this release.",
       { exact: true },
@@ -2021,7 +2157,7 @@ test.describe("populated development fixture", () => {
     await page.goto("/?fixture=populated");
     await expect(page.locator('[data-overview-workbench="ready"]')).toBeVisible();
     const sidebar = page.locator('aside[aria-label="Project Hub navigation"]');
-    await expect(sidebar.getByLabel("3 proposals awaiting team review.")).toHaveText("3");
+    await expect(sidebar.getByLabel("3 proposals for team review.")).toHaveText("3");
     await expect(sidebar.getByLabel("2 open Relays for you.")).toHaveText("2");
     await expect(sidebar.getByLabel("1 active system operations.")).toHaveText("1");
     await expect(sidebar.getByRole("link", { name: "Team", exact: true })).toHaveAttribute("href", "/members");
@@ -2042,12 +2178,10 @@ test.describe("populated development fixture", () => {
     await page.goto("/?fixture=populated");
     await expect(page.locator('[data-overview-workbench="ready"]')).toBeVisible();
     const disclosures = {
-      projectMemory: page.getByRole("button", { name: "Project Memory" }),
+      projectMemory: page.getByRole("button", { name: "Project", exact: true }),
       teamwork: page.getByRole("button", { name: "Teamwork" }),
-      comingSoon: page.getByRole("button", { name: "Coming Soon" }),
       system: page.getByRole("button", { name: /^System/ }),
     };
-    await disclosures.comingSoon.click();
     await disclosures.system.click();
     for (const disclosure of Object.values(disclosures)) {
       await expect(disclosure).toHaveAttribute("aria-expanded", "true");
@@ -2061,13 +2195,12 @@ test.describe("populated development fixture", () => {
     await expectAccessible(page);
   });
 
-  test("captures the populated sidebar with counts and roadmap destinations", async ({ page }) => {
+  test("captures the populated sidebar with Inbox and Relay counts", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto("/?fixture=populated");
-    await page.getByRole("button", { name: "Coming Soon" }).click();
     await page.getByRole("button", { name: /^System/ }).click();
     const sidebar = page.locator('aside[aria-label="Project Hub navigation"]');
-    await expect(sidebar.getByRole("link", { name: "Catch Up Soon" })).toBeVisible();
+    await expect(sidebar.getByRole("link", { name: "Context", exact: true })).toBeVisible();
     await expect(sidebar.getByLabel("1 active system operations.")).toBeVisible();
     if (hasReviewedHubVisualBaselines) {
       await expect(sidebar).toHaveScreenshot("hub-sidebar-populated.png");
@@ -2082,40 +2215,31 @@ test.describe("populated development fixture", () => {
     await expect(page.locator("#main-content")).toBeFocused();
 
     const routes = [
-      [/^Knowledge$/, "Knowledge"],
-      [/^Specs$/, "Specs"],
+      [/^Context$/, "Context"],
       [/^Code$/, "Code"],
-      [/^Workstreams$/, "Workstreams"],
-      [/^Inbox(?: |$)/, "Inbox"],
       [/^Relays(?: |$)/, "Relays"],
       [/^Activity$/, "Activity"],
     ] as const;
     for (const [link, heading] of routes) {
       await page.getByRole("link", { name: link }).click();
       await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
-      if (heading === "Knowledge") {
-        await expect(page.getByText("All Knowledge records", { exact: true }).locator("..")).toBeFocused();
-      } else {
-        await expect(page.locator("#main-content")).toBeFocused();
-      }
+      await expect(page.locator("#main-content")).toBeFocused();
     }
 
-    await page.getByRole("button", { name: "Coming Soon" }).click();
-    for (const [link, heading, copy] of [
-      ["Playbooks Soon", "Playbooks", "Reusable team workflows are planned but are not available in this release."],
-      ["Catch Up Soon", "Catch Up", "A personalized summary of project changes and team activity is planned but is not available in this release."],
+    for (const [route, heading, copy] of [
+      ["/playbooks", "Playbooks", "Reusable team workflows are planned but are not available in this release."],
+      ["/catch-up", "Catch Up", "A personalized summary of project changes and team activity is planned but is not available in this release."],
     ] as const) {
-      await page.getByRole("link", { name: link }).click();
+      await page.goto(`${route}?fixture=populated`);
       await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
       await expect(page.getByText(copy, { exact: true })).toBeVisible();
-      await expect(page.locator("#main-content")).toBeFocused();
     }
 
     await page.getByRole("link", { name: "Team", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Members", exact: true })).toBeVisible();
     await expect(page.locator("#main-content")).toBeFocused();
     await page.getByRole("button", { name: /^System/ }).click();
-    for (const heading of ["Health", "Jobs"] as const) {
+    for (const heading of ["Health", "Settings", "Jobs"] as const) {
       await page.getByRole("link", { name: heading, exact: true }).click();
       await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
       await expect(page.locator("#main-content")).toBeFocused();
@@ -2175,9 +2299,8 @@ test.describe("populated development fixture", () => {
       expect(footerBeforeScroll!.y + footerBeforeScroll!.height).toBeLessThanOrEqual(viewport.height + 1);
       await expect(sidebarLocator.getByText("Runs locally", { exact: true })).toBeVisible();
 
-      await page.getByRole("button", { name: "Coming Soon" }).click();
       await navViewport.evaluate((element) => { element.scrollTop = element.scrollHeight; });
-      await expect(page.getByRole("link", { name: "Catch Up Soon" })).toBeVisible();
+      await expect(page.getByRole("link", { name: "Activity", exact: true })).toBeVisible();
       await expect(sidebarLocator.getByText("Runs locally", { exact: true })).toBeVisible();
       const footerAfterScroll = await footer.boundingBox();
       expect(footerAfterScroll?.y).toBe(footerBeforeScroll?.y);
@@ -2228,8 +2351,8 @@ test.describe("populated development fixture", () => {
     await expect(page.getByRole("heading", { name: "Activity", exact: true })).toBeVisible();
     await page.goto("/members?fixture=populated");
     await expect(page.getByRole("heading", { name: "Members", exact: true })).toBeVisible();
-    await page.goto("/knowledge?fixture=populated");
-    await expect(page.getByRole("heading", { name: "Knowledge", exact: true })).toBeVisible();
+    await page.goto("/knowledge?fixture=populated&view=list");
+    await expect(page.getByRole("heading", { name: "Context", exact: true })).toBeVisible();
     await page.getByRole("link", { name: /Project Hub read boundaries/ }).click();
     await expect(page.getByRole("heading", { level: 1, name: "Project Hub read boundaries" })).toBeVisible();
     await page.goto("/code?fixture=populated&q=hub");
@@ -2309,22 +2432,22 @@ test.describe("built production Hub", () => {
     const response = await page.goto(bootstrapUrl);
     await expect(page.locator('[data-overview-workbench="ready"]')).toBeVisible();
     await expect.poll(() => page.url()).not.toContain("#token=");
-    await expect(page.getByRole("link", { name: "Knowledge", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Context", exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Code", exact: true })).toBeVisible();
     await expect(page.getByText("Three knowledge pages lost grounding")).toHaveCount(0);
 
     await page.goto(`${new URL(bootstrapUrl).origin}/?fixture=populated`);
     await expect(page.getByText("Three knowledge pages lost grounding")).toHaveCount(0);
-    await expect(page.getByRole("link", { name: "Knowledge", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Context", exact: true })).toBeVisible();
 
     const [knowledgeUnavailable] = await Promise.all([
-      page.waitForResponse((candidate) => new URL(candidate.url()).pathname === "/api/v1/wiki/entities"),
+      page.waitForResponse((candidate) => new URL(candidate.url()).pathname === "/api/v1/wiki/graph"),
       page.goto(`${new URL(bootstrapUrl).origin}/knowledge?fixture=populated`),
     ]);
     expect(knowledgeUnavailable.status()).toBe(503);
-    await expect(page.getByRole("heading", { name: "Knowledge", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Context", exact: true })).toBeVisible();
     await expect(page.getByText("Project Hub read boundaries", { exact: true })).toHaveCount(0);
-    await expect(page.getByRole("heading", { name: "Knowledge migration is required" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Context unavailable", exact: true })).toBeVisible();
 
     await page.goto(`${new URL(bootstrapUrl).origin}/code?fixture=populated`);
     await expect(page.getByRole("heading", { name: "Code" })).toBeVisible();
@@ -2393,7 +2516,8 @@ test.describe("built production Hub", () => {
     await createManually.click();
     const relayComposer = page.getByRole("dialog", { name: "Create handoff draft" });
     await expect(relayComposer).toBeVisible();
-    await expect(relayComposer.getByRole("combobox", { name: "Eligible recipients" })).toBeVisible();
+    await expect(relayComposer.getByRole("combobox", { name: "Who can take this handoff?" })).toHaveValue("team");
+    await expect(relayComposer.getByRole("combobox", { name: "Eligible recipients" })).toHaveCount(0);
     await expect(relayComposer.getByRole("combobox", { name: "Workstream" })).toHaveCount(0);
     await expect(relayComposer.getByRole("textbox", { name: "Workstream ID" })).toHaveCount(0);
     expect(relayWorkstreamRequests).toEqual([]);

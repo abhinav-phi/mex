@@ -208,12 +208,11 @@ function normalizeRelayProductDraftInputInternal(
     throw invalidRelayRequest();
   }
   if (
-    normalized.recipients.length < 1
-    || normalized.recipients.length > TEAM_RELAY_LIMITS.maxRecipients
+    normalized.recipients.length > TEAM_RELAY_LIMITS.maxRecipients
     || normalized.recipients.some((recipient) => recipient.kind !== "member")
   ) {
     throw invalidRelayValidation(
-      `Relay recipients must contain between 1 and ${TEAM_RELAY_LIMITS.maxRecipients} canonical Members.`,
+      `Local Relay recipients may contain up to ${TEAM_RELAY_LIMITS.maxRecipients} canonical Members.`,
     );
   }
   if (
@@ -250,6 +249,7 @@ function hasNoncanonicalRelayRepoPath(input: RelayDraftInput): boolean {
 
 export function relayDraftProjection(draft: RelayDraft): TeamRelayDraftDetail {
   const input = normalizeStoredRelayProductDraftInput({
+    ...(draft.audience === undefined ? {} : { audience: draft.audience }),
     recipients: draft.recipients,
     summary: draft.summary,
     completed: draft.completed,
@@ -266,6 +266,7 @@ export function relayDraftProjection(draft: RelayDraft): TeamRelayDraftDetail {
     id: draft.id,
     revision: draft.revision,
     updatedAt: draft.updatedAt,
+    ...(input.audience === undefined ? {} : { audience: input.audience }),
     recipients: input.recipients as readonly Extract<ActorRef, { kind: "member" }>[],
     summary: input.summary,
     input,
@@ -282,6 +283,7 @@ export function relayDraftSummary(
 export function relayProjection(relay: Relay): TeamRelayDetail {
   return deepFreeze({
     schemaVersion: relay.schemaVersion,
+    ...(relay.audience === undefined ? {} : { audience: relay.audience }),
     ref: relay.ref,
     sourcePath: relay.sourcePath,
     revision: relay.revision,
@@ -579,12 +581,11 @@ function requirePublishExpectationTopology(
   }
   if (
     draftExpectations !== 1
-    || memberIds.length < 1
     || memberIds.length > TEAM_RELAY_LIMITS.maxRecipients
     || new Set(memberIds).size !== memberIds.length
   ) {
     throw invalidRelayValidation(
-      "Relay publication requires one matching draft and 1-32 unique Member dependencies.",
+      "Relay publication requires one matching draft and up to 32 unique Member dependencies; named publication requires at least one.",
     );
   }
 }

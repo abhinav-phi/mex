@@ -1,4 +1,6 @@
+import { readAgentLoggingPolicy, setAgentLoggingPolicy } from "../logging/policy.js";
 import {
+  AgentLoggingPolicySchema,
   HUB_LIMITS,
   type ActivityActor,
   type ActivityDiagnostic,
@@ -78,6 +80,8 @@ import {
   type WikiEntityListResponse,
   type WikiEntitySummary as HubWikiEntitySummary,
   type WikiGrounding as HubWikiGrounding,
+  type WikiGraphResponse,
+  type WikiGroundedCodeResponse,
   type WikiHealthDetails,
   type WikiRelation as HubWikiRelation,
   type WikiRelationsRequest,
@@ -188,6 +192,8 @@ import type {
   RepositoryKnowledgeWorkspaceRequest,
   RepositoryWikiListBundle,
   RepositoryWikiSearchBundle,
+  RepositoryWikiGraphOverview,
+  RepositoryWikiGroundedCode,
 } from "../wiki/application-adapter.js";
 import {
   TEAM_READABLE_ENTITY_TYPES,
@@ -215,6 +221,8 @@ export interface HubWikiReadService {
   searchBundle(request: WikiQueryRequest): Promise<RepositoryWikiSearchBundle>;
   readKnowledgeWorkspace(request: RepositoryKnowledgeWorkspaceRequest): Promise<RepositoryKnowledgeWorkspace>;
   knowledgeForCode(request: RepositoryCodeKnowledgeRequest): Promise<RepositoryCodeKnowledgeResult>;
+  graphOverview?(): Promise<RepositoryWikiGraphOverview>;
+  readGroundedCode?(entityId: string): Promise<RepositoryWikiGroundedCode>;
 }
 
 /** Exact internal C0 application facade used by the private Hub. */
@@ -314,6 +322,12 @@ export function createLocalHubReadServices(
   const timeline = new TimelineReader(options.projectRoot, canonicalActivity, actors);
 
   return {
+    loggingPolicy() {
+      return AgentLoggingPolicySchema.parse(readAgentLoggingPolicy(options.projectRoot));
+    },
+    async setLoggingPolicy(request) {
+      return AgentLoggingPolicySchema.parse(await setAgentLoggingPolicy(options.projectRoot, request));
+    },
     async capabilities(): Promise<HubCapabilities> {
       const gitStatus = await gitCapability(git);
       return {
@@ -837,6 +851,29 @@ export function createLocalHubReadServices(
       return readCodeWorkspace(graph, symbolId, request);
     },
 
+    async wikiGraph(): Promise<WikiGraphResponse> {
+      const connected = requireWiki(wiki);
+      if (!connected.graphOverview) throw unavailableWikiGraph();
+      return projectWikiGraph(await connected.graphOverview());
+    },
+
+    async wikiGroundedCode(entityId: string): Promise<WikiGroundedCodeResponse> {
+      const connected = requireWiki(wiki);
+      if (!connected.readGroundedCode) throw unavailableWikiGraph();
+      const result = await connected.readGroundedCode(entityId);
+      return {
+        indexedRevision: result.indexedRevision, observedAt: result.observedAt,
+        entityId: result.entityId, graphRevision: result.graphRevision,
+        groundings: result.groundings.map((grounding) => ({
+          requestedNode: boundedWikiText(grounding.requestedNode, 512, ""),
+          resolvedNode: grounding.resolvedNode === null ? null : boundedWikiText(grounding.resolvedNode, 512, ""),
+          health: grounding.health,
+          symbol: grounding.symbol === null ? null : projectGraphSymbol(grounding.symbol),
+        })),
+        truncated: result.truncated,
+      };
+    },
+
     async wikiEntities(request: WikiEntityListRequest): Promise<WikiEntityListResponse> {
       const connected = requireWiki(wiki);
       if (request.kind !== undefined && isTeamReadableEntityKind(request.kind)) {
@@ -1218,6 +1255,44 @@ function projectGraphImpact(impact: GraphImpactResult): CodeWorkspaceResponse["t
       || impact.impacted.length > 100
       || impact.relations.length > 500,
   };
+}
+
+function unavailableWikiGraph(): HubHttpError {
+  return new HubHttpError(503, "CAPABILITY_UNAVAILABLE", "Capability unavailable", "Context graph reads are not connected in this build.");
+}
+
+function projectWikiGraph(bundle: RepositoryWikiGraphOverview): WikiGraphResponse {
+  const result: WikiGraphResponse = {
+    indexedRevision: bundle.indexedRevision, observedAt: bundle.observedAt,
+    nodes: [], relations: [], coverage: { ...bundle.coverage },
+  };
+  let bytes = Buffer.byteLength(JSON.stringify(result), "utf8");
+  for (const entity of bundle.nodes) {
+    const node = projectWikiSummary(entity);
+    const cost = Buffer.byteLength(JSON.stringify(node), "utf8") + (result.nodes.length > 0 ? 1 : 0);
+    if (bytes + cost > HUB_LIMITS.maxJsonResponseBytes) {
+      result.coverage.nodesTruncated = true;
+      break;
+    }
+    bytes += cost;
+    result.nodes.push(node);
+  }
+  const included = new Set(result.nodes.map((node) => node.id));
+  for (const value of bundle.relations) {
+    if (!included.has(value.source.id) || !included.has(value.target.id)) {
+      result.coverage.relationsTruncated = true;
+      continue;
+    }
+    const relation = projectWikiRelation(value);
+    const cost = Buffer.byteLength(JSON.stringify(relation), "utf8") + (result.relations.length > 0 ? 1 : 0);
+    if (bytes + cost > HUB_LIMITS.maxJsonResponseBytes) {
+      result.coverage.relationsTruncated = true;
+      break;
+    }
+    bytes += cost;
+    result.relations.push(relation);
+  }
+  return result;
 }
 
 function projectWikiSummary(entity: WikiEntitySummary): HubWikiEntitySummary {
@@ -1990,6 +2065,7 @@ function projectRelayEvidence(evidence: TeamEvidenceRef): RelayEvidenceRef {
 
 function projectRelayDraftInput(input: TeamRelayDraftDetail["input"]): RelayDraftInput {
   return {
+    ...(input.audience === undefined ? {} : { audience: input.audience }),
     recipients: input.recipients.map(projectRelayMemberActor),
     summary: input.summary,
     completed: [...input.completed],
@@ -2006,6 +2082,7 @@ function projectRelayDraftInput(input: TeamRelayDraftDetail["input"]): RelayDraf
 
 function projectRelayDraftSummary(draft: TeamRelayDraftSummary): RelayDraftSummary {
   return {
+    ...(draft.audience === undefined ? {} : { audience: draft.audience }),
     id: draft.id,
     revision: draft.revision,
     updatedAt: draft.updatedAt,
@@ -2021,6 +2098,7 @@ function projectRelayDraftDetail(draft: TeamRelayDraftDetail): RelayDraftDetail 
 function projectRelaySummary(relay: TeamRelaySummary): RelaySummary {
   if (relay.ref.kind !== "relay") throw invalidRelayProjection();
   return {
+    ...(relay.audience === undefined ? {} : { audience: relay.audience }),
     schemaVersion: relay.schemaVersion,
     ref: { ...projectRelayEntity(relay.ref), kind: "relay" },
     sourcePath: relay.sourcePath,
@@ -2063,6 +2141,7 @@ function projectRelayDetail(relay: TeamRelayDetail): RelayDetail {
 
 function projectRelayDraftInputToService(input: RelayDraftInput): TeamRelayDraftDetail["input"] {
   return {
+    ...(input.audience === undefined ? {} : { audience: input.audience }),
     recipients: input.recipients.map((actor) => ({ ...actor })),
     summary: input.summary,
     completed: [...input.completed],
@@ -2310,6 +2389,32 @@ function projectInboxProposalDetail(
 function projectInboxSpecChange(
   change: TeamInboxSpecDraftInput["change"],
 ): InboxSpecChange {
+  if (change.kind === "knowledge.update") {
+    return {
+      kind: change.kind,
+      target: {
+        id: change.target.id,
+        kind: change.target.kind,
+        ...(change.target.title === undefined ? {} : { title: change.target.title }),
+      },
+      patch: {
+        ...(change.patch.title === undefined ? {} : { title: change.patch.title }),
+        ...(change.patch.summary === undefined ? {} : { summary: change.patch.summary }),
+        ...(change.patch.body === undefined ? {} : { body: change.patch.body }),
+      },
+    };
+  }
+  if (change.kind === "knowledge.create") {
+    return {
+      kind: change.kind,
+      entityKind: change.entityKind,
+      title: change.title,
+      body: change.body,
+      ...(change.summary === undefined ? {} : { summary: change.summary }),
+      status: change.status,
+      ...(change.topics === undefined ? {} : { topics: [...change.topics] }),
+    };
+  }
   if (change.kind === "spec.update") {
     return {
       kind: "spec.update",
@@ -2630,9 +2735,9 @@ function projectInboxDraftInputToService(
 function projectInboxSpecChangeToService(
   change: InboxSpecChange,
 ): Readonly<Record<string, unknown>> {
-  if (change.kind === "spec.update") {
+  if (change.kind === "spec.update" || change.kind === "knowledge.update") {
     return {
-      kind: "spec.update",
+      kind: change.kind,
       target: {
         id: change.target.id,
         kind: change.target.kind,
@@ -2646,14 +2751,14 @@ function projectInboxSpecChangeToService(
     };
   }
   return {
-    kind: "spec.create",
+    kind: change.kind,
     entityKind: change.entityKind,
     title: change.title,
     body: change.body,
     ...(change.summary === undefined ? {} : { summary: change.summary }),
     status: change.status,
     ...(change.topics === undefined ? {} : { topics: [...change.topics] }),
-    ...(change.relation === undefined
+    ...(change.kind !== "spec.create" || change.relation === undefined
       ? {}
       : {
           relation: {
@@ -3105,7 +3210,8 @@ function cloneTeamAction(
         },
       };
     case "member.deactivate":
-      return { kind: "member.deactivate", memberId: action.memberId };
+    case "member.reactivate":
+      return { kind: action.kind, memberId: action.memberId };
     case "member.select":
       return { kind: "member.select", memberId: action.memberId };
     case "member.clear":
@@ -3716,9 +3822,9 @@ function projectOverviewRelays(
   const memberId = identity.current.actor.memberId;
   const readyToTake = corpus.items.filter((relay) => (
     relay.state === "published"
-    && relay.recipients.some((recipient) => (
+    && (relay.audience === "team" || relay.recipients.some((recipient) => (
       recipient.kind === "member" && recipient.memberId === memberId
-    ))
+    )))
   ));
   const inYourHands = corpus.items.filter((relay) => (
     relay.state === "acknowledged"

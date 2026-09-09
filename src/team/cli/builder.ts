@@ -61,6 +61,7 @@ export function buildMemberCommand(
   addMutation(member, "add", "Preview or apply a canonical member creation", "member.add", options);
   addMutation(member, "update", "Preview or apply a canonical member update", "member.update", options);
   addMutation(member, "deactivate", "Preview or apply member deactivation", "member.deactivate", options);
+  addMutation(member, "reactivate", "Preview or apply restoring an inactive member", "member.reactivate", options);
   addMutation(
     member,
     "select",

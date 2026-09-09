@@ -3,11 +3,14 @@ import { Command, InvalidArgumentError } from "commander";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { findConfig, getScaffoldIdentity, readScaffoldId } from "./config.js";
+import { findConfig, getScaffoldIdentity } from "./config.js";
 import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporter.js";
 import { VERSION } from "./version.js";
-import { captureCommand, flush, isEnabled, getPayloadPreview, showFirstRunNotice } from "./telemetry/index.js";
-import { readMachineId, setGlobalConfigKey } from "./global-config.js";
+import { captureEvent, flush, isEnabled, getProjectTelemetryContext, getTelemetryInspection, disableTelemetry, showFirstRunNotice } from "./telemetry/index.js";
+import { setGlobalConfigKey } from "./global-config.js";
+import { createCliTelemetry, telemetryProjectLocation } from "./cli-telemetry.js";
+export { isTelemetryExemptCommand } from "./cli-telemetry.js";
+import { buildLoggingCommand } from "./logging/cli.js";
 import { runFeedback, maybeShowInvite, dismissInvite, enableInvite } from "./feedback/index.js";
 import type { MexConfig } from "./types.js";
 import type { RunHubCommandOptions } from "./hub/command.js";
@@ -145,28 +148,13 @@ export function createHubRunOptions(
 
 export const program = new Command();
 
-export function isTelemetryExemptCommand(
-  commandName: string,
-  parentName?: string,
-): boolean {
-  return parentName === "telemetry"
-    || parentName === "config"
-    || parentName === "member"
-    || parentName === "activity"
-    || parentName === "workstream"
-    || parentName === "inbox"
-    || actionCommandHasAncestor(parentName, "inbox")
-    || parentName === "relay"
-    || actionCommandHasAncestor(parentName, "relay")
-    || parentName === "spec"
-    || parentName === "skills"
-    || commandName === "hub"
-    || commandName === "capabilities";
-}
-
 /** Commands whose machine/read-only contract must precede any global notice. */
 export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
   return commandName === "hub"
+    || commandName === "telemetry"
+    || commandName === "config"
+    || commandName === "logging"
+    || commandName === "timeline"
     || commandName === "capabilities"
     || commandName === "member"
     || commandName === "activity"
@@ -177,13 +165,6 @@ export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
     || commandName === "skills";
 }
 
-function actionCommandHasAncestor(parentName: string | undefined, expected: string): boolean {
-  // Commander exposes only the immediate parent here. Inbox and Relay have
-  // nested Team-only groups, so those leaves remain telemetry exempt.
-  return (expected === "inbox" || expected === "relay")
-    && (parentName === "draft" || parentName === "proposal");
-}
-
 async function runTuiCommand(): Promise<void> {
   const { launchTui } = await import("./tui.js");
   launchTui();
@@ -191,43 +172,12 @@ async function runTuiCommand(): Promise<void> {
 
 // ── Telemetry hooks ──
 
-// preAction: fire the event at the START of the command. Two reasons:
-//  - the async request gets the whole command runtime to land in the background
-//  - commands that call process.exit() (e.g. `check` on drift) are still
-//    counted; a postAction hook would never run after process.exit and would
-//    systematically miss every error/drift outcome.
-// scaffold_id is resolved read-only (never mints). Telemetry never throws here.
-program.hook("preAction", (_thisCommand, actionCommand) => {
-  try {
-    // Never count the telemetry/config meta-commands. In particular,
-    // `telemetry inspect` must have zero side effects — no event sent, no
-    // machine-id file created — so it stays a pure audit surface.
-    const parentName = actionCommand.parent?.name();
-    if (isTelemetryExemptCommand(actionCommand.name(), parentName)) return;
-
-    let scaffoldId: string | undefined;
-    try {
-      scaffoldId = readScaffoldId(findConfig().scaffoldRoot);
-    } catch {
-      // No scaffold (or not in one) — omit scaffold_id.
-    }
-    captureCommand(actionCommand.name(), scaffoldId);
-  } catch {
-    // Telemetry must never affect command behaviour.
-  }
+const cliTelemetry = createCliTelemetry(captureEvent, flush, undefined, (command) => {
+  const { root, discovery } = telemetryProjectLocation(command);
+  return getProjectTelemetryContext(root, discovery);
 });
-
-// postAction: best-effort bounded flush for commands that exit naturally.
-// Commands that process.exit() skip this, but their event was already sent
-// from preAction (flushAt:1 fires the request immediately).
-program.hook("postAction", async (_thisCommand, actionCommand) => {
-  if (isTelemetryExemptCommand(actionCommand.name(), actionCommand.parent?.name())) return;
-  try {
-    await flush();
-  } catch {
-    // Telemetry must never affect command behaviour.
-  }
-});
+program.hook("preAction", (_thisCommand, actionCommand) => cliTelemetry.start(actionCommand));
+program.hook("postAction", () => cliTelemetry.finish(process.exitCode));
 
 program
   .name("mex")
@@ -312,6 +262,8 @@ const specReadService: SpecCliServiceFactory = async () => {
   return createSpecReadService(wiki);
 };
 
+program.addCommand(buildLoggingCommand());
+
 for (const command of buildTeamIdentityActivityCommands({
   service: teamIdentityActivityService,
   io: processTeamCommandIo(),
@@ -324,6 +276,14 @@ program.addCommand(buildWorkstreamCommand({
 }));
 program.addCommand(buildInboxCommand({
   service: teamInboxSpecService,
+  targetService: async () => {
+    const projectRoot = locateTeamRepositoryRoot();
+    const { createRepositoryWikiPort } = await import("./wiki/application-adapter.js");
+    // Target text and revision need no code-health resolution or Team signer.
+    return createRepositoryWikiPort(projectRoot, {
+      exclude: readWikiExclude(resolve(projectRoot, ".mex")),
+    });
+  },
   io: processTeamCommandIo(),
 }));
 program.addCommand(buildRelayCommand({
@@ -347,7 +307,8 @@ program
       await runSetup({ dryRun: opts.dryRun, mode: opts.mode });
     } catch (err) {
       console.error((err as Error).message);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
@@ -451,14 +412,18 @@ program
         return;
       }
 
-      if (hasErrors) process.exit(1);
+      if (hasErrors) {
+        process.exitCode = 1;
+        return;
+      }
 
       // Warm moment — a clean check just gave the user value. Quietly invite
       // feedback (only on success, never right before an error exit).
       maybeShowInvite();
     } catch (err) {
       console.error((err as Error).message);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
@@ -480,7 +445,8 @@ program
       }
     } catch (err) {
       console.error((err as Error).message);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
@@ -497,7 +463,8 @@ const graphCommand = program
     } catch (err) {
       const { describeGraphMaintenanceFailure } = await import("./graph/cli-graph.js");
       console.error(describeGraphMaintenanceFailure(err));
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
@@ -515,7 +482,8 @@ graphCommand
       });
     } catch (err) {
       console.error((err as Error).message);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
@@ -534,7 +502,8 @@ graphCommand
     } catch (err) {
       const { describeGraphMaintenanceFailure } = await import("./graph/cli-graph.js");
       console.error(describeGraphMaintenanceFailure(err));
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
@@ -553,7 +522,8 @@ graphCommand
     } catch (err) {
       const { describeGraphMaintenanceFailure } = await import("./graph/cli-graph.js");
       console.error(describeGraphMaintenanceFailure(err));
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
@@ -872,7 +842,8 @@ graphCommand
       });
     } catch (err) {
       console.error((err as Error).message);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
@@ -887,7 +858,8 @@ graphCommand
       await runGraphGround(config, opts);
     } catch (err) {
       console.error((err as Error).message);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
@@ -918,25 +890,41 @@ program
       await runLog(config, message, { kind: opts.type, files: opts.file, source: opts.source, status: opts.status });
     } catch (err) {
       console.error((err as Error).message);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
 program
   .command("timeline")
-  .description("Show recent mex event log entries")
+  .description("Read bounded recent project notes (latest 8 MiB / 10,000 log lines)")
   .option("--json", "Output events as JSON")
   .option("--since <date>", "Filter from YYYY-MM-DD or relative Nd, e.g. 30d")
-  .option("--type <type>", "Filter by event type")
-  .option("--limit <n>", "Maximum number of entries", parsePositiveIntArg)
+  .option("--type <type>", "Filter by event type: decision, note, risk, todo")
+  .option("--query <text>", "Case-insensitive literal text in the message (max 256 UTF-8 bytes)")
+  .option("--file <path>", "Exact recorded file path; any may match (repeatable, max 16)", (value, prev: string[]) => [...prev, value], [])
+  .option("--limit <n>", "Maximum entries, 1–200 (default 20; output capped at 64 KiB)", (raw: string) => {
+    if (!/^[0-9]+$/.test(raw) || Number(raw) < 1 || Number(raw) > 200) {
+      throw new InvalidArgumentError("Expected an integer from 1 to 200.");
+    }
+    return Number(raw);
+  })
   .action(async (opts) => {
     try {
-      const config = loadConfig();
+      const config = findConfig();
       const { runTimeline } = await import("./events.js");
-      await runTimeline(config, opts);
+      await runTimeline(config, {
+        json: opts.json,
+        since: opts.since,
+        kind: opts.type,
+        query: opts.query,
+        files: opts.file,
+        limit: opts.limit,
+      });
     } catch (err) {
       console.error((err as Error).message);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
@@ -951,7 +939,8 @@ program
       await runHeartbeat(config, { json: opts.json });
     } catch (err) {
       console.error((err as Error).message);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
@@ -965,7 +954,8 @@ program
       await runDoctor(config);
     } catch (err) {
       console.error((err as Error).message);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
@@ -983,7 +973,8 @@ program
       maybeShowInvite();
     } catch (err) {
       console.error((err as Error).message);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
@@ -1002,7 +993,8 @@ patternCmd
       await runPatternAdd(config, name);
     } catch (err) {
       console.error((err as Error).message);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
@@ -1024,7 +1016,8 @@ program
       await manageHook(config, { uninstall: opts.uninstall, intervalMinutes });
     } catch (err) {
       console.error((err as Error).message);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
@@ -1036,7 +1029,8 @@ program
       console.log(buildCompletion(shell));
     } catch (err) {
       console.error((err as Error).message);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
@@ -1064,7 +1058,9 @@ function describeTelemetryReason(reason: string | undefined): string {
     case "dev":
       return "This is a mex development checkout; telemetry never runs from one.";
     case "config":
-      return "Stored in ~/.mex/config.json. Re-enable with `mex telemetry enable`.";
+      return "A stored global preference or opt-out marker disables telemetry. Re-enable with `mex telemetry enable`.";
+    case "config_unavailable":
+      return "The existing global preference file is unreadable, malformed, or unsafe. Telemetry stays off until that file is repaired.";
     default:
       return "";
   }
@@ -1080,12 +1076,19 @@ function describeTelemetryReason(reason: string | undefined): string {
  * anyone looks for it. An alias costs nothing; a user who cannot find the
  * opt-out costs trust.
  */
+function disableTelemetryWithNotice(): void {
+  const result = disableTelemetry();
+  if (!result.purged) console.log("Telemetry is off; the local queue could not be cleared because it is busy or unavailable.");
+}
+
 function setTelemetryEnabled(enabled: boolean): void {
   try {
-    setGlobalConfigKey("telemetry", enabled ? "on" : "off");
+    if (enabled) setGlobalConfigKey("telemetry", "on");
+    else disableTelemetryWithNotice();
   } catch (err) {
     console.error((err as Error).message);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
   console.log(`Telemetry ${enabled ? "enabled" : "disabled"} in ~/.mex/config.json`);
 
@@ -1114,25 +1117,14 @@ telemetryCmd
 
 telemetryCmd
   .command("inspect")
-  .description("Print the exact JSON payload that would be sent (without sending it)")
+  .description("Inspect event examples, privacy fields, and local queue limits (without sending)")
   .action(() => {
     try {
-      // Read-only: use readScaffoldId (never mints), not getScaffoldIdentity
-      let scaffoldId: string | undefined;
-      try {
-        const config = findConfig();
-        scaffoldId = readScaffoldId(config.scaffoldRoot);
-      } catch { /* no scaffold — omit scaffold_id */ }
-
-      // Read-only: show the machine_id only if it already exists. Auditing the
-      // payload must never plant the tracking file on disk.
-      const machineId = readMachineId();
-
-      const payload = getPayloadPreview("inspect", scaffoldId, machineId);
-      console.log(JSON.stringify(payload, null, 2));
+      console.log(JSON.stringify(getTelemetryInspection(), null, 2));
     } catch (err) {
       console.error((err as Error).message);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
@@ -1164,14 +1156,17 @@ configCmd
       if (key === "telemetry") {
         if (value !== "on" && value !== "off") {
           console.error(`Invalid value "${value}" for telemetry. Use "on" or "off".`);
-          process.exit(1);
+          process.exitCode = 1;
+          return;
         }
-        setGlobalConfigKey("telemetry", value);
+        if (value === "off") disableTelemetryWithNotice();
+        else setGlobalConfigKey("telemetry", "on");
         console.log(`Telemetry set to "${value}" in ~/.mex/config.json`);
       } else if (key === "feedback") {
         if (value !== "on" && value !== "off") {
           console.error(`Invalid value "${value}" for feedback. Use "on" or "off".`);
-          process.exit(1);
+          process.exitCode = 1;
+          return;
         }
         // "off" hides the invite; "on" re-enables it.
         if (value === "off") dismissInvite();
@@ -1179,11 +1174,13 @@ configCmd
         console.log(`Feedback invite ${value === "off" ? "hidden" : "re-enabled"}.`);
       } else {
         console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback`);
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
     } catch (err) {
       console.error((err as Error).message);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
@@ -1249,7 +1246,7 @@ program
     console.log("  mex watch --interval   Run heartbeat every 30 minutes (or config value)");
     console.log("  mex watch --uninstall  Remove the post-commit hook");
     console.log("  mex telemetry disable  Turn telemetry off (or DO_NOT_TRACK=1 / MEX_TELEMETRY=0)");
-    console.log("  mex telemetry inspect  Show the exact telemetry payload (without sending)");
+    console.log("  mex telemetry inspect  Inspect telemetry events and queue (without sending)");
     console.log("  mex telemetry status   Show telemetry enabled/disabled and reason");
     console.log("  mex config set <k> <v> Set a global config value (e.g. telemetry off)");
     console.log("  mex feedback           Open the feedback form (the maintainer does user calls)");
@@ -1300,7 +1297,7 @@ if (isMainModule) {
       }
       console.error(err.message);
       process.exitCode = 1;
-    });
+    }).finally(() => cliTelemetry.finish(process.exitCode));
   }
 }
 

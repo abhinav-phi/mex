@@ -13,6 +13,7 @@ export default defineConfig({
       // `npm run eval:compare:test`, so Vitest must not collect the same files.
       "evaluate/compare/test/**",
       "evaluate/graph/test/**",
+      "scripts/benchmark-telemetry.test.js",
       // The Hub web workspace supplies its own jsdom/CSS configuration and the
       // browser suite is collected by Playwright, not the root Node test run.
       "packages/hub-web/**",

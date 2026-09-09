@@ -51,7 +51,12 @@ After meaningful work, run GROW:
 - Ground: what changed in reality?
 - Record: update `.mex/ROUTER.md` and relevant `.mex/context/` files
 - Orient: create or update a `.mex/patterns/` runbook if this can recur
-- Write: bump `last_updated` on changed scaffold files and run `mex log` when rationale matters
+- Write: bump `last_updated` on changed scaffold files; optional `mex log` notes follow the logging policy below
+
+## Agent Logging
+Read `mex logging --json` at session start and before optional logging. This checkout-local advisory preference is `significant` (quiet default: material decisions, risks, blockers, or durable discoveries), `checkpoints` (batch useful notes at task/session boundaries), or `manual` (no unsolicited notes). Skip routine tool calls, edits, repeated status, and empty summaries. Honor explicit user log requests in every mode; never suppress mandatory workflow Activity or recovery audit records. Report a policy read failure instead of guessing or changing the preference.
+
+When earlier work may inform the task, use `mex timeline --query "subject phrase" --file src/example.ts --limit 10 --json` with a known subject or exact recorded file path, or both. These are historical notes, not accepted current knowledge. Verify conclusions before reuse or explicit promotion with their source retained.
 
 ## Navigation
 At the start of every session, read `.mex/ROUTER.md` before doing anything else.

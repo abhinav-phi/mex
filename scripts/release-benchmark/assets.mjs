@@ -8,6 +8,7 @@ const FORBIDDEN_SHELL_HINTS = [
   "SearchPage",
   "SymbolPage",
   "KnowledgePage",
+  "ContextPage",
   "CapabilityPage",
   "WorkstreamsPage",
   "SpecsPage",
@@ -17,6 +18,7 @@ const FORBIDDEN_SHELL_HINTS = [
   "ActivityPage",
   "HealthPage",
   "JobsPage",
+  "SettingsPage",
   "/setup/",
 ];
 
@@ -24,6 +26,7 @@ const FORBIDDEN_HOME_HINTS = [
   "SearchPage",
   "SymbolPage",
   "KnowledgePage",
+  "ContextPage",
   "CapabilityPage",
   "WorkstreamsPage",
   "SpecsPage",
@@ -33,6 +36,7 @@ const FORBIDDEN_HOME_HINTS = [
   "ActivityPage",
   "HealthPage",
   "JobsPage",
+  "SettingsPage",
   "/setup/",
 ];
 

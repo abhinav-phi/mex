@@ -7,7 +7,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { MexPortError } from "../../../team/contracts/shared.js";
 import { TeamLocalState } from "../../../team/local-state/index.js";
 import {
@@ -84,6 +84,68 @@ afterEach(() => {
 });
 
 describe("HubJobManager", () => {
+  it.each(["success", "failure", "cancelled", "shutdown"] as const)(
+    "reports one durable %s outcome without subscribers, progress, or historical replay",
+    async (outcome) => {
+      const root = tempProject();
+      const telemetry = vi.fn();
+      let now = NOW;
+      let finish!: () => void;
+      const pending = new Promise<void>(resolve => { finish = resolve; });
+      const manager = new HubJobManager({
+        localState: localState(root), telemetry, now: () => now, generateId: () => JOB_A,
+        executors: { graph_refresh: async ({ reportProgress, signal }) => {
+          reportProgress({ phase: "parse", completed: 4, total: 4 });
+          signal.addEventListener("abort", finish, { once: true });
+          await pending;
+          if (outcome === "failure") throw new Error("/private/source.ts private@example.test");
+        } },
+      });
+      manager.initialize();
+      const job = manager.start({ kind: "graph_refresh" });
+      await waitForState(manager, job.id, "running");
+      expect(telemetry).not.toHaveBeenCalled();
+      now = LATER;
+      if (outcome === "shutdown") await manager.shutdown();
+      else {
+        if (outcome === "cancelled") manager.cancel(job.id);
+        finish();
+        await waitForState(manager, job.id, outcome === "success" ? "succeeded" : outcome === "failure" ? "failed" : "interrupted");
+        manager.cancel(job.id);
+        const unsubscribe = manager.subscribe(job.id, () => undefined);
+        unsubscribe();
+        manager.list();
+        await manager.shutdown();
+      }
+      expect(telemetry.mock.calls).toEqual([["hub.job_completed", {
+        job_kind: "graph_refresh", outcome: outcome === "shutdown" ? "cancelled" : outcome, duration_ms: 60_000,
+      }]]);
+      expect(JSON.stringify(telemetry.mock.calls)).not.toMatch(/private|job_01|scaffold|revision/);
+      const restarted = new HubJobManager({ localState: localState(root), telemetry, now: () => LATER });
+      restarted.initialize();
+      restarted.get(job.id);
+      restarted.list();
+      await restarted.shutdown();
+      expect(telemetry).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("reports queued cancellation once even when the queued executor never starts", async () => {
+    const telemetry = vi.fn();
+    const execute = vi.fn(async () => undefined);
+    const manager = new HubJobManager({ localState: localState(tempProject()), telemetry,
+      now: () => NOW, executors: { wiki_refresh: execute } });
+    manager.initialize();
+    const job = manager.start({ kind: "wiki_refresh" });
+    manager.cancel(job.id);
+    manager.cancel(job.id);
+    await manager.shutdown();
+    expect(execute).not.toHaveBeenCalled();
+    expect(telemetry.mock.calls).toEqual([["hub.job_completed", {
+      job_kind: "wiki_refresh", outcome: "cancelled", duration_ms: 0,
+    }]]);
+  });
+
   it("generates standard job-prefixed ULIDs", () => {
     expect(generateHubJobId(0, new Uint8Array(10))).toBe(
       "job_00000000000000000000000000",
@@ -199,6 +261,33 @@ describe("HubJobManager", () => {
       "terminal:succeeded:2",
     ]);
     unsubscribe();
+  });
+
+  it("retains parsed file counts through later graph phases and suppresses duplicate phase updates", async () => {
+    const root = tempProject();
+    let context: HubJobExecutorContext | undefined;
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => { finish = resolve; });
+    const manager = new HubJobManager({
+      localState: localState(root),
+      now: () => NOW,
+      generateId: () => JOB_A,
+      executors: { graph_refresh: async (received) => { context = received; await pending; } },
+    });
+    manager.initialize();
+    const queued = manager.start({ kind: "graph_refresh" });
+    await waitForState(manager, queued.id, "running");
+    context!.reportProgress({ phase: "parse", completed: 2, total: 2 });
+    expect(manager.get(queued.id)?.progress).toEqual({ completed: 2, total: 2 });
+    context!.reportProgress({ phase: "resolve" });
+    const resolving = manager.get(queued.id);
+    expect(resolving).toMatchObject({ phase: "resolve", progress: { completed: 2, total: 2 } });
+    context!.reportProgress({ phase: "resolve" });
+    expect(manager.get(queued.id)).toEqual(resolving);
+    context!.reportProgress({ phase: "validate" });
+    expect(manager.get(queued.id)).toMatchObject({ phase: "validate", progress: { completed: 2, total: 2 } });
+    finish();
+    expect(await waitForState(manager, queued.id, "succeeded")).toMatchObject({ progress: { completed: 2, total: 2 } });
   });
 
   it("does not persist or publish an identical progress snapshot", async () => {

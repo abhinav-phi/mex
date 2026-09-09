@@ -137,11 +137,15 @@ import {
   type WikiValidationRequest,
 } from "../team/contracts/wiki.js";
 import { isRepoRelativePath, MexPortError } from "../team/contracts/shared.js";
+import type { CodeSymbol } from "../team/contracts/graph.js";
+import { WIKI_ENTITY_TYPES } from "./model/entity.js";
 
 const MAX_DIAGNOSTICS = 100;
 const MAX_COUNTED_ENTITIES = 10_000;
 const MAX_COUNTED_RELATIONS = 100_000;
 const MAX_PRIVATE_PAGE = 50;
+const MAX_CONTEXT_NODES = 100;
+const MAX_CONTEXT_RELATIONS = 500;
 const MAX_CODE_LOOKUP_NODES = 50;
 const MAX_CURSOR_BYTES = 4 * 1024;
 const MAX_OPAQUE_PLANS = 128;
@@ -159,6 +163,7 @@ export type RepositoryWikiBatchOperation =
       readonly title?: string;
       readonly summary?: string;
       readonly body?: string;
+      readonly appendSources?: readonly JsonValue[];
     }
   | {
       readonly type: "add-relation";
@@ -191,6 +196,33 @@ export interface RepositoryWikiListBundle {
   readonly indexedRevision: Revision;
   readonly observedAt: string;
   readonly results: WikiPage<WikiEntitySummary>;
+}
+
+export interface RepositoryWikiGraphOverview {
+  readonly indexedRevision: Revision;
+  readonly observedAt: string;
+  readonly nodes: readonly WikiEntitySummary[];
+  readonly relations: readonly WikiRelation[];
+  readonly coverage: {
+    readonly nodeLimit: 100;
+    readonly relationLimit: 500;
+    readonly nodesTruncated: boolean;
+    readonly relationsTruncated: boolean;
+  };
+}
+
+export interface RepositoryWikiGroundedCode {
+  readonly indexedRevision: Revision;
+  readonly observedAt: string;
+  readonly entityId: EntityId;
+  readonly graphRevision: string | null;
+  readonly groundings: readonly {
+    readonly requestedNode: string;
+    readonly resolvedNode: string | null;
+    readonly health: GroundingHealth;
+    readonly symbol: CodeSymbol | null;
+  }[];
+  readonly truncated: boolean;
 }
 
 export type RepositoryKnowledgeSelection =
@@ -348,6 +380,8 @@ export interface RepositoryWikiGroundingBridge {
 export type RepositoryWikiGroundingSnapshot = GroundingGraph & {
   /** Exact Graph snapshot revision used to bind current-projection cursors. */
   readonly revision: string;
+  /** Optional compact symbol projection, bound to this same revocable snapshot. */
+  getSymbols?(nodeIds: readonly string[]): readonly CodeSymbol[];
 };
 
 export interface RepositoryWikiPreparedPublication<T> {
@@ -448,6 +482,88 @@ export class RepositoryWikiPort implements WikiPort<
       observedAt: stableObservationTime(session),
       results: this.#currentListPage(session, graph, request),
     }));
+  }
+
+  /** All visible Context units and their authored edges from one immutable read. */
+  async graphOverview(): Promise<RepositoryWikiGraphOverview> {
+    return this.#readCurrent((session, graph) => {
+      const status = session.status();
+      if (status.state !== "fresh") throw indexError(status);
+      const page = session.list({ kinds: WIKI_ENTITY_TYPES, includeArchived: true, limit: MAX_CONTEXT_NODES });
+      const nodes = page.items.map((entity) => this.#projectCurrentSummary(session, graph, entity));
+      const included = new Set(nodes.map((entity) => entity.ref.id));
+      const relations: WikiRelation[] = [];
+      let relationsTruncated = false;
+      // Each source has at most 200 queryable relationships. Two ordinary pages
+      // per source keep the scan bounded even when most targets are excluded.
+      sources: for (const node of nodes) {
+        let cursor: string | undefined;
+        for (let pageIndex = 0; pageIndex < 2; pageIndex += 1) {
+          const edges = session.relations({
+            entityId: node.ref.id, direction: "outgoing", includeArchived: true,
+            limit: 100, ...(cursor === undefined ? {} : { cursor }),
+          });
+          for (const hit of edges.items) {
+            if (!included.has(hit.relation.target.id)) {
+              if (hit.entity !== null && (WIKI_ENTITY_TYPES as readonly string[]).includes(hit.entity.type)) {
+                relationsTruncated = true;
+              }
+              continue;
+            }
+            if (relations.length === MAX_CONTEXT_RELATIONS) {
+              relationsTruncated = true;
+              break sources;
+            }
+            relations.push(projectRelation(hit.relation));
+          }
+          cursor = edges.nextCursor ?? undefined;
+          if (cursor === undefined) {
+            if (edges.truncated) relationsTruncated = true;
+            break;
+          }
+          if (pageIndex === 1) relationsTruncated = true;
+        }
+      }
+      return {
+        indexedRevision: session.indexedRevision,
+        observedAt: stableObservationTime(session), nodes, relations,
+        coverage: {
+          nodeLimit: MAX_CONTEXT_NODES, relationLimit: MAX_CONTEXT_RELATIONS,
+          nodesTruncated: page.truncated, relationsTruncated,
+        },
+      };
+    });
+  }
+
+  /** Only direct, resolved grounding symbols; never fetch source bodies or traverse code. */
+  async readGroundedCode(entityId: EntityId): Promise<RepositoryWikiGroundedCode> {
+    return this.#readCurrent((session, graph) => {
+      const status = session.status();
+      if (status.state !== "fresh") throw indexError(status);
+      const entity = session.get(entityId);
+      if (entity === null || !(WIKI_ENTITY_TYPES as readonly string[]).includes(entity.type)) {
+        throw portError("NOT_FOUND", 404, "Wiki entity not found", "The requested Context entity does not exist.");
+      }
+      const projected = projectGroundings(entity.groundings.slice(0, MAX_CODE_LOOKUP_NODES), stableObservationTime(session), graph);
+      const groundings = projected.flatMap((grounding) => grounding.state === "ungrounded" ? [] : [{
+        requestedNode: grounding.requestedNode,
+        resolvedNode: grounding.state === "fresh" || grounding.state === "stale"
+          ? grounding.resolvedNode ?? null : null,
+        health: grounding.health,
+      }]);
+      const symbols = graph?.getSymbols?.(groundings.flatMap((grounding) => (
+        grounding.resolvedNode === null ? [] : [grounding.resolvedNode]
+      ))) ?? [];
+      const byId = new Map(symbols.map((symbol) => [symbol.ref.symbolId, symbol]));
+      return {
+        indexedRevision: session.indexedRevision, observedAt: stableObservationTime(session), entityId,
+        graphRevision: graph?.getSymbols === undefined ? null : graph.revision,
+        groundings: groundings.map((grounding) => ({
+          ...grounding, symbol: grounding.resolvedNode === null ? null : byId.get(grounding.resolvedNode) ?? null,
+        })),
+        truncated: entity.groundings.length > MAX_CODE_LOOKUP_NODES,
+      };
+    });
   }
 
   /**
@@ -599,6 +715,16 @@ export class RepositoryWikiPort implements WikiPort<
     return this.#readCurrent((session, graph) => {
       const entity = session.get(id);
       return entity === null ? null : projectEntity(entity, stableObservationTime(session), graph);
+    });
+  }
+
+  /** Inbox target discovery requires a fresh Wiki snapshot and no Code Graph. */
+  async readInboxTarget(id: EntityId): Promise<WikiEntity<never> | null> {
+    return this.#read((session) => {
+      const status = session.status();
+      if (status.state !== "fresh") throw indexError(status);
+      const entity = session.get(id);
+      return entity === null ? null : projectEntity(entity, stableObservationTime(session), null);
     });
   }
 
@@ -3595,6 +3721,7 @@ function normalizeRepositoryOperationItem(value: unknown): NormalizedRepositoryO
         ...(value["title"] === undefined ? {} : { title: value["title"] as JsonValue }),
         ...(value["summary"] === undefined ? {} : { summary: value["summary"] as JsonValue }),
         ...(value["body"] === undefined ? {} : { body: value["body"] as JsonValue }),
+        ...(value["appendSources"] === undefined ? {} : { appendSources: value["appendSources"] as JsonValue }),
       },
     };
   }

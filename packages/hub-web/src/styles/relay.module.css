@@ -514,6 +514,25 @@
   gap: 7px;
 }
 
+.sharingState,
+.eligibility {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.sharingState {
+  padding: 9px 11px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.sharingState strong {
+  color: var(--foreground);
+}
+
 .recovery {
   margin: 0;
   padding: 9px 11px;

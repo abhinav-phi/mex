@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, dirname, resolve } from "node:path";
+import { eventAttributes } from "../src/telemetry/schema.js";
 
 /**
  * Architectural lint for the wiki engine.
@@ -416,64 +417,64 @@ function allTypeScriptFiles(): string[] {
 }
 
 /**
- * Telemetry sees a command name and a scaffold id. Never an argument.
- *
- * §19 says wiki content does not leave the device. Every phase before this one
- * shipped no commands, so nothing the wiki owned had arguments at all; P9 is
- * the first surface whose arguments *are* user content — a query string, an
- * entity id, a file path, an operation payload. `captureCommand(command,
- * scaffoldId)` takes only those two and its own comment calls the second the
- * PII firewall, so the rule is already right; what was missing is anything
- * asserting a later command cannot widen it.
- *
- * Checked over the source rather than by running a command, because the
- * property is "there is no code path that can", and a behavioural test only
- * covers the paths someone thought to exercise.
+ * Product modules cannot bypass the CLI/Hub projection with direct captures.
+ * Only their composition roots import the capture entry point. Runtime schema
+ * checks complement this dependency guard: command names are a closed catalog,
+ * and no event accepts query text, paths, artifact IDs, or arbitrary properties.
  */
+const TELEMETRY_COMPOSITION_ROOTS = ["src/cli.ts", "src/hub/command.ts"];
+
 function findTelemetryLeaks(path: string, source: string): string[] {
+  if (path.startsWith("src/telemetry/")) return [];
   const code = withoutComments(source);
   const violations: string[] = [];
-  // The declaration itself is not a call site.
-  // One level of nesting is allowed inside the argument list, because the
-  // legitimate call passes `actionCommand.name()` and a pattern that stopped
-  // at the first `)` would read that as a truncated argument.
-  for (const match of code.matchAll(/(function\s+)?captureCommand\s*\((?:\s*)((?:[^()]|\([^()]*\))*)\)/g)) {
-    if (match[1] !== undefined) continue;
-    const args = (match[2] ?? "").split(",").map((part) => part.trim()).filter((part) => part.length > 0);
-    if (args.length > 2) {
-      violations.push(`${path}: captureCommand takes a command name and a scaffold id, not ${args.length} arguments`);
-      continue;
+  for (const specifier of importSpecifiers(code)) {
+    const resolved = resolveSpecifier(path, specifier);
+    if (!resolved.startsWith("src/telemetry/") || resolved === "src/telemetry/schema.js") continue;
+    if (resolved !== "src/telemetry/index.js" || !TELEMETRY_COMPOSITION_ROOTS.includes(path)) {
+      violations.push(`${path} imports ${resolved}; telemetry must use the CLI/Hub projection`);
     }
-    // The first argument must be the command's own name, never a value the
-    // user typed. Anything else is a leak whatever it is called.
-    const first = args[0] ?? "";
-    if (!/name\(\)$/.test(first) && !/^"[a-z][a-z -]*"$/.test(first)) {
-      violations.push(`${path}: captureCommand's first argument is ${first}, which is not a command name`);
-    }
+  }
+  // Composition roots pass the capture function to the projection; they never
+  // call it with command arguments themselves. Legacy hooks stay inside core.
+  if (/\b(?:captureEvent|captureCommand)\s*\(/.test(code)) {
+    violations.push(`${path} captures directly instead of using the CLI/Hub projection`);
   }
   return violations;
 }
 
-describe("telemetry never receives an argument", () => {
+describe("telemetry keeps Wiki arguments behind the shared projection", () => {
   it("holds across every shipped module", () => {
-    // `sourceFiles()` rather than the whole tree: telemetry is called from
-    // `src/`, and this file's own planted violations are string literals that
-    // a walk over `test/` would read as real ones.
     expect(FILES.flatMap((path) => findTelemetryLeaks(path, read(path)))).toEqual([]);
   });
 
-  it("checks a file that actually calls it", () => {
-    const callers = FILES.filter((path) => withoutComments(read(path)).includes("captureCommand("));
-    expect(callers).toContain("src/cli.ts");
-    expect(callers.length).toBeGreaterThan(0);
+  it("checks the real production capture entry points", () => {
+    const callers = FILES.filter((path) => importSpecifiers(withoutComments(read(path)))
+      .some((specifier) => resolveSpecifier(path, specifier) === "src/telemetry/index.js"));
+    expect(callers.sort()).toEqual([...TELEMETRY_COMPOSITION_ROOTS].sort());
+    expect(read("src/cli.ts")).toContain("createCliTelemetry(captureEvent, flush,");
   });
 
-  it("catches a wiki command that passed its argument along", () => {
-    expect(
-      findTelemetryLeaks("src/cli.ts", 'captureCommand("wiki query", queryText, scaffoldId);'),
-    ).toHaveLength(1);
-    expect(findTelemetryLeaks("src/cli.ts", "captureCommand(userQuery, scaffoldId);")).toHaveLength(1);
-    expect(findTelemetryLeaks("src/cli.ts", "captureCommand(actionCommand.name(), scaffoldId);")).toEqual([]);
+  it("rejects bypasses, including aliased imports and direct transport access", () => {
+    expect(findTelemetryLeaks("src/cli.ts", 'captureCommand("wiki query", queryText, scaffoldId);')).toHaveLength(1);
+    expect(findTelemetryLeaks("src/cli.ts", 'captureEvent("cli.command_started", { command: userQuery });')).toHaveLength(1);
+    expect(findTelemetryLeaks("src/wiki/cli/query.ts",
+      'import { captureEvent as send } from "../../telemetry/index.js";')).toHaveLength(1);
+    expect(findTelemetryLeaks("src/cli.ts",
+      'import { sendBatch } from "./telemetry/transport.js";')).toHaveLength(1);
+    expect(findTelemetryLeaks("src/wiki/query/query.ts",
+      'export { captureEvent } from "../../telemetry/index.js";')).toHaveLength(1);
+    expect(findTelemetryLeaks("src/cli.ts",
+      'import { captureEvent, flush } from "./telemetry/index.js"; createCliTelemetry(captureEvent, flush);')).toEqual([]);
+  });
+
+  it("rejects Wiki input values and extra properties at the final schema boundary", () => {
+    const event = "cli.command_started";
+    expect(eventAttributes(event, { command: "wiki.query" })).toEqual({ command: "wiki.query" });
+    for (const value of ["private query text", "component:private-id", "/private/project/file.ts"]) {
+      expect(eventAttributes(event, { command: value })).toBeUndefined();
+      expect(eventAttributes(event, { command: "wiki.query", argument: value })).toBeUndefined();
+    }
   });
 });
 
@@ -736,8 +737,8 @@ describe("no unscoped scaffold writes", () => {
     //
     // `src/graph/runtime.ts` is the one that matters, and it is the reason this
     // rule exists: it writes into `.mex` Markdown files a human already wrote,
-    // twice — anchor reconciliation and grounding-baseline capture. Both go
-    // through the scoped splice since P2b, so neither is lossy, but both bypass
+    // during anchor reconciliation and grounding-baseline capture. Both use
+    // one staged publication helper and scoped splices, but both bypass
     // write-scope enforcement, the audit log and `wiki.readOnly`: a `mex ground`
     // run will happily write into `team/**`. Pinned rather than folded, because
     // routing `mex ground` through this pipeline changes shipped behaviour on a
@@ -755,6 +756,7 @@ describe("no unscoped scaffold writes", () => {
     // one nothing in `src/` was watching at all.
     const KNOWN: Readonly<Record<string, string>> = {
       "src/agent-skills/installer.ts": "atomically installs fixed packaged skill trees and marker-scoped root instructions",
+      "src/graph/candidate-process.ts": "removes only the identity-bound parent-owned temporary workspace after the candidate child closes",
       "src/graph/engine-impl.ts": "writes only a private, bounded temporary source spool that is removed before graph publication",
       "src/graph/maintenance.ts": "publishes and recovers the disposable graph index under its maintenance lease",
       "src/graph/runtime.ts": "edits existing .mex Markdown; bypasses the pipeline (recorded D9 exception)",
@@ -767,6 +769,7 @@ describe("no unscoped scaffold writes", () => {
       "src/setup/population.ts": "writes and removes one ignored private prompt file for the interactive setup session",
       "src/team/artifacts/filesystem.ts": "atomically publishes bounded team-owned canonical artifacts",
       "src/team/local-state/receipt-signer.ts": "atomically provisions the bounded local-only C preview signing credential",
+      "src/team/relay/cli/local-preview.ts": "removes only the exact contained checkout-local Relay receipt after successful apply",
       "src/watch.ts": "installs and removes git hooks",
     };
 
@@ -776,10 +779,11 @@ describe("no unscoped scaffold writes", () => {
     // Vacuity guard: there were files outside the wiki engine to check.
     expect(outside.length).toBeGreaterThan(20);
 
-    // And exactly two sites inside the recorded exception, so a third added to
-    // the same file — the likelier way one appears — is caught as well.
-    const sites = [...withoutComments(read("src/graph/runtime.ts")).matchAll(/writeFileSync\s*\(/g)];
-    expect(sites).toHaveLength(2);
+    // Pin the shared exclusive staging write and rename publication, so a new
+    // direct writer in this existing exception is caught as well.
+    const runtime = withoutComments(read("src/graph/runtime.ts"));
+    expect([...runtime.matchAll(/writeFileSync\s*\(/g)]).toHaveLength(1);
+    expect([...runtime.matchAll(/renameSync\s*\(/g)]).toHaveLength(1);
   });
 
   it("does not constrain code outside the wiki engine", () => {

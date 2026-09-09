@@ -13,6 +13,7 @@ import {
 } from "./client";
 import type { ActivityResponse, JobSummary, RelayOperationPreviewRequest } from "./types";
 import { createFixtureApi } from "../dev/fixture-api";
+import type { HubTelemetryPage } from "./telemetry";
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
   status,
@@ -49,6 +50,34 @@ const activity: ActivityResponse = {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("local page telemetry transport", () => {
+  it("sends only a category with session CSRF to the exact local endpoint and bounds in-flight work", async () => {
+    let complete!: (response: Response) => void;
+    const pending = new Promise<Response>(resolve => { complete = resolve; });
+    const fetch = vi.fn().mockResolvedValueOnce(json(session)).mockReturnValueOnce(pending);
+    vi.stubGlobal("fetch", fetch);
+    const api = new HttpHubApi();
+    await api.recordPageView("home");
+    expect(fetch).not.toHaveBeenCalled();
+    await api.getSession();
+    await api.recordPageView("/Users/private" as HubTelemetryPage);
+    expect(fetch).toHaveBeenCalledOnce();
+    const sent = api.recordPageView("knowledge_detail");
+    await api.recordPageView("code");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[1]).toEqual(["/api/v1/telemetry/page", {
+      method: "POST", headers: { "Content-Type": "application/json", "X-MEX-CSRF": session.csrfToken },
+      body: '{"page":"knowledge_detail"}', credentials: "same-origin", redirect: "error",
+      referrerPolicy: "no-referrer", signal: expect.any(AbortSignal),
+    }]);
+    complete(new Response(null, { status: 204 }));
+    await sent;
+    fetch.mockRejectedValueOnce(new Error("local connection lost"));
+    await expect(api.recordPageView("jobs")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
 });
 
 describe("bootstrap fragment handling", () => {

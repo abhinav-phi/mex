@@ -106,6 +106,45 @@ describe("Members identity and team directory", () => {
     expect(apply).not.toHaveBeenCalled();
   });
 
+  it("reactivates the existing inactive Member only after exact review and returns to their active record", async () => {
+    const user = userEvent.setup();
+    const api = createFixtureApi();
+    const original = await api.getMember(LIN_ID);
+    expect(original.active).toBe(false);
+    const preview = vi.spyOn(api, "previewTeamOperation");
+    const apply = vi.spyOn(api, "applyTeamOperation");
+    renderRoute(api, `/members?status=inactive&member=${LIN_ID}`);
+    await user.click(await screen.findByRole("button", { name: "Reactivate Member" }));
+    const dialog = await screen.findByRole("alertdialog", { name: `Reactivate ${original.displayName}?` });
+    const confirm = within(dialog).getByRole("button", { name: "Reactivate Member" });
+    await waitFor(() => expect(confirm).toBeEnabled());
+    expect(apply).not.toHaveBeenCalled();
+    expect(preview.mock.calls[0]![0]).toMatchObject({ action: { kind: "member.reactivate", memberId: LIN_ID }, expectedRevisions: [{ target: { kind: "artifact", path: original.sourcePath }, revision: original.revision }] });
+    expect(within(dialog).getByText(/Commit and push to share it through Git/)).toBeVisible();
+    await user.click(confirm);
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
+    expect(apply.mock.calls[0]![0]).toBe(await preview.mock.results[0]!.value);
+    await waitFor(() => expect(routeLocation()).toContain(`status=active&member=${LIN_ID}`));
+    expect(await screen.findByText("Member reactivated")).toBeVisible();
+    expect(await api.getMember(LIN_ID)).toMatchObject({ id: LIN_ID, active: true, displayName: original.displayName });
+  });
+
+  it("keeps Member reactivation blocked when the reviewed target differs", async () => {
+    const user = userEvent.setup();
+    const api = createFixtureApi();
+    const realPreview = api.previewTeamOperation.bind(api);
+    vi.spyOn(api, "previewTeamOperation").mockImplementation(async (request) => ({
+      ...await realPreview(request), request: { ...request, action: { kind: "member.reactivate", memberId: GRACE_ID } },
+    }));
+    const apply = vi.spyOn(api, "applyTeamOperation");
+    renderRoute(api, `/members?status=inactive&member=${LIN_ID}`);
+    await user.click(await screen.findByRole("button", { name: "Reactivate Member" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(await within(dialog).findByText("This view could not be loaded")).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "Reactivate Member" })).toBeDisabled();
+    expect(apply).not.toHaveBeenCalled();
+  });
+
   it("marks a Git-alias match as You even without a local selection", async () => {
     const api = createFixtureApi({ memberFixture: "git-alias" });
     renderRoute(api);

@@ -22,6 +22,8 @@ import {
   WikiEntityDetailResponseSchema,
   WikiEntityListResponseSchema,
   WikiRelationsResponseSchema,
+  WikiGraphResponseSchema,
+  WikiGroundedCodeResponseSchema,
   type HubJobKind,
 } from "@mex/hub-contracts";
 import { afterEach, describe, expect, it } from "vitest";
@@ -104,6 +106,9 @@ describe("real Project Hub Wiki integration", () => {
         headers: { host: HOST },
       });
       expect(unauthenticated.status).toBe(401);
+      for (const path of ["/api/v1/wiki/graph", `/api/v1/wiki/entities/${DECISION_ID}/code`]) {
+        expect((await harness.app.request(`${ORIGIN}${path}`, { headers: { host: HOST } })).status).toBe(401);
+      }
 
       const spoofedHost = await harness.app.request(`${ORIGIN}/api/v1/wiki/entities`, {
         headers: { host: "localhost:48482", cookie: harness.cookie },
@@ -158,6 +163,28 @@ describe("real Project Hub Wiki integration", () => {
       expect(detail.sources.items[0]?.note).toBeNull();
       expect(detail.provenance?.id).toBeNull();
       expect(detail).toMatchObject({ relationCount: 1, backlinkCount: 1 });
+
+      const graph = await parseBounded(await harness.get("/api/v1/wiki/graph"), WikiGraphResponseSchema);
+      expect(graph.indexedRevision).toBe(detail.indexedRevision);
+      expect(graph.nodes.map((node) => node.id)).toEqual(expect.arrayContaining([
+        TOPIC_ID, DECISION_ID, PATTERN_ID, LARGE_FACT_ID, SPEC_ID, REQUIREMENT_ID, CONSTRAINT_ID, ACCEPTANCE_CRITERION_ID,
+      ]));
+      expect(graph.nodes.some((node) => node.id === TEAM_WORKSTREAM_ID)).toBe(false);
+      expect(graph.coverage).toMatchObject({ nodesTruncated: false, relationsTruncated: false });
+      expect(graph.relations).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: "implements", source: expect.objectContaining({ id: DECISION_ID }), target: expect.objectContaining({ id: PATTERN_ID }) }),
+      ]));
+      const code = await parseBounded(
+        await harness.get(`/api/v1/wiki/entities/${DECISION_ID}/code`), WikiGroundedCodeResponseSchema,
+      );
+      expect(code.indexedRevision).toBe(graph.indexedRevision);
+      expect(code.graphRevision).not.toBeNull();
+      expect(code.groundings).toMatchObject([{
+        requestedNode: harness.symbolId, resolvedNode: harness.symbolId, health: "fresh",
+        symbol: { id: harness.symbolId, path: "src/packed.ts" },
+      }]);
+      expect(JSON.stringify(code)).not.toContain("fingerprint");
+      expect(JSON.stringify(code)).not.toContain("bodyHash");
 
       const relations = await parseBounded(
         await harness.get(`/api/v1/wiki/entities/${DECISION_ID}/relations?direction=both&limit=2`),
@@ -267,6 +294,9 @@ describe("real Project Hub Wiki integration", () => {
       expect(await mismatchedCursor.json()).toMatchObject({ code: "INVALID_REQUEST" });
 
       const invalidPaths = [
+        "/api/v1/wiki/graph?cursor=next",
+        `/api/v1/wiki/entities/${DECISION_ID}/code?limit=1`,
+        "/api/v1/wiki/entities/not-an-id/code",
         "/api/v1/wiki/entities?kind=decision&kind=pattern",
         "/api/v1/wiki/entities?unknown=true",
         "/api/v1/wiki/entities?limit=0",

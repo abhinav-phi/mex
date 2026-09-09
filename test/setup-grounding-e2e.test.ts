@@ -13,7 +13,7 @@ import { deserializeFingerprint } from "../src/graph/fingerprint.js";
 import { extractGroundings, findMexAnchors, writeGroundings } from "../src/markdown.js";
 import { checkBrokenLinks } from "../src/drift/checkers/broken-link.js";
 import { runDriftCheckWithGraphStatus } from "../src/drift/index.js";
-import { captureGroundingBaselines, loadGroundingRuntime } from "../src/graph/runtime.js";
+import { captureGroundingBaselines, loadGroundingRuntime, previewGroundingBaseline } from "../src/graph/runtime.js";
 import { finalizeSetupWiki } from "../src/setup/wiki-finalize.js";
 
 const roots: string[] = [];
@@ -141,9 +141,13 @@ export function calculateCheckoutTotal(items: number[], member: boolean): number
       file: ".mex/patterns/calculate-checkout.md",
     }));
 
-    // Same shared post-authoring routine used by sync: refresh, then check clean.
-    expect(await captureGroundingBaselines(config, { updateFingerprints: true }))
-      .toEqual({ captured: 2, skipped: 0 });
+    // Review this behavioral claim explicitly. Its navigation-only sibling is
+    // not a behavioral assertion and keeps its historical cache unchanged.
+    const reviewRuntime = await loadGroundingRuntime(config);
+    const acceptance = previewGroundingBaseline(config, ".mex/patterns/calculate-checkout.md", groundings[0].node, reviewRuntime!)!.acceptance;
+    reviewRuntime!.close();
+    expect(await captureGroundingBaselines(config, { acceptedGroundings: [acceptance] }))
+      .toEqual({ captured: 1, skipped: 0 });
     const clean = await runDriftCheckWithGraphStatus(config, { graphWarning: (message) => warnings.push(message) });
     expect(clean.graphStatus?.status).toBe("fresh");
     expect(clean.issues.filter((issue) => issue.code.startsWith("GROUNDING_"))).toEqual([]);

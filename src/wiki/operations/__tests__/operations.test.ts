@@ -817,3 +817,149 @@ describe("create-entry, on the two things P8 needed from it", () => {
     expect(target.read("context/architecture.md")).not.toContain("metadata:");
   });
 });
+
+describe("approval evidence in one Wiki operation", () => {
+  const provenance = {
+    createdBy: { kind: "agent" as const, id: "original-producer" },
+    createdAt: "2026-08-20T10:00:00.000Z",
+    agentSessionId: "original-session",
+  };
+  const approval = {
+    type: "document" as const,
+    ref: ".mex/inbox/proposal_reviewed.md",
+    note: "Preserve the approved rationale.\n\nSecond line.\r\n\tOriginal indentation.",
+    capturedAt: "2026-08-24T10:00:00.000Z",
+    metadata: { proposalId: "proposal_reviewed", author: { kind: "agent", id: "producer" }, approvedBy: { kind: "human", id: "reviewer" } },
+  };
+
+  it.each([false, true])("captures creation authority only when explicitly enabled: %s", (captureCreationProvenance) => {
+    const target = scaffold();
+    const request = {
+      ...envelope(target, "create-entry", {
+        file: "context/architecture.md", insertAt: { at: "end-of-file" },
+        type: "component", title: "New component", body: "Newly authored content.", headingDepth: 2,
+      }),
+      actor: { kind: "agent", id: "known-producer", sessionId: "known-session" },
+      timestamp: "2026-09-08T10:00:00.000Z",
+    };
+    const result = applyOperation(request, { scaffoldRoot: target.root, captureCreationProvenance });
+    expect(result.ok).toBe(true);
+    const created = target.entity(result.createdIds[0]!);
+    expect(created.provenance).toEqual(captureCreationProvenance ? {
+      createdBy: { kind: "agent", id: "known-producer" },
+      createdAt: request.timestamp,
+      agentSessionId: "known-session",
+    } : undefined);
+    expect(created.sources).toEqual([]);
+  });
+
+  it("does not turn adoption time or actor into the original prose's provenance", () => {
+    const text = "---\nlast_updated: 2020-01-01\n---\n\n# Existing guide\n\nLongstanding prose.\n";
+    const target = scaffold({ "context/guide.md": text });
+    const request = envelope(target, "create-entry", {
+      file: "context/guide.md", adopt: { at: "file" }, type: "guide", title: "Existing guide",
+    });
+    const result = applyOperation(request, { scaffoldRoot: target.root, captureCreationProvenance: true });
+    expect(result.ok).toBe(true);
+    expect(target.entity(result.createdIds[0]!).provenance).toBeUndefined();
+    expect(target.read("context/guide.md")).toContain("last_updated: 2020-01-01");
+    expect(target.read("context/guide.md")).toContain("Longstanding prose.");
+  });
+
+  it("does not bypass authoring provenance bounds when capturing operation authority", () => {
+    const target = scaffold();
+    const before = target.files();
+    const request = envelope(target, "create-entry", {
+      file: "context/architecture.md", insertAt: { at: "end-of-file" },
+      type: "component", title: "New component", body: "Newly authored content.", headingDepth: 2,
+    });
+    for (const actor of [
+      { kind: "agent", id: "x".repeat(257) },
+      { kind: "agent", id: "known", sessionId: "x".repeat(257) },
+    ]) {
+      const planned = planOperation({ ...request, actor }, { scaffoldRoot: target.root, captureCreationProvenance: true });
+      expect(planned.ok).toBe(false);
+      expect(planned.diagnostics.some((entry) => entry.code === "INVALID_OPERATION_PAYLOAD")).toBe(true);
+    }
+    expect(target.files()).toEqual(before);
+    expect(readAuditLog(target.root).entries).toEqual([]);
+  });
+
+  it("creates explicit producer provenance and exact proposal evidence with one replay-safe audit", () => {
+    const target = scaffold();
+    const before = target.files();
+    const request = envelope(target, "create-entry", {
+      file: "context/architecture.md", insertAt: { at: "end-of-file" },
+      type: "decision", title: "Reviewed decision", body: "The accepted context.", headingDepth: 2,
+      provenance, sources: [approval],
+    });
+    const planned = planOperation(request, { scaffoldRoot: target.root, captureCreationProvenance: true });
+    expect(planned.ok).toBe(true);
+    if (!planned.ok) return;
+    const applied = applyOperation(request, { scaffoldRoot: target.root, captureCreationProvenance: true });
+    expect(applied.ok).toBe(true);
+    const created = target.entity(applied.createdIds[0]!);
+    expect(created.provenance).toEqual(provenance);
+    expect(created.sources).toEqual([approval]);
+    expect(created.groundsTo).toEqual([]);
+    for (const file of planned.plan.files) assertUntouched(before[file.path]!, target.read(file.path), file.declared);
+    const after = target.files();
+    expect(applyOperation(request, { scaffoldRoot: target.root })).toMatchObject({ ok: true, replayed: true });
+    expect(target.files()).toEqual(after);
+    expect(acceptedOperations(readAuditLog(target.root))).toHaveLength(1);
+  });
+
+  it.each([ARCH, GATEWAY])("appends evidence to %s while preserving original provenance, grounding, and neighboring entities", (id) => {
+    const target = scaffold();
+    const indent = id === ARCH ? "  " : "";
+    const metadata = [
+      "provenance:", "  createdBy:", "    kind: agent", "    id: original-producer",
+      "  createdAt: '2026-08-20T10:00:00.000Z'", "  agentSessionId: original-session",
+      "sources:", "  - type: manual", "    note: Prior evidence", "    metadata:", "      keep: original",
+      "grounds_to:", `  - node: ${NODE}`, `    fingerprint: ${FINGERPRINT}`, `    bodyHash: ${BODY_HASH}`,
+    ].map((line) => `${indent}${line}\n`).join("");
+    target.write("context/architecture.md", target.read("context/architecture.md")
+      .replace(`${indent}id: ${id}\n`, `${indent}id: ${id}\n${metadata}`));
+    const original = target.entity(id);
+    const before = target.files();
+    const request = envelope(target, "update-entry", {
+      body: "The approved correction.",
+      appendSources: [
+        { type: "manual", note: "prior evidence", metadata: { keep: "must not replace original" } },
+        approval,
+        approval,
+      ],
+    }, { entityId: id });
+    const planned = planOperation(request, { scaffoldRoot: target.root });
+    expect(planned.ok ? [] : codesOf(planned.diagnostics)).toEqual([]);
+    if (!planned.ok) return;
+    const applied = applyOperation(request, { scaffoldRoot: target.root });
+    expect(applied.ok).toBe(true);
+    const updated = target.entity(id);
+    expect(updated.revision).toBe(original.revision + 1);
+    expect(updated.provenance).toEqual(original.provenance);
+    expect(updated.sources).toEqual([...original.sources, approval]);
+    expect(updated.groundsTo).toEqual(original.groundsTo);
+    expect(target.read("context/architecture.md")).toContain(`    bodyHash: ${BODY_HASH}`);
+    for (const file of planned.plan.files) assertUntouched(before[file.path]!, target.read(file.path), file.declared);
+    const after = target.files();
+    expect(applyOperation(request, { scaffoldRoot: target.root })).toMatchObject({ ok: true, replayed: true });
+    expect(target.files()).toEqual(after);
+    expect(acceptedOperations(readAuditLog(target.root))).toHaveLength(1);
+  });
+
+  it("rejects an evidence append that would exceed the existing collection bound without touching the file", () => {
+    const target = scaffold();
+    const sources = Array.from({ length: 200 }, (_, index) => `  - type: document\n    ref: evidence-${index}\n`).join("");
+    target.write("context/architecture.md", target.read("context/architecture.md")
+      .replace(`id: ${GATEWAY}\n`, `id: ${GATEWAY}\nsources:\n${sources}`));
+    const before = target.files();
+    const applied = applyOperation(envelope(target, "update-entry", {
+      summary: "Must not land partially.", appendSources: [approval],
+    }, { entityId: GATEWAY }), { scaffoldRoot: target.root });
+    expect(applied.ok).toBe(false);
+    expect(codesOf(applied.diagnostics)).toContain("INVALID_OPERATION_PAYLOAD");
+    expect(target.files()).toEqual(before);
+    expect(acceptedOperations(readAuditLog(target.root))).toHaveLength(0);
+  });
+});

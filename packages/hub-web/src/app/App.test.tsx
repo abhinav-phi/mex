@@ -28,7 +28,7 @@ describe("Project Hub routes", () => {
   it.each([
     ["/", fixtureOverviewHeading],
     ["/search", "Search"],
-    ["/knowledge", "Knowledge"],
+    ["/knowledge", "Context"],
     ["/code", "Code"],
     ["/workstreams", "Workstreams"],
     ["/specs", "Specs"],
@@ -68,37 +68,31 @@ describe("Project Hub routes", () => {
     const primary = within(sidebar).getByRole("navigation", { name: "Primary" });
     expect(within(primary).getAllByRole("link").map((link) => link.querySelector("span")?.textContent)).toEqual([
       "Overview",
-      "Knowledge",
-      "Specs",
+      "Context",
       "Code",
-      "Workstreams",
       "Inbox",
       "Relays",
       "Activity",
+      "Team",
     ]);
-    expect(within(primary).getByRole("region", { name: "Project Memory" })).toHaveTextContent(
-      "KnowledgeSpecsCode",
+    expect(within(primary).getByRole("region", { name: "Project" })).toHaveTextContent(
+      "ContextCode",
     );
     expect(within(within(primary).getByRole("region", { name: "Teamwork" }))
       .getAllByRole("link")
       .map((link) => link.querySelector("span")?.textContent))
-      .toEqual(["Workstreams", "Inbox", "Relays", "Activity"]);
-    const comingSoon = within(primary).getByRole("region", { name: "Coming Soon" });
-    expect(within(comingSoon).queryByRole("link", { name: /Playbooks/u })).not.toBeInTheDocument();
-    await user.click(within(comingSoon).getByRole("button", { name: "Coming Soon" }));
-    expect(within(comingSoon).getAllByRole("link").map((link) => link.querySelector("span")?.textContent))
-      .toEqual(["Playbooks", "Catch Up"]);
-    expect(within(comingSoon).getByRole("link", { name: "Playbooks Soon" })).toHaveAttribute("href", "/playbooks");
-    expect(within(comingSoon).getByRole("link", { name: "Catch Up Soon" })).toHaveAttribute("href", "/catch-up");
+      .toEqual(["Relays", "Activity", "Team"]);
+    expect(within(primary).queryByRole("region", { name: "Coming Soon" })).not.toBeInTheDocument();
+    for (const label of ["Specs", "Workstreams", "Playbooks", "Catch Up"]) {
+      expect(within(primary).queryByRole("link", { name: new RegExp(`^${label}`, "u") })).not.toBeInTheDocument();
+    }
 
     const utilities = within(sidebar).getByRole("navigation", { name: "Project utilities" });
-    expect(within(utilities).getAllByRole("link").map((link) => link.textContent)).toEqual([
-      "Team",
-    ]);
+    expect(within(utilities).queryAllByRole("link")).toEqual([]);
     await user.click(within(utilities).getByRole("button", { name: /^System/u }));
     expect(within(utilities).getAllByRole("link").map((link) => link.querySelector("span")?.textContent)).toEqual([
-      "Team",
       "Health",
+      "Settings",
       "Jobs",
     ]);
   });
@@ -108,38 +102,30 @@ describe("Project Hub routes", () => {
     const first = renderRoute("/");
     await screen.findByRole("heading", { level: 1, name: fixtureOverviewHeading });
 
-    const projectMemory = screen.getByRole("button", { name: "Project Memory" });
+    const projectMemory = screen.getByRole("button", { name: "Project" });
     const teamwork = screen.getByRole("button", { name: "Teamwork" });
-    const comingSoon = screen.getByRole("button", { name: "Coming Soon" });
     const system = screen.getByRole("button", { name: /^System/u });
     expect(projectMemory).toHaveAttribute("aria-expanded", "true");
     expect(teamwork).toHaveAttribute("aria-expanded", "true");
-    expect(comingSoon).toHaveAttribute("aria-expanded", "false");
     expect(system).toHaveAttribute("aria-expanded", "false");
 
     await user.click(projectMemory);
-    await user.click(comingSoon);
     await user.click(system);
     expect(projectMemory).toHaveAttribute("aria-expanded", "false");
     expect(teamwork).toHaveAttribute("aria-expanded", "true");
-    expect(comingSoon).toHaveAttribute("aria-expanded", "true");
     expect(system).toHaveAttribute("aria-expanded", "true");
 
     first.unmount();
     renderRoute("/");
     await screen.findByRole("heading", { level: 1, name: fixtureOverviewHeading });
-    expect(screen.getByRole("button", { name: "Project Memory" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Project" })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("button", { name: "Teamwork" })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("button", { name: "Coming Soon" })).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByRole("button", { name: /^System/u })).toHaveAttribute("aria-expanded", "false");
   });
 
   it.each([
-    ["/knowledge/mx_01K36WVM6H7JK8M9NPQRSTVVWX", "Project Memory", "Knowledge"],
-    ["/specs/mx_01K36WVM6H7JK8M9NPQRSTVVWX", "Project Memory", "Specs"],
-    ["/code/symbols/sym.createHubServer", "Project Memory", "Code"],
-    ["/playbooks", "Coming Soon", "Playbooks"],
-    ["/catch-up", "Coming Soon", "Catch Up"],
+    ["/knowledge/mx_01K36WVM6H7JK8M9NPQRSTVVWX", "Project", "Context"],
+    ["/code/symbols/sym.createHubServer", "Project", "Code"],
     ["/jobs", "System", "Jobs"],
   ])("opens the active group and marks its nested route for %s", async (route, group, link) => {
     renderRoute(route);
@@ -152,11 +138,11 @@ describe("Project Hub routes", () => {
   it("keeps a manually collapsed active group visibly active", async () => {
     const user = userEvent.setup();
     renderRoute("/knowledge/mx_01K36WVM6H7JK8M9NPQRSTVVWX");
-    const disclosure = await screen.findByRole("button", { name: "Project Memory" });
+    const disclosure = await screen.findByRole("button", { name: "Project" });
     await user.click(disclosure);
     expect(disclosure).toHaveAttribute("aria-expanded", "false");
     expect(disclosure).toHaveAttribute("data-active", "true");
-    expect(screen.queryByRole("link", { name: "Knowledge" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Context" })).not.toBeInTheDocument();
   });
 
   it("reopens a group when navigation enters one of its routes", async () => {
@@ -285,7 +271,7 @@ describe("Project Hub routes", () => {
     await screen.findByRole("heading", { level: 1, name: fixtureOverviewHeading });
 
     expect(within(screen.getByRole("link", { name: /Relays/u })).getByText("Unavailable")).toBeVisible();
-    expect(within(screen.getByRole("link", { name: /^Inbox/u })).queryByText("Unavailable")).not.toBeInTheDocument();
+    expect(within(screen.getByRole("link", { name: "Context" })).queryByText("Unavailable")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /^System/u }));
     expect(within(screen.getByRole("link", { name: /Jobs/u })).getByText("Unavailable")).toBeVisible();
   });
@@ -313,7 +299,7 @@ describe("Project Hub routes", () => {
     expect(await screen.findByText("Ada Lovelace")).toBeVisible();
     const repositoryBar = screen.getByRole("banner", { name: "Repository context" });
     expect(within(repositoryBar).getByText(initialHome.repository.name)).toBeVisible();
-    expect(screen.getByLabelText("3 proposals awaiting team review.")).toBeVisible();
+    expect(screen.getByLabelText("2 open Relays for you.")).toBeVisible();
 
     // The Hub's only outbound link. `target="_blank"` without
     // `rel="noopener noreferrer"` would hand the opened tab a handle on this
@@ -438,11 +424,10 @@ describe("Project Hub routes", () => {
   it("links Overview focus, team memory, context, and active operation to exact supported routes", async () => {
     renderRoute("/");
     const focus = await screen.findByRole("region", { name: "Attention" });
-    expect(within(focus).getByRole("button", { name: "Open Inbox" })).toHaveAttribute(
-      "href",
-      "/inbox?view=review&proposal=proposal_01000000000000000000001720",
-    );
-    expect(within(focus).getByText("Take the handoff waiting for you").closest("a")).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Explore Context" })).toHaveAttribute("href", "/knowledge");
+    expect(within(focus).getByRole("button", { name: "View Relays" })).toHaveAttribute("href", "/relays");
+    expect(within(focus).queryByRole("button", { name: "Open Inbox" })).not.toBeInTheDocument();
+    expect(within(focus).getByRole("button", { name: "Open handoff" })).toHaveAttribute(
       "href",
       "/relays?view=mine&state=open&relay=relay_01000000000000000000000001",
     );

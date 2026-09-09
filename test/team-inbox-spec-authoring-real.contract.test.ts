@@ -17,6 +17,14 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { describe, expect, it, vi } from "vitest";
+import {
+  TEAM_INBOX_KNOWLEDGE_KINDS,
+  type TeamInboxSpecAuthoringPort as KnowledgeInboxPort,
+  type TeamInboxSpecDraftInput as KnowledgeDraftInput,
+  type TeamInboxSpecProposalDetail as KnowledgeProposal,
+  type TeamInboxSpecPreviewEnvelope as KnowledgeEnvelope,
+} from "../src/team/contracts/workflow.js";
 import {
   defineTeamInboxDirectWikiSpecBypassContract,
   defineTeamInboxSpecAuthoringContract,
@@ -71,6 +79,11 @@ import {
   type RepositoryWikiPort,
 } from "../src/wiki/application-adapter.js";
 import { assertNoDirectWikiSpecMutation } from "../src/wiki/cli/spec-authoring-boundary.js";
+
+// Real Git/Wiki workflows showed intermittent Windows runner stalls in different
+// cases. This file-only hang guard leaves the shared contract and other test
+// files unchanged; timing budgets belong to the pinned release benchmark.
+if (process.platform === "win32") vi.setConfig({ testTimeout: 30_000 });
 
 const NOW = "2026-08-28T04:05:06.000Z";
 const SCAFFOLD_ID = "team_inbox_spec_authoring_v1";
@@ -1666,4 +1679,251 @@ function compare(left: string, right: string): number {
 
 function fail(message: string): never {
   throw new Error(message);
+}
+
+describe("Knowledge Inbox real approval pipeline", () => {
+  it("approves and recovers exact CRLF Wiki bytes while keeping Team artifact revisions portable", async () => {
+    const harness = await RepositoryInboxSpecHarness.open("empty");
+    try {
+      let port = harness.port as unknown as KnowledgeInboxPort;
+      const path = join(harness.root, `.mex/context/${NON_SPEC_ID}.md`);
+      const original = `${readFileSync(path, "utf8")}\nLiteral \\r stays literal.\n`.replaceAll("\n", "\r\n");
+      writeFileSync(path, original);
+      const auditPath = join(harness.root, ".mex/events/operations.jsonl");
+      mkdirSync(dirname(auditPath), { recursive: true });
+      // An empty historical CRLF line is valid ledger text and remains part of
+      // the exact preview/recovery hash even though it has no operation record.
+      writeFileSync(auditPath, "\r\n");
+      await harness.refreshWikiIndex();
+      const wiki = createRepositoryWikiPort(harness.root);
+      const target = (await wiki.getEntity(NON_SPEC_ID))!;
+      expect(target.version.contentHash).toBe(hash(original));
+      const input: KnowledgeDraftInput = {
+        ...knowledgeInput("decision"),
+        evidence: [],
+        change: {
+          kind: "knowledge.update",
+          target: { id: target.ref.id, kind: "decision", title: target.title },
+          patch: { body: "Reviewed correction of CRLF context; literal \\r remains text." },
+        },
+        targetRevisions: [entityExpectation(target)],
+      };
+      const proposal = await publishKnowledge(port, input, "crlf_update");
+      const proposalPath = join(harness.root, proposal.sourcePath);
+      writeFileSync(proposalPath, readFileSync(proposalPath, "utf8").replaceAll("\n", "\r\n"));
+      expect((await port.getInboxProposal(proposal.ref.id))?.revision).toBe(proposal.revision);
+      const approval = await knowledgeApproval(port, proposal, "crlf_update_finish");
+      expect(Buffer.byteLength(JSON.stringify(approval), "utf8")).toBeLessThanOrEqual(64 * 1024);
+      const targetChange = approval.preview.changes.find((change) => change.path === target.location.path)!;
+      expect(targetChange.diff).toContain("Carriage returns are displayed as \\r; literal backslashes as \\\\ below.");
+      expect(targetChange.diff).toContain("Literal \\\\r stays literal.\\r");
+      expect(targetChange.diff).toContain("literal \\\\r remains text.");
+      expect(targetChange.diff).not.toContain("\r");
+      expect(approval.preview.changes.find((change) => change.path === target.location.path)?.beforeRevision)
+        .toBe(hash(original));
+      expect(approval.preview.changes.find((change) => change.path === ".mex/events/operations.jsonl")?.beforeRevision)
+        .toBe(hash("\r\n"));
+      await harness.armCrash("approve.after-wiki");
+      await expect(port.applyInbox(roundTrip(approval))).rejects.toBeDefined();
+      const published = readFileSync(path);
+      const publishedAudit = readFileSync(auditPath);
+      expect(published.toString("utf8")).toContain("Reviewed correction of CRLF context; literal \\r remains text.");
+      expect(approval.preview.changes.find((change) => change.path === target.location.path)?.afterRevision)
+        .toBe(hash(published));
+      expect(publishedAudit.subarray(0, 2).toString("utf8")).toBe("\r\n");
+      port = await harness.restart() as unknown as KnowledgeInboxPort;
+      expect((await port.applyInbox(roundTrip(approval))).applied).toBe(true);
+      expect((await port.applyInbox(roundTrip(approval))).idempotentReplay).toBe(true);
+      expect((await port.getInboxProposal(proposal.ref.id))?.state).toBe("approved");
+      expect(readFileSync(path)).toEqual(published);
+      expect(readFileSync(auditPath)).toEqual(publishedAudit);
+    } finally { await harness.close(); }
+  });
+
+  it.each(TEAM_INBOX_KNOWLEDGE_KINDS)("creates a %s with proposal attribution and every evidence kind", async (entityKind) => {
+    const harness = await RepositoryInboxSpecHarness.open("empty");
+    try {
+      const port = harness.port as unknown as KnowledgeInboxPort;
+      const input = knowledgeInput(entityKind);
+      const proposal = await publishKnowledge(port, input, `create_${entityKind}`);
+      const approval = await knowledgeApproval(port, proposal, `approve_${entityKind}`);
+      const id = knowledgePurpose(approval, "spec-entity");
+      const relative = entityKind === "pattern" ? `.mex/patterns/${id}.md` : `.mex/context/${entityKind}-${id}.md`;
+      expect(approval.preview.changes.some((change) => change.path === relative)).toBe(true);
+      expect(existsSync(join(harness.root, relative))).toBe(false);
+      const result = await port.applyInbox(roundTrip(approval));
+      expect(result.events.map((event) => event.action)).toEqual(["inbox.approved"]);
+      expect((await port.getInboxProposal(proposal.ref.id))?.state).toBe("approved");
+      expect(await port.listInboxProposals({ entityKinds: [entityKind], changeKinds: ["knowledge.create"] })).toMatchObject({ items: [{ ref: { id: proposal.ref.id } }] });
+      const wiki = createRepositoryWikiPort(harness.root);
+      await wiki.rebuildIndex();
+      const entity = await wiki.getEntity(id);
+      expect(entity).toMatchObject({ ref: { kind: entityKind }, title: input.change.kind === "knowledge.create" ? input.change.title : "", provenance: { kind: "human", id: MEMBER_ID }, groundings: [{ state: "ungrounded", health: "unverified" }] });
+      expect(entity?.sources).toHaveLength(input.evidence.length + 1);
+      expect(entity?.sources[0]).toMatchObject({ type: "document", ref: proposal.sourcePath, note: input.rationale, metadata: { proposalId: proposal.ref.id, author: ACTOR, approvedBy: ACTOR } });
+      expect(entity?.sources.slice(1).map((source) => source.metadata?.evidence)).toEqual(input.evidence);
+      const canonical = readFileSync(join(harness.root, relative), "utf8");
+      expect(canonical).not.toContain("grounds_to:");
+      const restarted = await harness.restart() as unknown as KnowledgeInboxPort;
+      expect((await restarted.applyInbox(roundTrip(approval))).idempotentReplay).toBe(true);
+      expect(readFileSync(join(harness.root, relative), "utf8")).toBe(canonical);
+    } finally { await harness.close(); }
+  });
+
+  it("corrects an existing section while preserving its neighbors, original sources, provenance, and grounding", async () => {
+    const harness = await RepositoryInboxSpecHarness.open("empty");
+    try {
+      const path = join(harness.root, `.mex/context/${NON_SPEC_ID}.md`);
+      const sectionId = "mx_01J00000000000000000000020";
+      const neighbor = "<!-- mex:entity\nid: mx_01J00000000000000000000021\ntype: guide\nstatus: promoted\nrevision: 1\n-->\n## Neighbor\n\nKeep this exact neighboring body.\n";
+      const section = `<!-- mex:entity\nid: ${sectionId}\ntype: convention\nstatus: promoted\nrevision: 1\nprovenance:\n  createdBy:\n    kind: human\n    id: original-author\n  createdAt: ${NOW}\nsources:\n  - type: manual\n    note: Original source\ngrounds_to:\n  - node: function:1234567890abcdef\n    fingerprint: mh:4:12345678\n    bodyHash: ${"a".repeat(64)}\n-->\n## Existing convention\n\nPrevious text.\n\n`;
+      const original = readFileSync(path, "utf8");
+      writeFileSync(path, `${original}\n${section}${neighbor}`);
+      await harness.refreshWikiIndex();
+      const wiki = createRepositoryWikiPort(harness.root);
+      const before = (await wiki.getEntity(sectionId))!;
+      const port = harness.port as unknown as KnowledgeInboxPort;
+      const input: KnowledgeDraftInput = { ...knowledgeInput("convention"), change: { kind: "knowledge.update", target: { id: sectionId, kind: "convention", title: before.title }, patch: { body: "Corrected convention text." } }, targetRevisions: [entityExpectation(before)] };
+      const proposal = await publishKnowledge(port, input, "correct_section");
+      const approval = await knowledgeApproval(port, proposal, "approve_section");
+      await port.applyInbox(roundTrip(approval));
+      const afterBytes = readFileSync(path, "utf8");
+      expect(afterBytes.startsWith(`${original}\n`)).toBe(true);
+      expect(afterBytes.endsWith(neighbor)).toBe(true);
+      await wiki.rebuildIndex();
+      const after = (await wiki.getEntity(sectionId))!;
+      expect(after.body).toContain("Corrected convention text.");
+      expect(after.version.semanticRevision).toBe(before.version.semanticRevision + 1);
+      expect(after.provenance).toEqual(before.provenance);
+      expect(after.groundings.map((item) => item.grounding)).toEqual(before.groundings.map((item) => item.grounding));
+      expect(after.sources[0]).toEqual(before.sources[0]);
+      expect(after.sources.slice(1)).toHaveLength(input.evidence.length + 1);
+      expect(afterBytes).toContain(`bodyHash: ${"a".repeat(64)}`);
+    } finally { await harness.close(); }
+  });
+
+  it("rejects a changed approval target, then marks stale, repairs and approves its new exact revision", async () => {
+    const harness = await RepositoryInboxSpecHarness.open("empty");
+    try {
+      const port = harness.port as unknown as KnowledgeInboxPort;
+      const wiki = createRepositoryWikiPort(harness.root);
+      const target = (await wiki.getEntity(NON_SPEC_ID))!;
+      const input: KnowledgeDraftInput = { ...knowledgeInput("decision"), change: { kind: "knowledge.update", target: { id: target.ref.id, kind: "decision", title: target.title }, patch: { body: "Reviewed correction." } }, targetRevisions: [entityExpectation(target)] };
+      const proposal = await publishKnowledge(port, input, "stale_target");
+      const approval = await knowledgeApproval(port, proposal, "stale_approve");
+      const path = join(harness.root, target.location.path);
+      writeFileSync(path, readFileSync(path, "utf8").replace("revision: 1", "revision: 2") + "\nAnother author changed this first.\n");
+      await wiki.rebuildIndex();
+      await expect(port.applyInbox(roundTrip(approval))).rejects.toMatchObject({ problem: { code: "REVISION_CONFLICT" } });
+      const stale = await port.previewInbox({ operationId: "mark_knowledge_stale", action: { kind: "inbox.mark-stale", proposalId: proposal.ref.id, rationale: "Target changed." }, expectedRevisions: [{ target: { kind: "artifact", path: proposal.sourcePath }, revision: proposal.revision }] });
+      await port.applyInbox(roundTrip(stale));
+      const staleProposal = (await port.getInboxProposal(proposal.ref.id))!;
+      expect(staleProposal.state).toBe("stale");
+      const current = (await wiki.getEntity(NON_SPEC_ID))!;
+      const repair = await port.previewInbox({ operationId: "repair_knowledge", action: { kind: "inbox.repair", proposalId: proposal.ref.id, replacement: { ...input, targetRevisions: [entityExpectation(current)] } }, expectedRevisions: [{ target: { kind: "artifact", path: staleProposal.sourcePath }, revision: staleProposal.revision }] });
+      await port.applyInbox(roundTrip(repair));
+      const repaired = (await port.getInboxProposal(proposal.ref.id))!;
+      expect(repaired.state).toBe("pending");
+      await port.applyInbox(await knowledgeApproval(port, repaired, "approve_repaired"));
+      expect(readFileSync(path, "utf8")).toContain("Reviewed correction.");
+    } finally { await harness.close(); }
+  });
+
+  it("revalidates a new pattern destination after preview and refuses an escaping directory", async () => {
+    const harness = await RepositoryInboxSpecHarness.open("empty");
+    try {
+      const port = harness.port as unknown as KnowledgeInboxPort;
+      const proposal = await publishKnowledge(port, knowledgeInput("pattern"), "pattern_containment");
+      const approval = await knowledgeApproval(port, proposal, "approve_pattern_containment");
+      const directory = join(harness.root, ".mex/patterns");
+      expect(existsSync(directory)).toBe(false);
+      const outside = join(harness.outsideRoot, "pattern-destination");
+      mkdirSync(outside);
+      symlinkSync(outside, directory);
+      await expect(port.applyInbox(roundTrip(approval))).rejects.toMatchObject({ problem: { code: expect.any(String) } });
+      expect(readdirSync(outside)).toEqual([]);
+      expect((await port.getInboxProposal(proposal.ref.id))?.state).toBe("pending");
+    } finally { await harness.close(); }
+  });
+
+  it.each(["approve.after-wiki", "approve.after-proposal", "approve.after-activity"] as const)("recovers knowledge approval after %s without duplicate records or attribution", async (phase) => {
+    const harness = await RepositoryInboxSpecHarness.open("empty");
+    try {
+      const port = harness.port as unknown as KnowledgeInboxPort;
+      const proposal = await publishKnowledge(port, knowledgeInput("pattern"), `recover_${phase}`);
+      const approval = await knowledgeApproval(port, proposal, `finish_${phase}`);
+      await harness.armCrash(phase);
+      await expect(port.applyInbox(roundTrip(approval))).rejects.toBeDefined();
+      const restarted = await harness.restart() as unknown as KnowledgeInboxPort;
+      const result = await restarted.applyInbox(roundTrip(approval));
+      expect(result.applied).toBe(true);
+      const path = join(harness.root, `.mex/patterns/${knowledgePurpose(approval, "spec-entity")}.md`);
+      const canonical = readFileSync(path, "utf8");
+      expect((canonical.match(/proposalId:/gu) ?? [])).toHaveLength(1);
+      expect((await restarted.getInboxProposal(proposal.ref.id))?.state).toBe("approved");
+      expect((await restarted.applyInbox(roundTrip(approval))).idempotentReplay).toBe(true);
+      expect(readFileSync(path, "utf8")).toBe(canonical);
+    } finally { await harness.close(); }
+  });
+
+  it.each(["approve.after-wiki", "approve.after-proposal"] as const)("recovers a knowledge correction after %s and retains each subsequent proposal source", async (phase) => {
+    const harness = await RepositoryInboxSpecHarness.open("empty");
+    try {
+      let port = harness.port as unknown as KnowledgeInboxPort;
+      const wiki = createRepositoryWikiPort(harness.root);
+      const original = (await wiki.getEntity(NON_SPEC_ID))!;
+      const input: KnowledgeDraftInput = { ...knowledgeInput("decision"), change: { kind: "knowledge.update", target: { id: original.ref.id, kind: "decision", title: original.title }, patch: { body: "First reviewed correction." } }, targetRevisions: [entityExpectation(original)] };
+      const firstProposal = await publishKnowledge(port, input, `update_${phase}`);
+      const approval = await knowledgeApproval(port, firstProposal, `update_finish_${phase}`);
+      await harness.armCrash(phase);
+      await expect(port.applyInbox(roundTrip(approval))).rejects.toBeDefined();
+      port = await harness.restart() as unknown as KnowledgeInboxPort;
+      expect((await port.applyInbox(roundTrip(approval))).applied).toBe(true);
+      expect((await port.applyInbox(roundTrip(approval))).idempotentReplay).toBe(true);
+      await wiki.rebuildIndex();
+      const current = (await wiki.getEntity(NON_SPEC_ID))!;
+      const secondInput: KnowledgeDraftInput = { ...input, change: { kind: "knowledge.update", target: { id: current.ref.id, kind: "decision", title: current.title }, patch: { body: "Second reviewed correction." } }, targetRevisions: [entityExpectation(current)] };
+      const secondProposal = await publishKnowledge(port, secondInput, `second_${phase}`);
+      await port.applyInbox(await knowledgeApproval(port, secondProposal, `second_finish_${phase}`));
+      await wiki.rebuildIndex();
+      const final = (await wiki.getEntity(NON_SPEC_ID))!;
+      expect(final.body).toContain("Second reviewed correction.");
+      expect(final.version.semanticRevision).toBe(original.version.semanticRevision + 2);
+      expect(final.sources.filter((source) => source.metadata?.proposalId !== undefined).map((source) => source.ref)).toEqual([firstProposal.sourcePath, secondProposal.sourcePath]);
+      expect(final.sources[0]).toEqual(original.sources[0]);
+      expect(final.provenance).toEqual(original.provenance);
+    } finally { await harness.close(); }
+  });
+});
+
+function knowledgeInput(entityKind: (typeof TEAM_INBOX_KNOWLEDGE_KINDS)[number]): KnowledgeDraftInput {
+  return { change: { kind: "knowledge.create", entityKind, title: `Reviewed ${entityKind}`, body: "Keep repository knowledge explicit.", status: "promoted" }, rationale: "Preserve the decision and evidence for future work.", evidence: [
+    { kind: "entity", entity: { id: NON_SPEC_ID, kind: "decision", title: "Existing decision" } },
+    { kind: "code", code: { kind: "symbol", symbolId: "function:1234567890abcdef", fingerprint: "mh:4:12345678" } },
+    { kind: "commit", hash: "a".repeat(40) },
+    { kind: "file", path: "src/index.ts" },
+    { kind: "external", uri: "https://example.test/evidence", label: "Reference" },
+    { kind: "manual", note: "A specific reported constraint." },
+  ], targetRevisions: [] };
+}
+
+async function publishKnowledge(port: KnowledgeInboxPort, input: KnowledgeDraftInput, prefix: string): Promise<KnowledgeProposal> {
+  const save = await port.previewInbox({ operationId: `${prefix}_save`, action: { kind: "inbox.draft.save", draft: input }, expectedRevisions: [] });
+  await port.applyInbox(roundTrip(save));
+  const draft = (await port.getInboxDraft(knowledgePurpose(save, "inbox-draft")))!;
+  expect(draft.input).toEqual(input);
+  const publish = await port.previewInbox({ operationId: `${prefix}_publish`, action: { kind: "inbox.publish", draftId: draft.id }, expectedRevisions: [{ target: { kind: "local", namespace: "inbox-draft", id: draft.id }, revision: draft.revision }] });
+  await port.applyInbox(roundTrip(publish));
+  expect(await port.getInboxDraft(draft.id)).toBeNull();
+  return (await port.getInboxProposal(knowledgePurpose(publish, "proposal")))!;
+}
+
+function knowledgeApproval(port: KnowledgeInboxPort, proposal: KnowledgeProposal, operationId: string): Promise<KnowledgeEnvelope> {
+  return port.previewInbox({ operationId, action: { kind: "inbox.approve", proposalId: proposal.ref.id }, expectedRevisions: [{ target: { kind: "artifact", path: proposal.sourcePath }, revision: proposal.revision }] });
+}
+
+function knowledgePurpose(envelope: KnowledgeEnvelope, purpose: string): string {
+  const item = envelope.receipt.purposeIds.find((entry) => entry.purpose === purpose);
+  if (item === undefined) throw new Error(`Missing ${purpose} receipt identity.`);
+  return item.id;
 }

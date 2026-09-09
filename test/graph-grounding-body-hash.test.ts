@@ -12,15 +12,18 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MexConfig } from "../src/types.js";
 import { runDriftCheckWithGraphStatus } from "../src/drift/index.js";
 import { createGraphEngine } from "../src/graph/engine-impl.js";
-import { loadGroundingRuntime, refreshGroundingBaselines } from "../src/graph/runtime.js";
+import { captureGroundingBaselines, loadGroundingRuntime, persistMovedGroundings, previewGroundingBaseline, refreshGroundingBaselines } from "../src/graph/runtime.js";
+import { runSync, reviewGroundingBaselines } from "../src/sync/index.js";
 import { extractGroundings, writeGroundings } from "../src/markdown.js";
 import { serializeFingerprint } from "../src/graph/fingerprint.js";
 
 const roots: string[] = [];
+
+vi.mock("../src/cli-tools.js", () => ({ isCliAvailable: () => true }));
 
 /** The body an agent grounds to, and the one-constant edit that drifts it. */
 const ORIGINAL = `export function calculateOrderTotal(items: number[]): number {
@@ -79,20 +82,11 @@ async function authorGrounding(
   }
 }
 
-/**
- * Capture in the posture `mex ground` and setup use.
- *
- * `captureGroundingBaselines` normalizes a missing `updateFingerprints` to
- * `false` before it reaches `refreshGroundingBaselines`, so passing it
- * explicitly is what makes these tests exercise the real command path rather
- * than the looser default a direct caller gets. It matters: `false` is the
- * read-only posture that must never overwrite a hash that has drifted, while
- * `mex sync` passes `true` after an agent pass and re-baselines deliberately.
- */
+/** Every default caller initializes missing baselines but preserves accepted ones. */
 async function captureBaselines(config: MexConfig, scaffold: string): Promise<void> {
   const runtime = await loadGroundingRuntime(config);
   try {
-    refreshGroundingBaselines(config, [scaffold], runtime!, { updateFingerprints: false });
+    refreshGroundingBaselines(config, [scaffold], runtime!);
   } finally {
     runtime!.close();
   }
@@ -113,6 +107,7 @@ async function groundingIssueCodes(config: MexConfig): Promise<string[]> {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -222,5 +217,230 @@ describe("the grounding body hash is committed to Markdown", () => {
 
     expect(extractGroundings(readFileSync(scaffold, "utf-8"))[0]!.bodyHash).toBe(baseline);
     expect(await groundingIssueCodes(config)).toEqual(["GROUNDING_DRIFT"]);
+  }, 60_000);
+});
+
+describe("grounding renewal requires an exact reviewed entry", () => {
+  async function ready() {
+    const target = fixture();
+    await buildGraph(target.root);
+    const nodeId = await authorGrounding(target.config, target.scaffold, "calculateOrderTotal");
+    await captureBaselines(target.config, target.scaffold);
+    const runtime = await loadGroundingRuntime(target.config);
+    const baseline = runtime!.fingerprints.getGroundedSource(".mex/context/architecture.md", nodeId)!;
+    runtime!.close();
+    return { ...target, nodeId, baseline };
+  }
+
+  it("a successful no-op agent session preserves drift, canonical bytes, and cached old code", async () => {
+    const { config, source, scaffold, nodeId, baseline } = await ready();
+    const before = readFileSync(scaffold, "utf-8");
+    writeFileSync(source, EDITED);
+    const runAgent = vi.fn(() => true);
+    const answers = ["1", "n"];
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    await runSync({ ...config, aiTools: ["claude"] }, {}, {
+      runAgent,
+      ask: async () => answers.shift() ?? "n",
+      reviewGrounding: false,
+    });
+    expect(runAgent).toHaveBeenCalledOnce();
+    expect(readFileSync(scaffold, "utf-8")).toBe(before);
+    const runtime = await loadGroundingRuntime(config);
+    expect(runtime!.fingerprints.getGroundedSource(".mex/context/architecture.md", nodeId)).toEqual(baseline);
+    runtime!.close();
+    expect(await groundingIssueCodes(config)).toEqual(["GROUNDING_DRIFT"]);
+  }, 60_000);
+
+  it("backfills legacy Markdown from its old cache after a literal-only edit and survives rebuild", async () => {
+    const { config, root, source, scaffold, nodeId, baseline } = await ready();
+    const stripped = extractGroundings(readFileSync(scaffold, "utf-8"))
+      .map(({ node, fingerprint }) => ({ node, fingerprint }));
+    writeFileSync(scaffold, writeGroundings(readFileSync(scaffold, "utf-8"), stripped));
+    writeFileSync(source, EDITED);
+    const result = await captureGroundingBaselines(config);
+    expect(result).toEqual({ captured: 0, skipped: 1 });
+    expect(extractGroundings(readFileSync(scaffold, "utf-8"))[0]!.bodyHash).toBe(baseline.bodyHash);
+    const runtime = await loadGroundingRuntime(config);
+    expect(runtime!.fingerprints.getGroundedSource(".mex/context/architecture.md", nodeId)).toEqual(baseline);
+    runtime!.close();
+    await rebuildGraphFromScratch(root);
+    expect(await groundingIssueCodes(config)).toEqual(["GROUNDING_DRIFT"]);
+  }, 60_000);
+
+  it("accepts only the selected document entry and leaves another grounding drifted across rebuild", async () => {
+    const { config, root, source, scaffold, nodeId } = await ready();
+    const other = join(root, ".mex", "context", "other.md");
+    writeFileSync(other, readFileSync(scaffold));
+    await captureGroundingBaselines(config);
+    const otherBefore = readFileSync(other, "utf-8");
+    writeFileSync(source, EDITED);
+    const runtime = await loadGroundingRuntime(config);
+    const review = previewGroundingBaseline(config, ".mex/context/architecture.md", nodeId, runtime!)!;
+    const otherBaseline = runtime!.fingerprints.getGroundedSource(".mex/context/other.md", nodeId);
+    runtime!.close();
+    expect(review.oldBody).toContain("subtotal * 0.18");
+    expect(review.newBody).toContain("subtotal * 0.21");
+    expect(await captureGroundingBaselines(config, { acceptedGroundings: [review.acceptance] }))
+      .toEqual({ captured: 1, skipped: 0 });
+    expect(readFileSync(other, "utf-8")).toBe(otherBefore);
+    const after = await loadGroundingRuntime(config);
+    expect(after!.fingerprints.getGroundedSource(".mex/context/other.md", nodeId)).toEqual(otherBaseline);
+    after!.close();
+    expect(extractGroundings(readFileSync(scaffold, "utf-8"))[0]!.bodyHash).toBe(review.acceptance.bodyHash);
+    await rebuildGraphFromScratch(root);
+    const report = await runDriftCheckWithGraphStatus(config);
+    expect(report.issues.filter((entry) => entry.code === "GROUNDING_DRIFT"))
+      .toMatchObject([{ file: ".mex/context/other.md" }]);
+  }, 60_000);
+
+  it.each(["document", "source"] as const)("rejects acceptance when the %s changes after preview", async (changed) => {
+    const { config, source, scaffold, nodeId, baseline } = await ready();
+    writeFileSync(source, EDITED);
+    const runtime = await loadGroundingRuntime(config);
+    const acceptance = previewGroundingBaseline(config, ".mex/context/architecture.md", nodeId, runtime!)!.acceptance;
+    runtime!.close();
+    if (changed === "document") writeFileSync(scaffold, readFileSync(scaffold, "utf-8") + "\nConcurrent clarification.\n");
+    else writeFileSync(source, EDITED.replace("subtotal * 0.21", "subtotal * 0.25"));
+    const before = readFileSync(scaffold, "utf-8");
+    expect(await captureGroundingBaselines(config, { acceptedGroundings: [acceptance] }))
+      .toEqual({ captured: 0, skipped: 1 });
+    expect(readFileSync(scaffold, "utf-8")).toBe(before);
+    const after = await loadGroundingRuntime(config);
+    expect(after!.fingerprints.getGroundedSource(".mex/context/architecture.md", nodeId)).toEqual(baseline);
+    after!.close();
+  }, 60_000);
+
+  it("preserves a concurrent document edit and the old cache during acceptance preparation", async () => {
+    const { config, source, scaffold, nodeId, baseline } = await ready();
+    writeFileSync(source, EDITED);
+    const runtime = await loadGroundingRuntime(config);
+    try {
+      const acceptance = previewGroundingBaseline(config, ".mex/context/architecture.md", nodeId, runtime!)!.acceptance;
+      const concurrent = readFileSync(scaffold, "utf-8") + "\nConcurrent clarification.\n";
+      const getNode = runtime!.graph.getNode.bind(runtime!.graph);
+      let reads = 0;
+      vi.spyOn(runtime!.graph, "getNode").mockImplementation((id) => {
+        if (++reads === 2) writeFileSync(scaffold, concurrent);
+        return getNode(id);
+      });
+      expect(refreshGroundingBaselines(config, [scaffold], runtime!, { acceptedGroundings: [acceptance] }))
+        .toEqual({ captured: 0, skipped: 1 });
+      expect(readFileSync(scaffold, "utf-8")).toBe(concurrent);
+      expect(runtime!.fingerprints.getGroundedSource(".mex/context/architecture.md", nodeId)).toEqual(baseline);
+    } finally {
+      runtime!.close();
+    }
+  }, 60_000);
+
+  it("keeps MOVED content drift and historical cache after rebinding a legacy grounding", async () => {
+    const { config, root, source, scaffold, nodeId, baseline } = await ready();
+    const stripped = extractGroundings(readFileSync(scaffold, "utf-8"))
+      .map(({ node, fingerprint }) => ({ node, fingerprint }));
+    writeFileSync(scaffold, writeGroundings(readFileSync(scaffold, "utf-8"), stripped));
+    writeFileSync(source, EDITED.replace("calculateOrderTotal", "computeOrderTotal"));
+    const runtime = await loadGroundingRuntime(config);
+    expect(persistMovedGroundings(config, [scaffold], runtime!)).toBe(1);
+    const moved = extractGroundings(readFileSync(scaffold, "utf-8"))[0]!;
+    expect(moved.node).not.toBe(nodeId);
+    expect(moved.bodyHash).toBe(baseline.bodyHash);
+    expect(runtime!.fingerprints.getGroundedSource(".mex/context/architecture.md", moved.node))
+      .toEqual({ ...baseline, nodeId: moved.node });
+    runtime!.close();
+    await rebuildGraphFromScratch(root);
+    expect(await groundingIssueCodes(config)).toEqual(["GROUNDING_DRIFT"]);
+  }, 60_000);
+
+  it("preserves canonical destination evidence when a MOVED pointer would collide", async () => {
+    const { config, source, scaffold, nodeId, baseline } = await ready();
+    writeFileSync(source, EDITED.replace("calculateOrderTotal", "computeOrderTotal"));
+    const runtime = await loadGroundingRuntime(config);
+    try {
+      const current = runtime!.graph.searchNodes("computeOrderTotal").find((entry) => entry.kind === "function")!;
+      const currentFingerprint = serializeFingerprint(runtime!.reconciler.getFingerprint(current.id)!);
+      const original = extractGroundings(readFileSync(scaffold, "utf-8"))[0]!;
+      const destination = { ...baseline, nodeId: current.id, source: EDITED.replace("calculateOrderTotal", "computeOrderTotal").trimEnd(), bodyHash: current.bodyHash!, fingerprint: currentFingerprint };
+      runtime!.fingerprints.saveGroundedSource(destination);
+      writeFileSync(scaffold, writeGroundings(readFileSync(scaffold, "utf-8"), [original, {
+        node: current.id, fingerprint: currentFingerprint, bodyHash: current.bodyHash,
+      }]) + `\n[Old name](mex://${nodeId})\n`);
+      expect(persistMovedGroundings(config, [scaffold], runtime!)).toBe(1);
+      expect(extractGroundings(readFileSync(scaffold, "utf-8")).map((entry) => entry.node)).toEqual([nodeId, current.id]);
+      expect(runtime!.fingerprints.getGroundedSource(".mex/context/architecture.md", current.id)).toEqual(destination);
+      expect(runtime!.fingerprints.getGroundedSource(".mex/context/architecture.md", nodeId)).toEqual(baseline);
+    } finally {
+      runtime!.close();
+    }
+  }, 60_000);
+
+  it("retains the old MOVED cache when the document changes before pointer publication", async () => {
+    const { config, source, scaffold, nodeId, baseline } = await ready();
+    writeFileSync(source, EDITED.replace("calculateOrderTotal", "computeOrderTotal"));
+    const runtime = await loadGroundingRuntime(config);
+    try {
+      const concurrent = readFileSync(scaffold, "utf-8") + "\nConcurrent clarification.\n";
+      const getNode = runtime!.graph.getNode.bind(runtime!.graph);
+      vi.spyOn(runtime!.graph, "getNode").mockImplementationOnce((id) => {
+        writeFileSync(scaffold, concurrent);
+        return getNode(id);
+      });
+      expect(() => persistMovedGroundings(config, [scaffold], runtime!)).toThrow("changed before publication");
+      expect(readFileSync(scaffold, "utf-8")).toBe(concurrent);
+      expect(runtime!.fingerprints.getGroundedSource(".mex/context/architecture.md", nodeId)).toEqual(baseline);
+    } finally {
+      runtime!.close();
+    }
+  }, 60_000);
+
+  it.each(["oversized", "invalid-utf8"] as const)("rejects an %s accepted document without changing the old cache", async (kind) => {
+    const { config, source, scaffold, nodeId, baseline } = await ready();
+    writeFileSync(source, EDITED);
+    const runtime = await loadGroundingRuntime(config);
+    try {
+      const acceptance = previewGroundingBaseline(config, ".mex/context/architecture.md", nodeId, runtime!)!.acceptance;
+      const changed = Buffer.concat([readFileSync(scaffold), kind === "oversized" ? Buffer.alloc(64 * 1024, 32) : Buffer.from([0xff])]);
+      writeFileSync(scaffold, changed);
+      expect(() => refreshGroundingBaselines(config, [scaffold], runtime!, { acceptedGroundings: [acceptance] })).toThrow();
+      expect(readFileSync(scaffold)).toEqual(changed);
+      expect(runtime!.fingerprints.getGroundedSource(".mex/context/architecture.md", nodeId)).toEqual(baseline);
+    } finally {
+      runtime!.close();
+    }
+  }, 60_000);
+
+  it("reviews default-no and then accepts one entry without holding a graph lease across input", async () => {
+    const { config, source, scaffold, nodeId, baseline } = await ready();
+    writeFileSync(source, EDITED);
+    const targets = [{ file: ".mex/context/architecture.md", gitDiff: null, issues: [{
+      code: "GROUNDING_DRIFT" as const, severity: "warning" as const, file: ".mex/context/architecture.md", line: null, message: `Grounded node body changed: ${nodeId}`,
+    }] }];
+    const before = readFileSync(scaffold, "utf-8");
+    await reviewGroundingBaselines(config, targets, async () => "", () => {});
+    expect(readFileSync(scaffold, "utf-8")).toBe(before);
+    const messages: string[] = [];
+    await reviewGroundingBaselines(config, targets, async () => {
+      const whilePrompting = await loadGroundingRuntime(config);
+      expect(whilePrompting!.fingerprints.getGroundedSource(".mex/context/architecture.md", nodeId)).toEqual(baseline);
+      whilePrompting!.close();
+      return "yes";
+    }, (message) => messages.push(message));
+    expect(messages.join("\n")).toContain("Previously accepted code:");
+    expect(messages.join("\n")).toContain("grounding metadata hidden");
+    expect(messages.join("\n")).not.toContain(baseline.fingerprint);
+    expect(messages.join("\n")).toContain("name: architecture");
+    expect(messages.join("\n")).toContain("subtotal * 0.18");
+    expect(messages.join("\n")).toContain("subtotal * 0.21");
+    expect(await groundingIssueCodes(config)).toEqual([]);
+  }, 60_000);
+
+  it("does not label an unrelated cached body as the canonically accepted code", async () => {
+    const { config, source, scaffold, nodeId } = await ready();
+    const groundings = extractGroundings(readFileSync(scaffold, "utf-8"));
+    groundings[0]!.bodyHash = "a".repeat(64);
+    writeFileSync(scaffold, writeGroundings(readFileSync(scaffold, "utf-8"), groundings));
+    writeFileSync(source, EDITED);
+    const runtime = await loadGroundingRuntime(config);
+    expect(previewGroundingBaseline(config, ".mex/context/architecture.md", nodeId, runtime!)!.oldBody).toBeNull();
+    runtime!.close();
   }, 60_000);
 });

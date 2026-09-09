@@ -141,68 +141,12 @@ const PATTERN_ROLE: Role = {
   rule: "section 13.2: pattern file to a file-level `pattern`",
 };
 
-/**
- * A `context/<name>.md` no filename rule covers.
- *
- * ## Why the directory is evidence, where prose is not
- *
- * `mex setup` writes `context/<name>.md`, so a file there is one mex itself put
- * in a place reserved for descriptions of the system. That is the same kind of
- * fact as `patterns/<slug>.md`, and the `patterns/` rule has always relied on
- * it. Abstaining on the folder was not caution, it was a gap: the five names in
- * {@link CONTEXT_ROLES} are the ones mex's own templates happened to ship, and
- * an author who writes `context/ingestion.md` has followed the convention
- * exactly and been told no rule covers them.
- *
- * ## Why it is a file-level entity only
- *
- * `patterns/` works as a directory rule because the directory names the type.
- * `context/` does not: the five files it covers map to five *different* types.
- * So membership establishes that the file describes the system, and establishes
- * nothing whatever about what its headings are — `context/architecture.md`'s
- * `##`s are components, `context/conventions.md`'s are conventions, and a file
- * nobody has a name rule for could be either or neither. Minting a `component`
- * for every depth-2 heading in a glossary is a far larger claim than minting
- * one entity for the document, and it is the file-level entity alone that gives
- * the file's `edges` something to belong to. So this mirrors `PATTERN_ROLE`'s
- * shape rather than `context/architecture.md`'s, and the headings stay prose.
- *
- * The type is `architecture` because section 13.2's nearest named rule is the
- * architecture file, and because a context file is a description of part of the
- * system. It is a *default*, and the rule string says so, so a reviewer reading
- * a dry run can tell these apart from the five that were determined by name.
- */
-const CONTEXT_FALLBACK_ROLE: Role = {
-  fileType: "architecture",
-  sectionType: null,
-  sectionDepth: 2,
-  rule:
-    "section 13.2, by directory rather than by name: `mex setup` writes `context/<name>.md`, so the " +
-    "folder establishes a description of the system. No filename rule covers this one, so the type is " +
-    "a default and its sections are left as prose",
-};
-
-/**
- * A direct child of `context/`, and nothing deeper.
- *
- * The structural fact is exactly that `mex setup` writes `context/<name>.md` —
- * one segment. A tree under `context/sub/` is a convention mex did not write
- * and has no way to read, so abstention stays the honest answer there. Narrower
- * than the evidence would allow is the right direction for a rule that mints
- * entities into somebody's files.
- */
-function isDirectContextChild(path: string): boolean {
-  return /^context\/[^/]+\.md$/u.test(path);
-}
-
 export function roleFor(path: string): Role | null {
   // Navigation and generated output outrank every other rule, including the
-  // directory defaults below: a `patterns/INDEX.md` is not a pattern and a
-  // hypothetical `context/README.md` would not be a description of the system.
+  // pattern directory rule below: a `patterns/INDEX.md` is not a pattern.
   if (Object.hasOwn(NON_KNOWLEDGE_FILES, path)) return null;
   if (Object.hasOwn(CONTEXT_ROLES, path)) return CONTEXT_ROLES[path] ?? null;
   if (path.startsWith("patterns/")) return PATTERN_ROLE;
-  if (isDirectContextChild(path)) return CONTEXT_FALLBACK_ROLE;
   return null;
 }
 
@@ -316,10 +260,9 @@ export function classifyFile(file: InventoryFile): FileClassification {
       file: file.path,
       target: null,
       reason:
-        `No classification rule covers ${file.path}. Section 13.2 keys on the conventions a scaffold ` +
-        "writes for itself — `mex pattern add` writes `patterns/<slug>.md` and `mex setup` writes " +
-        `\`context/<name>.md\` — and ${file.path} is under neither. Inferring a type from its prose ` +
-        "would be a guess.",
+        `No classification rule determines the type of ${file.path}. ` +
+        "The context directory contains several knowledge types; its location alone does not establish architecture. " +
+        "Add explicit Wiki entity metadata with the intended type before retrying. Migration leaves this file unchanged.",
     });
     return result;
   }

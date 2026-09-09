@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
 import { globSync } from "glob";
 import type { MexConfig, Grounding } from "../types.js";
 import { extractGroundings, findMexAnchors, rewriteMexAnchor, writeGroundings } from "../markdown.js";
@@ -8,6 +9,7 @@ import { createGraphEngine } from "./engine-impl.js";
 import type { GraphEngine } from "./engine.js";
 import {
   GRAPH_CORPUS_GLOB_OPTIONS,
+  GRAPH_CORPUS_LIMITS,
   graphCorpusIgnoreGlobs,
   GRAPH_SUPPORTED_SOURCE_GLOB,
 } from "./corpus-policy.js";
@@ -47,10 +49,29 @@ export interface GroundingBaselineCaptureResult {
 }
 
 export interface GroundingBaselineCaptureOptions {
-  /** Sync may normalize an agent's stale fingerprint to the current graph fact. */
-  updateFingerprints?: boolean;
+  /** Renew only these explicitly reviewed entries, after revalidating their exact facts. */
+  acceptedGroundings?: readonly GroundingBaselineAcceptance[];
   warn?: (message: string) => void;
 }
+
+/** An in-process review bound to one document revision and one exact graph fact. */
+export interface GroundingBaselineAcceptance {
+  scaffoldFile: string;
+  nodeId: string;
+  contentHash: string;
+  fingerprint: string;
+  bodyHash: string;
+}
+
+export interface GroundingBaselineReview {
+  acceptance: GroundingBaselineAcceptance;
+  content: string;
+  oldBody: string | null;
+  newBody: string;
+}
+
+const GROUNDING_REVIEW_MAX_BYTES = 64 * 1024;
+const GROUNDING_REVIEW_MAX_ENTRIES = 64;
 
 export interface ReadOnlyGroundingRuntimeResult {
   graphStatus: GraphStatus;
@@ -224,15 +245,11 @@ export async function captureGroundingBaselines(
     return { captured: 0, skipped: 0 };
   }
   try {
-    const scaffoldFiles = globSync("**/*.md", {
-      cwd: config.scaffoldRoot,
-      absolute: true,
-      nodir: true,
-    });
-    return refreshGroundingBaselines(config, scaffoldFiles, runtime, {
-      ...options,
-      updateFingerprints: options.updateFingerprints ?? false,
-    });
+    const scaffoldFiles = options.acceptedGroundings === undefined
+      ? globSync("**/*.md", { cwd: config.scaffoldRoot, absolute: true, nodir: true })
+      : [...new Set(options.acceptedGroundings.map((entry) =>
+        resolveGroundingReviewFile(config, entry.scaffoldFile)))];
+    return refreshGroundingBaselines(config, scaffoldFiles, runtime, options);
   } finally {
     runtime.close();
   }
@@ -261,20 +278,23 @@ export function findChangedSourceFiles(projectRoot: string, db: SqliteDatabase):
   return [...new Set(changed)].sort();
 }
 
-/**
- * Move a grounding's body hash onto the node it was just rebound to.
- *
- * Only called on a confirmed rebind, where identity has already been
- * re-established by fingerprint and the entity now points at a different node.
- * The old hash describes a symbol this grounding no longer names, so carrying
- * it forward would report drift on every rename — a symbol's name is part of
- * its body. Dropping the key instead would be worse: the grounding would fall
- * back to the structural comparator and stop detecting content drift for good.
- *
- * A node the graph cannot produce a hash for leaves the grounding as it was.
- */
-function rebindBodyHash(grounding: Grounding, bodyHash: string | null): void {
-  if (bodyHash !== null) grounding.bodyHash = bodyHash;
+/** Identity repair moves the old evidence; it does not accept the new body. */
+function moveGroundingBaseline(
+  scaffoldFile: string,
+  oldId: string,
+  newId: string,
+  runtime: GroundingRuntime,
+  pendingMoves: Map<string, { previous: GroundedSource; newId: string }>,
+  grounding?: Grounding,
+): void {
+  const previous = runtime.fingerprints.getGroundedSource(scaffoldFile, oldId);
+  if (grounding && grounding.bodyHash === undefined && previous) {
+    grounding.bodyHash = previous.bodyHash;
+  }
+  const destination = runtime.fingerprints.getGroundedSource(scaffoldFile, newId);
+  if (previous && (destination?.nodeId !== newId || (grounding && grounding.bodyHash === previous.bodyHash))) {
+    pendingMoves.set(oldId, { previous, newId });
+  }
 }
 
 /** Persist only high-confidence MOVED repairs. AMBIGUOUS/GONE remain for the agent. */
@@ -285,20 +305,21 @@ export function persistMovedGroundings(
 ): number {
   let moved = 0;
   for (const filePath of scaffoldFiles) {
-    const content = readFileSync(filePath, "utf-8");
+    const content = readBoundedText(filePath, GRAPH_CORPUS_LIMITS.maxSourceFileBytes);
     const groundings = extractGroundings(content);
     const scaffoldFile = relative(config.projectRoot, filePath).replaceAll("\\", "/");
     let dirty = false;
+    const pendingMoves = new Map<string, { previous: GroundedSource; newId: string }>();
     for (const grounding of groundings) {
       const aliasedNode = runtime.graph.getNode(grounding.node);
       if (aliasedNode) {
         if (aliasedNode.id === grounding.node) continue;
+        if (groundings.some((other) => other !== grounding && other.node === aliasedNode.id)) continue;
         const oldId = grounding.node;
         grounding.node = aliasedNode.id;
         const fingerprint = runtime.reconciler.getFingerprint(aliasedNode.id);
         if (fingerprint) grounding.fingerprint = serializeFingerprint(fingerprint);
-        rebindBodyHash(grounding, saveCurrentBaseline(config, scaffoldFile, grounding.node, grounding.fingerprint, runtime));
-        runtime.fingerprints.deleteGroundedSource(scaffoldFile, oldId);
+        moveGroundingBaseline(scaffoldFile, oldId, grounding.node, runtime, pendingMoves, grounding);
         dirty = true;
         moved += 1;
         continue;
@@ -309,12 +330,12 @@ export function persistMovedGroundings(
       if (!baseline) continue;
       const resolution = runtime.reconciler.reconcile(grounding.node, baseline);
       if (resolution.kind !== "MOVED") continue;
+      if (groundings.some((other) => other !== grounding && other.node === resolution.nodeId)) continue;
       const oldId = grounding.node;
       grounding.node = resolution.nodeId;
       const fingerprint = runtime.reconciler.getFingerprint(resolution.nodeId);
       if (fingerprint) grounding.fingerprint = serializeFingerprint(fingerprint);
-      rebindBodyHash(grounding, saveCurrentBaseline(config, scaffoldFile, grounding.node, grounding.fingerprint, runtime));
-      runtime.fingerprints.deleteGroundedSource(scaffoldFile, oldId);
+      moveGroundingBaseline(scaffoldFile, oldId, grounding.node, runtime, pendingMoves, grounding);
       dirty = true;
       moved += 1;
     }
@@ -325,6 +346,9 @@ export function persistMovedGroundings(
       const aliasedNode = runtime.graph.getNode(anchor.nodeId);
       if (aliasedNode) {
         if (aliasedNode.id === anchor.nodeId) continue;
+        if (!groundings.some((entry) => entry.node === aliasedNode.id)) {
+          moveGroundingBaseline(scaffoldFile, anchor.nodeId, aliasedNode.id, runtime, pendingMoves);
+        }
         anchoredContent = rewriteMexAnchor(anchoredContent, anchor, aliasedNode.id);
         moved += 1;
         continue;
@@ -335,10 +359,19 @@ export function persistMovedGroundings(
       if (!baseline) continue;
       const resolution = runtime.reconciler.reconcile(anchor.nodeId, baseline);
       if (resolution.kind !== "MOVED") continue;
+      if (!groundings.some((entry) => entry.node === resolution.nodeId)) {
+        moveGroundingBaseline(scaffoldFile, anchor.nodeId, resolution.nodeId, runtime, pendingMoves);
+      }
       anchoredContent = rewriteMexAnchor(anchoredContent, anchor, resolution.nodeId);
       moved += 1;
     }
-    if (anchoredContent !== content) writeFileSync(filePath, anchoredContent, "utf-8");
+    if (anchoredContent !== content) {
+      replaceGroundingDocument(config, filePath, content, anchoredContent, GRAPH_CORPUS_LIMITS.maxSourceFileBytes);
+      for (const [oldId, { previous, newId }] of pendingMoves) {
+        runtime.fingerprints.saveGroundedSource({ ...previous, nodeId: newId });
+        runtime.fingerprints.deleteGroundedSource(scaffoldFile, oldId);
+      }
+    }
   }
   return moved;
 }
@@ -420,87 +453,181 @@ function snapshotAnchorFingerprints(config: MexConfig, store: FingerprintStore):
   return snapshots;
 }
 
-/** Close the sync loop after an agent pass by refreshing ids' fingerprints and snapshots. */
+/** Initialize missing baselines, or renew only exact entries explicitly reviewed by the caller. */
 export function refreshGroundingBaselines(
   config: MexConfig,
   scaffoldFiles: readonly string[],
   runtime: GroundingRuntime,
   options: GroundingBaselineCaptureOptions = {},
 ): GroundingBaselineCaptureResult {
+  const accepted = options.acceptedGroundings;
+  if (accepted && accepted.length > GROUNDING_REVIEW_MAX_ENTRIES) {
+    throw new Error(`Grounding review is limited to ${GROUNDING_REVIEW_MAX_ENTRIES} entries.`);
+  }
   let captured = 0;
   let skipped = 0;
   for (const filePath of scaffoldFiles) {
-    const content = readFileSync(filePath, "utf-8");
+    const readLimit = accepted === undefined ? GRAPH_CORPUS_LIMITS.maxSourceFileBytes : GROUNDING_REVIEW_MAX_BYTES;
+    const content = readBoundedText(filePath, readLimit);
     const groundings = extractGroundings(content);
     const anchors = findMexAnchors(content);
     if (groundings.length === 0 && anchors.length === 0) continue;
     const scaffoldFile = relative(config.projectRoot, filePath).replaceAll("\\", "/");
     let dirty = false;
+    const pendingBaselines: GroundedSource[] = [];
     const groundingByNode = new Map(groundings.map((grounding) => [grounding.node, grounding]));
     const nodeIds = new Set([
       ...groundingByNode.keys(),
       ...anchors.map((anchor) => anchor.nodeId),
     ]);
     for (const nodeId of nodeIds) {
+      const acceptance = accepted?.find((entry) => entry.scaffoldFile === scaffoldFile && entry.nodeId === nodeId);
+      // A selected renewal must not initialize or change any unselected entry.
+      if (accepted !== undefined && acceptance === undefined) continue;
       const grounding = groundingByNode.get(nodeId);
+      const previous = runtime.fingerprints.getGroundedSource(scaffoldFile, nodeId);
+      if (accepted === undefined && grounding && grounding.bodyHash === undefined && previous) {
+        // Legacy backfill preserves the historical baseline, even if code has changed.
+        grounding.bodyHash = previous.bodyHash;
+        dirty = true;
+      }
       const fingerprint = runtime.reconciler.getFingerprint(nodeId);
-      if (!fingerprint || !runtime.graph.getNode(nodeId)) {
+      const node = runtime.graph.getNode(nodeId);
+      if (!fingerprint || node?.id !== nodeId || !node.bodyHash) {
         skipped += 1;
         options.warn?.(`Skipped grounding baseline for unavailable node ${nodeId} in ${scaffoldFile}.`);
         continue;
       }
       const serialized = serializeFingerprint(fingerprint);
-      if (grounding && grounding.fingerprint !== serialized) {
-        if (options.updateFingerprints === false) {
+      if (acceptance) {
+        if (!grounding
+          || resolveGroundingReviewFile(config, scaffoldFile) !== resolve(filePath)
+          || acceptance.contentHash !== hashText(content)
+          || acceptance.fingerprint !== serialized
+          || acceptance.bodyHash !== node.bodyHash) {
           skipped += 1;
-          options.warn?.(`Skipped grounding baseline for changed node ${nodeId} in ${scaffoldFile}.`);
+          options.warn?.(`Grounding review changed for ${nodeId} in ${scaffoldFile}; review it again.`);
           continue;
         }
-        grounding.fingerprint = serialized;
-        dirty = true;
+      } else {
+        const baselineHash = grounding?.bodyHash ?? previous?.bodyHash;
+        if ((grounding && grounding.fingerprint !== serialized)
+          || (baselineHash !== undefined && baselineHash !== node.bodyHash)) {
+          skipped += 1;
+          options.warn?.(`Preserved changed grounding ${nodeId} in ${scaffoldFile}; explicit review is required.`);
+          continue;
+        }
       }
-      const bodyHash = saveCurrentBaseline(config, scaffoldFile, nodeId, serialized, runtime);
-      if (bodyHash === null) {
+
+      // The old body is evidence too. Never replace it with current code merely
+      // because a structural fingerprint matches or an agent exited cleanly.
+      const baseline = currentBaseline(config, scaffoldFile, nodeId, serialized, runtime);
+      if (baseline === null) {
         skipped += 1;
         options.warn?.(`Skipped grounding baseline for non-body node ${nodeId} in ${scaffoldFile}.`);
         continue;
       }
-      captured += 1;
-
-      // Commit the change signal alongside the identity signal, so it survives
-      // a `graph rebuild` and travels to a teammate who clones. Two cases only:
-      //
-      //  - **backfill**, when Markdown carries no hash at all. This asserts
-      //    nothing new — the `_mex_grounded_source` row written a line above
-      //    already records exactly this value, from exactly this moment. It
-      //    only makes it durable.
-      //  - **re-baseline**, when the caller has not forbidden updates. That is
-      //    the post-authoring routine `mex sync` runs after an agent repairs
-      //    the prose: the entity now describes the current code, so the
-      //    baseline has to move with it or drift never clears.
-      //
-      // `updateFingerprints === false` — what `mex ground` and setup pass — is
-      // the read-only posture, and there a hash that merely *differs* is left
-      // alone. That difference is drift, it is the finding, and overwriting it
-      // would erase the evidence and report `fresh` on the next run.
-      //
-      // **The authorization is the caller's flag, never whether the
-      // fingerprint moved.** Gating this on a fingerprint change was the first
-      // attempt and it was wrong in the one case that matters: editing a
-      // constant changes the body and leaves the fingerprint identical, by
-      // construction, which is the entire reason a body hash exists. The
-      // re-baseline then never fired and drift was permanent. Using the
-      // identity signal to decide a change question is the coupling this field
-      // exists to break — including here, in the writer.
-      const mayRebaseline = options.updateFingerprints !== false;
-      if (grounding && (grounding.bodyHash === undefined || mayRebaseline) && grounding.bodyHash !== bodyHash) {
-        grounding.bodyHash = bodyHash;
+      pendingBaselines.push(baseline);
+      if (grounding && acceptance && grounding.fingerprint !== serialized) {
+        grounding.fingerprint = serialized;
+        dirty = true;
+      }
+      if (grounding && (grounding.bodyHash === undefined || acceptance) && grounding.bodyHash !== baseline.bodyHash) {
+        grounding.bodyHash = baseline.bodyHash;
         dirty = true;
       }
     }
-    if (dirty) writeFileSync(filePath, writeGroundings(content, groundings), "utf-8");
+    if (readBoundedText(filePath, readLimit) !== content) {
+      skipped += pendingBaselines.length;
+      options.warn?.(`Grounding document ${scaffoldFile} changed during capture; review it again.`);
+      continue;
+    }
+    if (pendingBaselines.some((entry) => currentBaseline(config, scaffoldFile, entry.nodeId, entry.fingerprint, runtime)?.bodyHash !== entry.bodyHash)) {
+      skipped += pendingBaselines.length;
+      options.warn?.(`Grounding source changed during capture for ${scaffoldFile}; review it again.`);
+      continue;
+    }
+    if (readBoundedText(filePath, readLimit) !== content) {
+      skipped += pendingBaselines.length;
+      options.warn?.(`Grounding document ${scaffoldFile} changed before publication; review it again.`);
+      continue;
+    }
+    if (dirty) replaceGroundingDocument(config, filePath, content, writeGroundings(content, groundings), readLimit);
+    // Markdown is authoritative. A failed document publication leaves its old
+    // cache untouched; a cache failure after publication cannot erase history.
+    for (const baseline of pendingBaselines) {
+      const previous = runtime.fingerprints.getGroundedSource(scaffoldFile, baseline.nodeId);
+      if (previous?.bodyHash !== baseline.bodyHash || previous.fingerprint !== baseline.fingerprint) {
+        runtime.fingerprints.saveGroundedSource(baseline);
+      }
+    }
+    captured += pendingBaselines.length;
   }
   return { captured, skipped };
+}
+
+/** Produce a bounded review from current graph facts without changing a baseline. */
+export function groundingReviewNodeIds(config: MexConfig, scaffoldFile: string): string[] | null {
+  const filePath = resolveGroundingReviewFile(config, scaffoldFile);
+  if (statSync(filePath).size > GROUNDING_REVIEW_MAX_BYTES) return null;
+  const content = readBoundedText(filePath, GROUNDING_REVIEW_MAX_BYTES);
+  return [...new Set(extractGroundings(content).map((entry) => entry.node))];
+}
+
+/** Produce a bounded review from current graph facts without changing a baseline. */
+export function previewGroundingBaseline(
+  config: MexConfig,
+  scaffoldFile: string,
+  nodeId: string,
+  runtime: GroundingRuntime,
+): GroundingBaselineReview | null {
+  const filePath = resolveGroundingReviewFile(config, scaffoldFile);
+  if (statSync(filePath).size > GROUNDING_REVIEW_MAX_BYTES) return null;
+  const content = readBoundedText(filePath, GROUNDING_REVIEW_MAX_BYTES);
+  const matching = extractGroundings(content).filter((entry) => entry.node === nodeId);
+  if (matching.length !== 1) return null;
+  const grounding = matching[0]!;
+  const node = runtime.graph.getNode(nodeId);
+  const fingerprint = runtime.reconciler.getFingerprint(nodeId);
+  if (node?.id !== nodeId || !node.bodyHash || !fingerprint) return null;
+  const serialized = serializeFingerprint(fingerprint);
+  const previous = runtime.fingerprints.getGroundedSource(scaffoldFile, nodeId);
+  if ((grounding.bodyHash ?? previous?.bodyHash) === node.bodyHash
+    && grounding.fingerprint === serialized) return null;
+  const newBody = readNodeBody(config.projectRoot, node.filePath, node.startLine, node.endLine);
+  const oldBody = previous && (grounding.bodyHash === undefined || grounding.bodyHash === previous.bodyHash)
+    && hashBody(previous.source) === previous.bodyHash ? previous.source : null;
+  if (hashBody(newBody) !== node.bodyHash
+    || Buffer.byteLength(newBody) > GROUNDING_REVIEW_MAX_BYTES
+    || (oldBody !== null && Buffer.byteLength(oldBody) > GROUNDING_REVIEW_MAX_BYTES)) return null;
+  return {
+    acceptance: { scaffoldFile, nodeId, contentHash: hashText(content), fingerprint: serialized, bodyHash: node.bodyHash },
+    content,
+    oldBody,
+    newBody,
+  };
+}
+
+function resolveGroundingReviewFile(config: MexConfig, scaffoldFile: string): string {
+  const filePath = resolve(config.projectRoot, scaffoldFile);
+  const scaffoldRelative = relative(realpathSync(config.scaffoldRoot), realpathSync(filePath));
+  if (isAbsolute(scaffoldFile)
+    || relative(config.projectRoot, filePath).replaceAll("\\", "/") !== scaffoldFile
+    || scaffoldRelative === "" || scaffoldRelative === ".." || scaffoldRelative.startsWith("../")
+    || scaffoldRelative.startsWith("..\\") || isAbsolute(scaffoldRelative)
+    || !filePath.endsWith(".md")) {
+    throw new Error("Grounding review requires a Markdown file contained in the scaffold.");
+  }
+  return filePath;
+}
+
+function hashText(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+/** Same normalized body bytes used by the graph; never bless a changed source read. */
+function hashBody(source: string): string {
+  return hashText(source.replace(/\s+/g, " ").trim());
 }
 
 export function groundingPromptContext(
@@ -513,6 +640,9 @@ export function groundingPromptContext(
   const baseline = runtime.reconciler.getGroundedSource(scaffoldFile, nodeId);
   const current = runtime.graph.getNode(candidateId ?? nodeId);
   if (!baseline || !current) return null;
+  const grounding = extractGroundings(readBoundedText(resolve(config.projectRoot, scaffoldFile), GRAPH_CORPUS_LIMITS.maxSourceFileBytes))
+    .find((entry) => entry.node === nodeId);
+  if (grounding?.bodyHash !== undefined && grounding.bodyHash !== baseline.bodyHash) return null;
   return {
     nodeId,
     oldBody: baseline.source,
@@ -521,41 +651,73 @@ export function groundingPromptContext(
   };
 }
 
-/**
- * Cache the node's current body beside its hash, and hand the hash back.
- *
- * The row it writes into `_mex_grounded_source` is a **cache of a canonical
- * value, not a second store of a fact.** `.mex/graph.db` is gitignored and
- * disposable by invariant — `mex graph rebuild` is offered as a routine repair
- * — so anything held only here is gone on the next rebuild and never reaches a
- * teammate who clones. The durable copy of `bodyHash` is the one the callers
- * write into the Markdown grounding, which is why this returns it rather than a
- * bare boolean. Keep the row: it also carries the body *text*, which drift
- * review needs for a diff and Markdown has no business holding.
- *
- * Returns the body hash on success, or null for a node the graph does not hold
- * or that has no body — the same condition the boolean used to report.
- */
-function saveCurrentBaseline(
+/** Stage a graph-verified cache row. The caller publishes Markdown before saving it. */
+function currentBaseline(
   config: MexConfig,
   scaffoldFile: string,
   nodeId: string,
   fingerprint: string,
   runtime: GroundingRuntime,
-): string | null {
+): GroundedSource | null {
   const node = runtime.graph.getNode(nodeId);
   if (!node?.bodyHash) return null;
-  const source: GroundedSource = {
+  const body = readNodeBody(config.projectRoot, node.filePath, node.startLine, node.endLine);
+  if (hashBody(body) !== node.bodyHash) return null;
+  return {
     scaffoldFile,
     nodeId: node.id,
-    source: readNodeBody(config.projectRoot, node.filePath, node.startLine, node.endLine),
+    source: body,
     bodyHash: node.bodyHash,
     fingerprint,
   };
-  runtime.fingerprints.saveGroundedSource(source);
-  return node.bodyHash;
 }
 
 function readNodeBody(root: string, filePath: string, startLine: number, endLine: number): string {
-  return readFileSync(resolve(root, filePath), "utf-8").split("\n").slice(startLine - 1, endLine).join("\n");
+  return readBoundedText(resolve(root, filePath), GRAPH_CORPUS_LIMITS.maxSourceFileBytes)
+    .split("\n").slice(startLine - 1, endLine).join("\n");
+}
+
+function readBoundedText(filePath: string, maxBytes: number): string {
+  const fd = openSync(filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const before = fstatSync(fd, { bigint: true });
+    if (!before.isFile() || before.size > BigInt(maxBytes)) throw new Error("Grounding file exceeds its read limit.");
+    const bytes = Buffer.alloc(Number(before.size) + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const read = readSync(fd, bytes, length, bytes.length - length, null);
+      if (read === 0) break;
+      length += read;
+    }
+    const after = fstatSync(fd, { bigint: true });
+    if (length !== Number(before.size) || before.size !== after.size
+      || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) {
+      throw new Error("Grounding file changed during its read.");
+    }
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, length));
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function replaceGroundingDocument(
+  config: MexConfig,
+  filePath: string,
+  previous: string,
+  next: string,
+  readLimit: number,
+): void {
+  const scaffoldFile = relative(config.projectRoot, filePath).replaceAll("\\", "/");
+  resolveGroundingReviewFile(config, scaffoldFile);
+  const temporary = `${filePath}.grounding-${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, next, { flag: "wx", mode: statSync(filePath).mode & 0o777 });
+    resolveGroundingReviewFile(config, scaffoldFile);
+    if (readBoundedText(filePath, readLimit) !== previous) {
+      throw new Error("Grounding document changed before publication; review it again.");
+    }
+    renameSync(temporary, filePath);
+  } finally {
+    try { unlinkSync(temporary); } catch { /* A successful rename consumed it. */ }
+  }
 }

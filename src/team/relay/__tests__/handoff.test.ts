@@ -16,7 +16,7 @@ const WORKSTREAM = generateArtifactId("ws", {
 const REVISION = "a".repeat(64);
 
 describe("Relay product normalization", () => {
-  it("accepts 1 and 32 unique Members, including the sender, and rejects 33 or duplicates", () => {
+  it("accepts zero to 32 local recipients and rejects 33 or duplicates", () => {
     const recipients = Array.from({ length: 33 }, (_, index): Extract<ActorRef, { kind: "member" }> => ({
       kind: "member",
       memberId: generateArtifactId("member", {
@@ -27,13 +27,23 @@ describe("Relay product normalization", () => {
     }));
     expect(normalizeRelayProductDraftInput(input(recipients.slice(0, 1))).recipients)
       .toEqual(recipients.slice(0, 1));
+    expect(normalizeRelayProductDraftInput(input([])).recipients).toEqual([]);
     expect(normalizeRelayProductDraftInput(input(recipients.slice(0, 32))).recipients)
       .toHaveLength(32);
-    expect(() => normalizeRelayProductDraftInput(input(recipients))).toThrow(/between 1 and 32/);
+    expect(() => normalizeRelayProductDraftInput(input(recipients))).toThrow(/malformed/);
     expect(() => normalizeRelayProductDraftInput(input([
       recipients[0]!,
       { ...recipients[0]!, displayName: "Renamed same Member" },
-    ]))).toThrow(/member IDs must be unique/);
+    ]))).toThrow(/malformed/);
+  });
+
+  it("preserves absent audience for legacy receipts and accepts only explicit unambiguous team or named drafts", () => {
+    const { workstream: _workstream, ...draft } = input([]);
+    expect(normalizeRelayProductDraftInput(draft)).not.toHaveProperty("audience");
+    expect(normalizeRelayProductDraftInput({ ...draft, audience: "members" })).toMatchObject({ audience: "members", recipients: [] });
+    expect(normalizeRelayProductDraftInput({ ...draft, audience: "team" })).toMatchObject({ audience: "team", recipients: [] });
+    expect(() => normalizeRelayProductDraftInput({ ...draft, audience: "team", recipients: [member(8)] })).toThrow();
+    expect(() => normalizeRelayProductDraftInput({ ...draft, audience: "everyone" })).toThrow();
   });
 
   it("translates only a canonical legacy Workstream reference without lookup", () => {
@@ -198,10 +208,11 @@ describe("Relay product normalization", () => {
     expect(() => normalizeTeamRelayCommand(
       publishCommand(draftId, [local, ...memberExpectations.slice(0, 32)]),
     )).not.toThrow();
+    // Audience-specific eligibility is checked against the exact stored draft.
+    expect(() => normalizeTeamRelayCommand(publishCommand(draftId, [local]))).not.toThrow();
 
     const invalidTopologies: readonly (readonly unknown[])[] = [
       valid.filter((expectation) => expectation !== local),
-      [local],
       [...valid, workstream],
       [...valid, local],
       [...valid, memberExpectations[0]!],

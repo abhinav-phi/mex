@@ -1,5 +1,8 @@
+import { isInboxCreate, isInboxUpdate } from "../lib/inbox-change";
 import type { FixtureApiOptions, HubApi, JobSubscription } from "../api/client";
 import type {
+  AgentLoggingPolicy,
+  AgentLoggingUpdateRequest,
   ActivityItem,
   ActivityRequest,
   ActivityResponse,
@@ -60,6 +63,8 @@ import type {
   WikiBacklinksResponse,
   WikiEntityDetailResponse,
   WikiEntityListRequest,
+  WikiGraphResponse,
+  WikiGroundedCodeResponse,
   WikiEntityListResponse,
   WikiEntitySummary,
   WikiRelationsRequest,
@@ -2033,6 +2038,20 @@ function fixtureRelaySummary(relay: RelayDetail): OverviewRelayItem {
 }
 
 class FixtureHubApi implements HubApi {
+  #loggingPolicy: AgentLoggingPolicy = { mode: "significant", source: "default", revision: null };
+  #loggingRevision = 0;
+
+  getLoggingPolicy(): Promise<AgentLoggingPolicy> {
+    return Promise.resolve(structuredClone(this.#loggingPolicy));
+  }
+
+  async setLoggingPolicy(request: AgentLoggingUpdateRequest): Promise<AgentLoggingPolicy> {
+    if (request.expectedRevision !== this.#loggingPolicy.revision) throw new Error("Logging preference changed. Reload and try again.");
+    this.#loggingPolicy = {
+      mode: request.mode, source: "local", revision: (++this.#loggingRevision).toString(16).padStart(64, "0"),
+    };
+    return structuredClone(this.#loggingPolicy);
+  }
   readonly #jobs = structuredClone(jobs);
   readonly #members: TeamMember[];
   readonly #workstreams = structuredClone(fixtureWorkstreams);
@@ -2128,9 +2147,9 @@ class FixtureHubApi implements HubApi {
     )).length;
     const readyToTakeCount = actor.kind !== "member" ? null : this.#relays.filter((relay) => (
       relay.state === "published"
-      && relay.recipients.some((recipient) => (
+      && (relay.audience === "team" || relay.recipients.some((recipient) => (
         recipient.kind === "member" && recipient.memberId === actor.memberId
-      ))
+      )))
     )).length;
     const inYourHandsCount = actor.kind !== "member" ? null : this.#relays.filter((relay) => (
       relay.state === "acknowledged"
@@ -2295,9 +2314,9 @@ class FixtureHubApi implements HubApi {
     const readyRelayItems = currentMemberId === null ? [] : this.#relays
       .filter((relay) => (
         relay.state === "published"
-        && relay.recipients.some((recipient) => (
+        && (relay.audience === "team" || relay.recipients.some((recipient) => (
           recipient.kind === "member" && recipient.memberId === currentMemberId
-        ))
+        )))
       ))
       .slice(0, 3)
       .map(fixtureRelaySummary);
@@ -2514,7 +2533,7 @@ class FixtureHubApi implements HubApi {
         return relay.sender.kind === "member" && relay.sender.memberId === current.memberId;
       }
       return relay.state === "published"
-        ? relay.recipients.some((recipient) => recipient.kind === "member" && recipient.memberId === current.memberId)
+        ? relay.audience === "team" || relay.recipients.some((recipient) => recipient.kind === "member" && recipient.memberId === current.memberId)
         : relay.acknowledgedBy?.kind === "member" && relay.acknowledgedBy.memberId === current.memberId;
     }).sort((left, right) => {
       if (left.publishedAt === null && right.publishedAt !== null) return 1;
@@ -2670,6 +2689,7 @@ class FixtureHubApi implements HubApi {
           revision: envelope.preview.localChanges[0]?.afterRevision ?? revision("c"),
           updatedAt: envelope.receipt.authority.occurredAt,
           summary: action.draft.summary,
+          ...(action.draft.audience === undefined ? {} : { audience: action.draft.audience }),
           recipients: structuredClone(action.draft.recipients),
           input: structuredClone(action.draft),
         };
@@ -2685,13 +2705,14 @@ class FixtureHubApi implements HubApi {
       const id = envelope.receipt.purposeIds.find((item) => item.purpose === "relay")?.id;
       if (draft !== undefined && id !== undefined) {
         const next: RelayDetail = {
-          schemaVersion: 3,
+          schemaVersion: draft.input.audience === "team" ? 4 : 3,
           ref: { kind: "relay", id },
           sourcePath: `.mex/relays/${id}.md`,
           revision: envelope.preview.changes[0]?.afterRevision ?? revision("d"),
           state: "published",
           sender: structuredClone(envelope.receipt.authority.actor),
           ...structuredClone(draft.input),
+          audience: draft.input.audience === "team" ? "team" : undefined,
           workstream: null,
           publishedAt: envelope.receipt.authority.occurredAt,
           publishedRepoState: structuredClone(envelope.receipt.authority.repoState),
@@ -2868,6 +2889,15 @@ class FixtureHubApi implements HubApi {
               : "Remove the checkout-local Inbox draft.",
           }]
         : [];
+    const changedKnowledge = proposal?.change;
+    const knowledgePath = changedKnowledge?.kind === "knowledge.create"
+      ? changedKnowledge.entityKind === "pattern"
+        ? `.mex/patterns/${fixtureInboxCreatedSpecId}.md`
+        : `.mex/context/${changedKnowledge.entityKind}-${fixtureInboxCreatedSpecId}.md`
+      : changedKnowledge?.kind === "knowledge.update"
+        ? wikiEntities.find((entity) => entity.id === changedKnowledge.target.id)?.location.path
+          ?? `.mex/context/${changedKnowledge.target.kind}-${changedKnowledge.target.id}.md`
+        : undefined;
     const primaryChanges: InboxOperationPreviewResponse["preview"]["changes"] = action.kind === "inbox.draft.save" || action.kind === "inbox.draft.delete"
       ? []
       : action.kind === "inbox.publish"
@@ -2880,16 +2910,16 @@ class FixtureHubApi implements HubApi {
           }]
         : action.kind === "inbox.approve"
           ? [
-            ...(proposal?.change.kind === "spec.create" ? [{
+            ...(isInboxCreate(proposal?.change) ? [{
               kind: "create" as const,
-              path: `.mex/specs/${fixtureInboxCreatedSpecId}.md`,
-              diff: `--- /dev/null\n+++ b/.mex/specs/${fixtureInboxCreatedSpecId}.md\n+title: ${proposal.title}\n`,
+              path: knowledgePath ?? `.mex/specs/${fixtureInboxCreatedSpecId}.md`,
+              diff: `--- /dev/null\n+++ b/${knowledgePath ?? `.mex/specs/${fixtureInboxCreatedSpecId}.md`}\n+title: ${proposal!.title}\n`,
               beforeRevision: null,
               afterRevision: revision("8"),
             }] : [{
               kind: "update" as const,
-              path: `.mex/specs/${fixtureInboxSpecId}.md`,
-              diff: `--- a/.mex/specs/${fixtureInboxSpecId}.md\n+++ b/.mex/specs/${fixtureInboxSpecId}.md\n+The release gate records exact reviewed evidence.\n`,
+              path: knowledgePath ?? `.mex/specs/${fixtureInboxSpecId}.md`,
+              diff: `--- a/${knowledgePath ?? `.mex/specs/${fixtureInboxSpecId}.md`}\n+++ b/${knowledgePath ?? `.mex/specs/${fixtureInboxSpecId}.md`}\n+The release gate records exact reviewed evidence.\n`,
               beforeRevision: revision("3"),
               afterRevision: revision("8"),
             }]), {
@@ -2933,7 +2963,7 @@ class FixtureHubApi implements HubApi {
         : action.kind === "inbox.publish"
           ? [{ purpose: "activity", id: eventId }, { purpose: "proposal", id: publishedProposalId }]
           : action.kind === "inbox.approve"
-            ? proposal?.change.kind === "spec.create"
+            ? isInboxCreate(proposal?.change)
               ? [{ purpose: "activity", id: eventId }, { purpose: "spec-entity", id: fixtureInboxCreatedSpecId }]
               : [{ purpose: "activity", id: eventId }]
             : [{ purpose: "activity", id: eventId }];
@@ -2980,7 +3010,7 @@ class FixtureHubApi implements HubApi {
     if (action.kind === "inbox.draft.save") {
       const id = action.draftId ?? envelope.receipt.purposeIds.find((item) => item.purpose === "inbox-draft")?.id;
       if (id !== undefined) {
-        const descriptor = action.draft.change.kind === "spec.create"
+        const descriptor = isInboxCreate(action.draft.change)
           ? { entityKind: action.draft.change.entityKind, title: action.draft.change.title }
           : { entityKind: action.draft.change.target.kind, title: action.draft.change.target.title ?? action.draft.change.target.id };
         const next: InboxDraftDetail = {
@@ -3033,7 +3063,7 @@ class FixtureHubApi implements HubApi {
         ))?.afterRevision ?? revision("9");
         let updated: InboxProposalDetail;
         if (action.kind === "inbox.repair") {
-          const descriptor = action.replacement.change.kind === "spec.create"
+          const descriptor = isInboxCreate(action.replacement.change)
             ? {
                 entityKind: action.replacement.change.entityKind,
                 title: action.replacement.change.title,
@@ -3095,7 +3125,7 @@ class FixtureHubApi implements HubApi {
         : [{ kind: "entity" as const, entity: { id: proposalId, kind: "proposal" } }];
       const approvalTarget = action.kind !== "inbox.approve"
         ? []
-        : proposals[0]?.change.kind === "spec.create"
+        : isInboxCreate(proposals[0]?.change)
           ? [{
               kind: "entity" as const,
               entity: {
@@ -3104,7 +3134,7 @@ class FixtureHubApi implements HubApi {
                 kind: proposals[0].change.entityKind,
               },
             }]
-          : proposals[0]?.change.kind === "spec.update"
+          : isInboxUpdate(proposals[0]?.change)
             ? [{ kind: "entity" as const, entity: structuredClone(proposals[0].change.target) }]
             : [];
       if (actionName !== null) {
@@ -3143,6 +3173,7 @@ class FixtureHubApi implements HubApi {
       ? fixtureOperationId("member", sequence)
       : request.action.kind === "member.update"
         || request.action.kind === "member.deactivate"
+        || request.action.kind === "member.reactivate"
         || request.action.kind === "member.select"
         ? request.action.memberId
         : null;
@@ -3160,6 +3191,7 @@ class FixtureHubApi implements HubApi {
     const canonical = request.action.kind === "member.add"
       || request.action.kind === "member.update"
       || request.action.kind === "member.deactivate"
+      || request.action.kind === "member.reactivate"
       || request.action.kind === "workstream.create"
       || request.action.kind === "workstream.update"
       || request.action.kind === "workstream.archive"
@@ -3171,6 +3203,7 @@ class FixtureHubApi implements HubApi {
     const afterRevision = request.action.kind === "member.add" || request.action.kind === "workstream.create"
       ? revision("e")
       : request.action.kind === "member.update" || request.action.kind === "member.deactivate"
+        || request.action.kind === "member.reactivate"
         || request.action.kind === "workstream.update" || request.action.kind === "workstream.archive"
         ? revision("f")
         : revision("9");
@@ -3262,13 +3295,13 @@ class FixtureHubApi implements HubApi {
         revision: envelope.preview.changes[0]?.afterRevision ?? revision("e"),
       };
       this.#members.push(member);
-    } else if (action.kind === "member.update" || action.kind === "member.deactivate") {
+    } else if (action.kind === "member.update" || action.kind === "member.deactivate" || action.kind === "member.reactivate") {
       const index = this.#members.findIndex((candidate) => candidate.id === action.memberId);
       const current = this.#members[index];
       if (current !== undefined) {
         member = {
           ...current,
-          ...(action.kind === "member.update" ? action.patch : { active: false }),
+          ...(action.kind === "member.update" ? action.patch : { active: action.kind === "member.reactivate" }),
           revision: envelope.preview.changes[0]?.afterRevision ?? revision("f"),
         };
         this.#members[index] = member;
@@ -3331,13 +3364,14 @@ class FixtureHubApi implements HubApi {
     if (eventPurpose?.purpose === "activity") {
       const direct = action.kind === "activity.record" ? action.activity : null;
       const eventMember = member ?? (
-        action.kind === "member.update" || action.kind === "member.deactivate"
+        action.kind === "member.update" || action.kind === "member.deactivate" || action.kind === "member.reactivate"
           ? this.#members.find((candidate) => candidate.id === action.memberId) ?? null
           : null
       );
       const eventAction = action.kind === "member.add" ? "member.added"
         : action.kind === "member.update" ? "member.updated"
           : action.kind === "member.deactivate" ? "member.deactivated"
+          : action.kind === "member.reactivate" ? "member.reactivated"
             : action.kind === "workstream.create" ? "workstream.created"
               : action.kind === "workstream.update" ? "workstream.updated"
                 : action.kind === "workstream.archive" ? "workstream.archived"
@@ -3455,6 +3489,20 @@ class FixtureHubApi implements HubApi {
     } catch (error) {
       return Promise.reject(error);
     }
+  }
+  wikiGraph(): Promise<WikiGraphResponse> {
+    const relations = wikiEntities.flatMap((entity) => [...wikiRelations(entity.id).items.map((hit) => hit.relation), ...wikiBacklinks(entity.id).items]);
+    return Promise.resolve({ indexedRevision: wikiRevision, observedAt: timestamp(0), nodes: wikiEntities,
+      relations: [...new Map(relations.map((edge) => [`${edge.source.id}:${edge.target.id}:${edge.type}`, edge])).values()],
+      coverage: { nodeLimit: 100, relationLimit: 500, nodesTruncated: false, relationsTruncated: false } });
+  }
+  getWikiGroundedCode(id: string): Promise<WikiGroundedCodeResponse> {
+    const detail = wikiDetail(id);
+    return Promise.resolve({ indexedRevision: wikiRevision, observedAt: timestamp(0), entityId: id, graphRevision,
+      groundings: detail.groundings.items.flatMap((grounding) => grounding.requestedNode ? [{
+        requestedNode: grounding.requestedNode, resolvedNode: grounding.resolvedNode, health: grounding.health,
+        symbol: graphSymbols.find((symbol) => symbol.id === grounding.resolvedNode) ?? null,
+      }] : []), truncated: detail.groundings.truncated });
   }
   listWikiEntities(request: WikiEntityListRequest): Promise<WikiEntityListResponse> {
     const filtered = wikiEntities.filter((entity) => (

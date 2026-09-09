@@ -15,13 +15,17 @@
 
 import { resolve } from "node:path";
 import { existsSync } from "node:fs";
-import { diagnostic, type WikiDiagnostic } from "../model/diagnostic.js";
+import { diagnostic, hasBlockingDiagnostic, type WikiDiagnostic } from "../model/diagnostic.js";
 import type { EntityTypeRegistry } from "../model/entity.js";
 import type { GroundingGraph } from "../grounding/adapter.js";
 import { createHash } from "node:crypto";
 import { rebuildWikiIndex } from "../index/rebuild.js";
 import { refreshWikiIndex } from "../index/refresh.js";
-import { planOperation, type PlanOptions, type WikiPatchPlan } from "../operations/plan.js";
+import { payloadHashOf, planOperation, type PlanOptions, type WikiPatchPlan } from "../operations/plan.js";
+import { readAuditLog, recordFor } from "../operations/audit.js";
+import { validateOperation } from "../model/operation.js";
+import { rootContext } from "../model/validate.js";
+import { isEntityId } from "../model/ids.js";
 import { previewPlan, renderPreview, type WikiPreview } from "../operations/preview.js";
 import { applyGeneratedViews, applyOperation, applyPlannedOperation, type ApplyOptions, type GeneratedViewCandidate } from "../operations/apply.js";
 import { inventoryScaffold } from "../migration/inventory.js";
@@ -52,6 +56,7 @@ export interface WikiWriteOptions extends WikiServiceOptions {
 function planOptionsFrom(options: WikiWriteOptions): PlanOptions {
   return {
     scaffoldRoot: resolve(options.scaffoldRoot),
+    captureCreationProvenance: true,
     ...(options.indexPath === undefined ? {} : { indexPath: options.indexPath }),
     ...(options.exclude === undefined ? {} : { exclude: options.exclude }),
     ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
@@ -137,6 +142,13 @@ export function wikiApplyOperation(
     expectedPreviewRevision?: string;
   },
 ): ServiceResult<ApplyData> {
+  // A file-level create cannot be freshly planned after its one metadata map
+  // exists. Plain CLI retries may instead read exact terminal audit proof.
+  // Executable-plan callers retain their existing preview validation path.
+  if (options.apply === true && options.plan === undefined && options.expectedPreviewRevision === undefined) {
+    const replay = completedCreateReplay(envelope, options.scaffoldRoot);
+    if (replay !== null) return replay;
+  }
   const planned = wikiPlanOperation(envelope, options);
   if (options.apply !== true || !planned.data.planned) {
     return {
@@ -161,6 +173,36 @@ export function wikiApplyOperation(
       createdIds: [...result.createdIds],
     },
     diagnostics: suppressIndexRefresh(result.diagnostics, options),
+  };
+}
+
+function completedCreateReplay(envelope: unknown, scaffoldRoot: string): ServiceResult<ApplyData> | null {
+  const validated = validateOperation(envelope, rootContext());
+  if (!validated.ok || validated.value.type !== "create-entry") return null;
+  const operation = validated.value;
+  const log = readAuditLog(scaffoldRoot);
+  const complete = recordFor(log, operation.opId).complete;
+  if (complete === null) return null;
+  const exact = !hasBlockingDiagnostic(log.diagnostics)
+    && complete.type === operation.type
+    && complete.payloadHash === payloadHashOf(operation.type, operation.payload)
+    && complete.actor?.kind === operation.actor.kind
+    && complete.actor?.id === operation.actor.id
+    && complete.sessionId === operation.actor.sessionId
+    && complete.timestamp === operation.timestamp
+    && complete.reason === operation.reason
+    && Array.isArray(complete.files) && complete.files.length === 1 && complete.files[0] === operation.payload.file
+    && complete.createdIds.length === 1 && complete.createdIds.every(isEntityId)
+    && complete.entityIds.length === 0;
+  return {
+    data: {
+      planned: false, opId: operation.opId, preview: null, diff: null, files: [], proposedText: {}, plan: null,
+      applied: false, replayed: exact, changedFiles: [], createdIds: exact ? [...complete.createdIds] : [],
+    },
+    diagnostics: exact ? log.diagnostics : [...log.diagnostics, diagnostic(
+      "INVALID_OPERATION_ENVELOPE",
+      "This create operation ID already has a completion with different content or authority, or its audit proof is invalid.",
+    )],
   };
 }
 

@@ -118,6 +118,7 @@ export interface TeamCliContract {
         | "member.add"
         | "member.update"
         | "member.deactivate"
+        | "member.reactivate"
         | "member.select"
         | "member.clear"
         | "activity.record"
@@ -447,7 +448,7 @@ const COMPACT_TEAM_REQUEST_SCHEMA_SOURCE: Readonly<Record<string, unknown>> = Ob
           },
         },
       },
-      { required: ["kind", "memberId"], properties: { kind: { enum: ["member.deactivate", "member.select"] }, memberId: { $ref: "#/$defs/memberId" } } },
+      { required: ["kind", "memberId"], properties: { kind: { enum: ["member.deactivate", "member.reactivate", "member.select"] }, memberId: { $ref: "#/$defs/memberId" } } },
       { required: ["kind"], properties: { kind: { const: "member.clear" } } },
       {
         required: ["kind", "activity"],
@@ -471,7 +472,7 @@ const COMPACT_TEAM_REQUEST_SCHEMA_SOURCE: Readonly<Record<string, unknown>> = Ob
   },
   allOf: [
     {
-      if: { properties: { action: { type: "object", properties: { kind: { enum: ["member.update", "member.deactivate", "member.select", "member.clear"] } } } } },
+      if: { properties: { action: { type: "object", properties: { kind: { enum: ["member.update", "member.deactivate", "member.reactivate", "member.select", "member.clear"] } } } } },
       then: { properties: { expectedRevisions: { type: "array", minItems: 1 } } },
     },
     {
@@ -691,6 +692,7 @@ const COMPACT_TEAM_REQUEST_SCHEMA = Object.freeze({
     memberAddRequest: teamCommandRequestSchema("member.add"),
     memberUpdateRequest: teamCommandRequestSchema("member.update"),
     memberDeactivateRequest: teamCommandRequestSchema("member.deactivate"),
+    memberReactivateRequest: teamCommandRequestSchema("member.reactivate"),
     memberSelectRequest: teamCommandRequestSchema(["member.select", "member.clear"]),
     activityRecordRequest: teamCommandRequestSchema("activity.record"),
     workstreamCreateRequest: teamCommandRequestSchema("workstream.create"),
@@ -728,6 +730,7 @@ const TEAM_CLI_CONTRACT: TeamCliContract = {
       repositoryPath: 4_096,
     },
     schema: COMPACT_TEAM_REQUEST_SCHEMA,
+    // Representative request shapes; all command schemas remain discoverable.
     examples: [
       {
         command: "member.add",
@@ -769,6 +772,19 @@ const TEAM_CLI_CONTRACT: TeamCliContract = {
         request: {
           operationId: "member-deactivate-example-001",
           action: { kind: "member.deactivate", memberId: EXAMPLE_MEMBER_ID },
+          expectedRevisions: [{
+            target: { kind: "artifact", path: `.mex/team/members/${EXAMPLE_MEMBER_ID}.md` },
+            revision: EXAMPLE_REVISION,
+          }],
+        },
+      },
+      {
+        command: "member.reactivate",
+        usage: "mex member reactivate request.json --json",
+        schemaRef: requestSchemaRef("memberReactivateRequest"),
+        request: {
+          operationId: "member-reactivate-example-001",
+          action: { kind: "member.reactivate", memberId: EXAMPLE_MEMBER_ID },
           expectedRevisions: [{
             target: { kind: "artifact", path: `.mex/team/members/${EXAMPLE_MEMBER_ID}.md` },
             revision: EXAMPLE_REVISION,
@@ -843,40 +859,6 @@ const TEAM_CLI_CONTRACT: TeamCliContract = {
           expectedRevisions: [],
         },
       },
-      {
-        command: "workstream.update",
-        usage: "mex workstream update request.json --json",
-        schemaRef: requestSchemaRef("workstreamUpdateRequest"),
-        request: {
-          operationId: "workstream-update-example-001",
-          action: {
-            kind: "workstream.update",
-            workstreamId: EXAMPLE_WORKSTREAM_ID,
-            patch: {
-              state: "blocked",
-              blockers: ["Awaiting a reviewed dependency"],
-              currentState: "Dependency review",
-            },
-          },
-          expectedRevisions: [{
-            target: { kind: "artifact", path: `.mex/workstreams/${EXAMPLE_WORKSTREAM_ID}.md` },
-            revision: EXAMPLE_REVISION,
-          }],
-        },
-      },
-      {
-        command: "workstream.archive",
-        usage: "mex workstream archive request.json --json",
-        schemaRef: requestSchemaRef("workstreamArchiveRequest"),
-        request: {
-          operationId: "workstream-archive-example-001",
-          action: { kind: "workstream.archive", workstreamId: EXAMPLE_WORKSTREAM_ID },
-          expectedRevisions: [{
-            target: { kind: "artifact", path: `.mex/workstreams/${EXAMPLE_WORKSTREAM_ID}.md` },
-            revision: EXAMPLE_REVISION,
-          }],
-        },
-      },
     ],
   },
   applyFile: {
@@ -914,6 +896,15 @@ const INBOX_REQUEST_SCHEMA_SOURCE: Readonly<Record<string, unknown>> = Object.fr
     singleLine: { type: "string", minLength: 1, pattern: "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$" },
     repoPath: { type: "string", minLength: 1, maxLength: 4_096, pattern: "^[^\\u0000-\\u001f\\u007f]+$" },
     specKind: { enum: ["spec", "requirement", "constraint", "acceptance_criterion"] },
+    knowledgeKind: { enum: ["architecture", "component", "convention", "decision", "pattern", "guide"] },
+    knowledgeRef: {
+      type: "object", additionalProperties: false, required: ["id", "kind"],
+      properties: {
+        id: { $ref: "#/$defs/mxId" },
+        kind: { $ref: "#/$defs/knowledgeKind" },
+        title: { $ref: "#/$defs/prose", type: "string", maxLength: 512 },
+      },
+    },
     specRef: {
       type: "object",
       additionalProperties: false,
@@ -1056,12 +1047,43 @@ const INBOX_REQUEST_SCHEMA_SOURCE: Readonly<Record<string, unknown>> = Object.fr
         },
       },
     },
+    knowledgeCreateChange: {
+      type: "object", additionalProperties: false,
+      required: ["kind", "entityKind", "title", "body", "status"],
+      properties: {
+        kind: { const: "knowledge.create" },
+        entityKind: { $ref: "#/$defs/knowledgeKind" },
+        title: { $ref: "#/$defs/prose", type: "string", maxLength: 512 },
+        body: { $ref: "#/$defs/prose", type: "string", maxLength: 16_384 },
+        summary: { type: "string", maxLength: 2_048 },
+        status: { enum: ["in_flight", "promoted"] },
+        topics: { type: "array", maxItems: 64, uniqueItems: true, items: { $ref: "#/$defs/mxId" } },
+      },
+    },
+    knowledgeUpdateChange: {
+      type: "object", additionalProperties: false, required: ["kind", "target", "patch"],
+      properties: {
+        kind: { const: "knowledge.update" },
+        target: { $ref: "#/$defs/knowledgeRef" },
+        patch: {
+          type: "object", additionalProperties: false, minProperties: 1,
+          properties: {
+            title: { $ref: "#/$defs/prose", type: "string", maxLength: 512 },
+            summary: { type: "string", maxLength: 2_048 },
+            body: { $ref: "#/$defs/prose", type: "string", maxLength: 16_384 },
+          },
+        },
+      },
+    },
     draft: {
       type: "object",
       additionalProperties: false,
       required: ["change", "rationale", "evidence", "targetRevisions"],
       properties: {
-        change: { oneOf: [{ $ref: "#/$defs/createChange" }, { $ref: "#/$defs/updateChange" }] },
+        change: { oneOf: [
+          { $ref: "#/$defs/createChange" }, { $ref: "#/$defs/updateChange" },
+          { $ref: "#/$defs/knowledgeCreateChange" }, { $ref: "#/$defs/knowledgeUpdateChange" },
+        ] },
         rationale: { $ref: "#/$defs/prose", type: "string", maxLength: 8_192 },
         evidence: { type: "array", maxItems: 64, items: { $ref: "#/$defs/evidence" } },
         targetRevisions: { type: "array", maxItems: 64, uniqueItems: true, items: { $ref: "#/$defs/entityExpectation" } },
@@ -1069,7 +1091,7 @@ const INBOX_REQUEST_SCHEMA_SOURCE: Readonly<Record<string, unknown>> = Object.fr
       oneOf: [
         {
           properties: {
-            change: { type: "object", required: ["kind"], properties: { kind: { const: "spec.update" } } },
+            change: { type: "object", required: ["kind"], properties: { kind: { enum: ["spec.update", "knowledge.update"] } } },
             targetRevisions: { type: "array", minItems: 1, maxItems: 1 },
           },
         },
@@ -1083,7 +1105,7 @@ const INBOX_REQUEST_SCHEMA_SOURCE: Readonly<Record<string, unknown>> = Object.fr
           properties: {
             change: {
               type: "object", required: ["kind", "topics"],
-              properties: { kind: { const: "spec.create" }, relation: false, topics: { type: "array", minItems: 1 } },
+              properties: { kind: { enum: ["spec.create", "knowledge.create"] }, relation: false, topics: { type: "array", minItems: 1 } },
             },
             targetRevisions: { type: "array", minItems: 1 },
           },
@@ -1092,7 +1114,7 @@ const INBOX_REQUEST_SCHEMA_SOURCE: Readonly<Record<string, unknown>> = Object.fr
           properties: {
             change: {
               type: "object", required: ["kind"],
-              properties: { kind: { const: "spec.create" }, relation: false, topics: { type: "array", maxItems: 0 } },
+              properties: { kind: { enum: ["spec.create", "knowledge.create"] }, relation: false, topics: { type: "array", maxItems: 0 } },
             },
             targetRevisions: { type: "array", maxItems: 0 },
           },
@@ -1590,8 +1612,8 @@ const INBOX_REQUEST_EXAMPLES = [
       action: {
         kind: "inbox.draft.save",
         draft: {
-          change: { kind: "spec.create", entityKind: "spec", title: "Release", body: "Scope.", status: "in_flight" },
-          rationale: "Review.",
+          change: { kind: "knowledge.create", entityKind: "decision", title: "Share project context through Git", body: "Accepted project knowledge lives in tracked Markdown. Teammates receive it through Git.", status: "promoted" },
+          rationale: "Capture the agreed sharing model for future sessions.",
           evidence: [],
           targetRevisions: [],
         },
@@ -1935,6 +1957,20 @@ const COMMANDS = {
     "json",
     previewContractRef("member.deactivate"),
   ),
+  memberReactivatePreview: command(
+    "member.reactivate.preview",
+    "mex member reactivate",
+    "mex member reactivate <request-file> --json",
+    "json",
+    requestSchemaRef("memberReactivateRequest"),
+  ),
+  memberReactivateApply: command(
+    "member.reactivate.apply",
+    "mex member reactivate",
+    "mex member reactivate --apply <preview-envelope> --json",
+    "json",
+    previewContractRef("member.reactivate"),
+  ),
   memberSelectPreview: command(
     "member.select.preview",
     "mex member select",
@@ -2042,6 +2078,7 @@ const COMMANDS = {
     "mex inbox draft list",
     "mex inbox draft list --json",
   ),
+  inboxTarget: inboxCommand("inbox.target", "mex inbox target", "mex inbox target <entity-id> --json"),
   inboxDraftShow: inboxCommand(
     "inbox.draft.show",
     "mex inbox draft show",
@@ -2441,6 +2478,7 @@ function availableCommands(
       COMMANDS.memberAddPreview,
       COMMANDS.memberUpdatePreview,
       COMMANDS.memberDeactivatePreview,
+      COMMANDS.memberReactivatePreview,
       COMMANDS.memberSelectPreview,
       COMMANDS.activityRecordPreview,
       COMMANDS.workstreamCreatePreview,
@@ -2455,6 +2493,7 @@ function availableCommands(
       COMMANDS.memberAddApply,
       COMMANDS.memberUpdateApply,
       COMMANDS.memberDeactivateApply,
+      COMMANDS.memberReactivateApply,
       COMMANDS.memberSelectApply,
       COMMANDS.activityRecordApply,
       COMMANDS.workstreamCreateApply,
@@ -2485,6 +2524,7 @@ function availableCommands(
 
   if (wikiIndexState === "fresh") {
     read.push(
+      COMMANDS.inboxTarget,
       COMMANDS.specList,
       COMMANDS.specShow,
       COMMANDS.wikiList,
@@ -2853,11 +2893,11 @@ async function inspectTeamAvailability(
   projectRoot: string,
 ): Promise<CapabilityUnavailableReason | null> {
   try {
-    const [{ createRepositoryGitPort }, { tryReadContainedArtifact }] = await Promise.all([
+    const [{ createRepositoryGitPort }, { tryReadContainedArtifact, canonicalCheckoutBytes }] = await Promise.all([
       import("./team/git/git-port.js"),
       import("./team/artifacts/filesystem.js"),
     ]);
-    const config = tryReadContainedArtifact(projectRoot, ".mex/config.json", MAX_CONFIG_BYTES);
+    const config = tryReadContainedArtifact(projectRoot, ".mex/config.json", MAX_CONFIG_BYTES, "exact");
     if (config === null) {
       return fixedReason(
         "TEAM_SCAFFOLD_IDENTITY_MISSING",
@@ -2884,17 +2924,10 @@ async function inspectTeamAvailability(
         "Team workflows require .mex/config.json to be tracked at the current repository HEAD.",
       );
     }
-    // Byte equality, deliberately: this attests the **whole** tracked config,
-    // not just its identity. A local edit to any field — `scaffold_name`, say —
-    // means teammates are reading something this checkout is not, and Team
-    // workflows are correctly unavailable until it is committed.
-    //
-    // This compares cleanly across platforms because `tryReadContainedArtifact`
-    // undoes Git's checkout line-ending conversion, so a CRLF working copy and
-    // its LF blob agree here. Comparing `scaffold_id` alone would also have
-    // survived that, and was tried — it silently dropped the attestation above,
-    // which `test/cli.test.ts` asserts and Windows could not have caught.
-    if (tracked.truncated || !Buffer.from(tracked.content).equals(Buffer.from(config.bytes))) {
+    // Attest the whole tracked config, allowing only checkout CRLF conversion.
+    // The stored bytes and revision stay exact for the second-read race check.
+    if (tracked.truncated || !Buffer.from(canonicalCheckoutBytes(tracked.content))
+      .equals(Buffer.from(canonicalCheckoutBytes(config.bytes)))) {
       return fixedReason(
         "TEAM_SCAFFOLD_IDENTITY_CHANGED",
         "Team workflows require the working .mex/config.json to match the current repository HEAD.",
@@ -2912,6 +2945,7 @@ async function inspectTeamAvailability(
       projectRoot,
       ".mex/config.json",
       MAX_CONFIG_BYTES,
+      "exact",
     );
     const after = await git.getRepoState();
     if (

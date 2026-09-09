@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { appendEvent, runLog, readEvents, runTimeline } from "../src/events.js";
+import { appendEvent, runLog, readEvents, runTimeline, type EventEntry, type TimelineOpts } from "../src/events.js";
 import type { MexConfig } from "../src/types.js";
 
 let tmpDir: string;
@@ -17,6 +17,108 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
   vi.restoreAllMocks();
+});
+
+function writeHistory(entries: Array<Partial<EventEntry> & Pick<EventEntry, "message">>): string {
+  const path = join(tmpDir, ".mex/events/decisions.jsonl");
+  mkdirSync(join(tmpDir, ".mex/events"), { recursive: true });
+  writeFileSync(path, entries.map((entry) => JSON.stringify({
+    timestamp: "2026-05-14T00:00:00.000Z", kind: "note", files: [], cwd: ".", ...entry,
+  })).join("\n") + "\n");
+  return path;
+}
+
+async function timeline(opts: TimelineOpts = {}) {
+  const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+  await runTimeline(config, { ...opts, json: true });
+  const output = spy.mock.calls.at(-1)![0] as string;
+  spy.mockRestore();
+  return { output, result: JSON.parse(output) as { events: EventEntry[]; truncated: boolean; sourceTruncated: boolean } };
+}
+
+describe("bounded relevant timeline", () => {
+  it("combines literal subject, exact recorded files, kind, and date filters", async () => {
+    writeHistory([
+      { message: "Auth [v2] migration", kind: "decision", files: ["src/auth.ts"] },
+      { message: "Auth [v2] rollback", kind: "decision", files: ["./src/session.ts"] },
+      { message: "Auth [v2] neighboring file", kind: "decision", files: ["src/auth.tsx"] },
+      { message: "Auth v2 is different literal text", kind: "decision", files: ["src/auth.ts"] },
+      { message: "Auth [v2] risk", kind: "risk", files: ["src/auth.ts"] },
+      { message: "Auth [v2] old", kind: "decision", files: ["src/auth.ts"], timestamp: "2026-04-01T00:00:00.000Z" },
+      { message: "Auth [v2] bad date", kind: "decision", files: ["src/auth.ts"], timestamp: "unknown" },
+    ]);
+    const { result } = await timeline({
+      query: "AUTH [v2]", files: [join(tmpDir, "src/auth.ts"), "src/nested/../session.ts"],
+      kind: "decision", since: "2026-05-01",
+    });
+    expect(result).toEqual({
+      events: [expect.objectContaining({ message: "Auth [v2] rollback" }), expect.objectContaining({ message: "Auth [v2] migration" })],
+      truncated: false, sourceTruncated: false,
+    });
+    expect(readdirSync(tmpDir)).toEqual([".mex"]);
+  });
+
+  it("defaults to 20 complete recent entries and gives stable append-order ties", async () => {
+    writeHistory(Array.from({ length: 25 }, (_, index) => ({ message: String(index) })));
+    const first = await timeline();
+    const second = await timeline();
+    expect(first.output).toBe(second.output);
+    expect(first.result.events.map((entry) => entry.message)).toEqual(Array.from({ length: 20 }, (_, index) => String(24 - index)));
+    expect(first.result).toMatchObject({ truncated: true, sourceTruncated: false });
+    expect((await timeline({ limit: 200 })).result.events).toHaveLength(25);
+  });
+
+  it("reports the finite recent scan even when there are no relevant matches", async () => {
+    writeHistory(Array.from({ length: 10_001 }, (_, index) => ({ message: index === 0 ? "older subject" : "recent" })));
+    expect((await timeline({ query: "older subject" })).result).toEqual({ events: [], truncated: false, sourceTruncated: true });
+  });
+
+  it("bounds scans by UTF-8 bytes and retains a complete trailing event", async () => {
+    const path = writeHistory([{ message: "newest" }]);
+    const tail = readFileSync(path, "utf8");
+    writeFileSync(path, `${"x".repeat(8 * 1024 * 1024)}\n${tail}`);
+    expect((await timeline()).result).toEqual({
+      events: [expect.objectContaining({ message: "newest" })], truncated: false, sourceTruncated: true,
+    });
+  });
+
+  it("bounds multibyte output and omits oversized entries without shortening claims", async () => {
+    const message = "界".repeat(1000);
+    writeHistory([
+      ...Array.from({ length: 30 }, () => ({ message })),
+      { message: "💡".repeat(20_000) },
+    ]);
+    const { output, result } = await timeline({ limit: 200 });
+    expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(64 * 1024);
+    expect(result.events.length).toBeGreaterThan(0);
+    expect(result.events.length).toBeLessThan(30);
+    expect(result.events.every((entry) => entry.message === message)).toBe(true);
+    expect(result).toMatchObject({ truncated: true, sourceTruncated: false });
+  });
+
+  it("does not modify history, create local state, or initialize an absent log", async () => {
+    const absentEntries = readdirSync(config.scaffoldRoot);
+    expect((await timeline({ query: "absent" })).result.events).toEqual([]);
+    expect(readdirSync(config.scaffoldRoot)).toEqual(absentEntries);
+    const path = writeHistory([{ message: "remember this", files: ["src/absent.ts"] }]);
+    const bytes = readFileSync(path);
+    const mtime = statSync(path, { bigint: true }).mtimeNs;
+    const names = readdirSync(config.scaffoldRoot);
+    await timeline({ files: ["src/absent.ts"] });
+    expect(readFileSync(path)).toEqual(bytes);
+    expect(statSync(path, { bigint: true }).mtimeNs).toBe(mtime);
+    expect(readdirSync(config.scaffoldRoot)).toEqual(names);
+  });
+
+  it.each<TimelineOpts>([
+    { kind: "checkpoint" }, { kind: "" }, { limit: 0 }, { limit: 201 }, { limit: 1.5 },
+    { limit: Number.NaN }, { query: " " }, { query: "💡".repeat(65) },
+    { files: Array(17).fill("src/a.ts") }, { files: ["../outside.ts"] }, { files: [""] },
+    { files: ["界".repeat(342)] }, { since: "2026-02-30" }, { since: "999999999999999d" }, { since: "" },
+  ])("rejects invalid or excessive retrieval input before reading: %j", async (opts) => {
+    await expect(runTimeline(config, opts)).rejects.toThrow();
+    expect(readdirSync(config.scaffoldRoot)).toEqual([]);
+  });
 });
 
 describe("events", () => {
