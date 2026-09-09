@@ -252,7 +252,7 @@ export interface InternalGraphStatusInspection {
    * distinction, keeps abstaining. Present only alongside a `stale` status:
    * the store is bindable, but what it says about resolution is not current.
    */
-  readonly configDriftObservation?: InternalGraphFreshObservationToken | null;
+  readonly degradedObservation?: InternalGraphDegradedObservation | null;
   /**
    * @internal True when config content drifted under an engine identity that
    * still reproduces — whether or not the store was servable.
@@ -316,8 +316,24 @@ interface InspectionContext {
   maxChangedPaths: number;
 }
 
-/** @internal Why a store may be bound for reading: proven fresh, or config-drifted. */
-export type ReadObservationClass = "fresh" | "config-drifted";
+/**
+ * @internal A known, bounded way a bindable store falls short of `fresh`.
+ *
+ * `config-drift` — the compiler inputs that produced its resolution changed,
+ * so what it says about resolved references may be out of date.
+ * `parse-degraded` — some files parsed partially or not at all, so what it
+ * holds is incomplete. Its facts are still true; there are simply fewer of
+ * them than the repository contains.
+ *
+ * The two make different claims and are reported separately.
+ */
+export type GraphReadDegradation = "config-drift" | "parse-degraded";
+
+/** @internal Exact identity plus the reasons the store is not provably fresh. */
+export interface InternalGraphDegradedObservation {
+  readonly token: InternalGraphFreshObservationToken;
+  readonly degradations: readonly GraphReadDegradation[];
+}
 
 interface FreshObservation {
   repo: RepoObservation;
@@ -342,7 +358,7 @@ interface InspectionAttempt {
   status: GraphStatus;
   retry: boolean;
   freshObservation?: InternalGraphFreshObservationToken;
-  configDriftObservation?: InternalGraphFreshObservationToken;
+  degradedObservation?: InternalGraphDegradedObservation;
   configDriftTolerated?: boolean;
 }
 
@@ -393,7 +409,7 @@ export async function inspectGraphStatusWithFreshObservation(
       return {
         graphStatus: inspected.status,
         freshObservation: inspected.freshObservation ?? null,
-        configDriftObservation: inspected.configDriftObservation ?? null,
+        degradedObservation: inspected.degradedObservation ?? null,
         configDriftTolerated: inspected.configDriftTolerated === true,
       };
     }
@@ -401,7 +417,7 @@ export async function inspectGraphStatusWithFreshObservation(
   return {
     graphStatus: lastAttempt!.status,
     freshObservation: null,
-    configDriftObservation: null,
+    degradedObservation: null,
     configDriftTolerated: lastAttempt!.configDriftTolerated === true,
   };
 }
@@ -955,20 +971,29 @@ async function inspectGraphStatusAttempt(
       && sourceChanges.changes.configChanged
       && (snapshot.manifestHash === manifest.manifestHash
         || graphManifestDiffersOnlyByConfig(manifest, snapshot.manifestHash, snapshot.configHash));
-    const driftClass: ReadObservationClass | null = status === "fresh"
-      ? "fresh"
-      : status === "stale"
-        && configDriftTolerated
-        && !rebuildRequired
-        && !freshnessUnproven
-        && !parseDegraded
-        && sourceChanges.changes.total === 0
-        && !sourceChanges.changes.branchChanged
-        && !sourceChanges.digestChanged
-        && !sourceChanges.changes.grammarChanged
-        ? "config-drifted"
-        : null;
-    if (driftClass === null || !snapshot || !snapshotRaw || !manifest) {
+    // Everything except the store's own completeness must still hold. A
+    // corpus, branch, digest, grammar or engine-identity difference, an
+    // unfinished inspection, or a demanded rebuild all refuse exactly as
+    // before; the two entries below are the only shortfalls a bound read
+    // tolerates, and each is reported to whatever serves it.
+    const boundable = !rebuildRequired
+      && !freshnessUnproven
+      && sourceChanges.changes.total === 0
+      && !sourceChanges.changes.branchChanged
+      && !sourceChanges.digestChanged
+      && !sourceChanges.changes.grammarChanged
+      && (configDriftTolerated || !sourceChanges.changes.configChanged);
+    const degradations: GraphReadDegradation[] = boundable
+      ? [
+          ...(sourceChanges.changes.configChanged ? ["config-drift" as const] : []),
+          ...(parseDegraded ? ["parse-degraded" as const] : []),
+        ]
+      : [];
+    // `stale` and `degraded` are the only non-fresh kinds those shortfalls can
+    // produce here; any other kind was returned long before this point.
+    const bindable = status === "fresh"
+      || (boundable && degradations.length > 0 && (status === "stale" || status === "degraded"));
+    if (!bindable || !snapshot || !snapshotRaw || !manifest) {
       return { ...finishDatabaseResult(result), configDriftTolerated };
     }
 
@@ -982,15 +1007,20 @@ async function inspectGraphStatusAttempt(
       snapshotRaw,
       database,
       databaseIdentity: databaseFileIdentity(fileStat),
-    }, driftClass);
+    }, degradations);
     if (validation.stable) {
       return {
         retry: false,
         status: result,
         configDriftTolerated,
-        ...(driftClass === "fresh"
+        ...(degradations.length === 0
           ? { freshObservation: validation.freshObservation }
-          : { configDriftObservation: validation.freshObservation }),
+          : {
+              degradedObservation: {
+                token: validation.freshObservation!,
+                degradations: Object.freeze([...degradations]),
+              },
+            }),
       };
     }
     const unstable = {
@@ -1267,7 +1297,7 @@ function stabilizeDatabaseResult(
 async function validateFreshObservation(
   context: InspectionContext,
   before: FreshObservation,
-  driftClass: ReadObservationClass = "fresh",
+  degradations: readonly GraphReadDegradation[] = [],
 ): Promise<FreshValidation> {
   const firstSidecars = inspectGraphSidecars(before.database.canonicalPath);
   if (firstSidecars.state !== "clear") {
@@ -1389,7 +1419,7 @@ async function validateFreshObservation(
   // a config-drifted read it is the very condition being served, so repeating
   // it here would report a race that did not happen.
   if (semanticInputIdentity(before.semantic) !== semanticInputIdentity(semantic)
-    || (driftClass === "fresh" && semantic.changedPaths.length > 0)) {
+    || (!degradations.includes("config-drift") && semantic.changedPaths.length > 0)) {
     changed.push("compiler semantic inputs");
   }
   if (!sameManifest(before.manifest, manifest)) changed.push("graph manifest");

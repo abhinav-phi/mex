@@ -106,7 +106,7 @@ describe("graph reads after a config-only change", () => {
     expect(errorRecord(query)).toBeUndefined();
     expect(statusRecord(query)).toMatchObject({
       graphStatus: "stale",
-      reason: "config-drift",
+      reasons: ["config-drift"],
       trusted: ["definitions", "containment", "source"],
       stale: ["resolution", "edges"],
       recoveryCommand: "mex graph refresh",
@@ -145,7 +145,7 @@ describe("graph reads after a config-only change", () => {
     expect(errorRecord(records)).toBeUndefined();
     expect(statusRecord(records)).toMatchObject({
       graphStatus: "stale",
-      reason: "config-drift",
+      reasons: ["config-drift"],
       recoveryCommand: "mex graph refresh",
     });
     const summary = records.find((record) => record.type === "summary");

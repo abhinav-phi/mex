@@ -25,7 +25,7 @@ import {
 } from "./read-session.js";
 import { GRAPH_SNAPSHOT_METADATA_KEY, parseGraphSnapshot } from "./snapshot.js";
 import type { GraphStatus } from "../team/contracts/graph.js";
-import type { ReadObservationClass } from "./status.js";
+import type { GraphReadDegradation } from "./status.js";
 
 type QueryRelation = "who-calls" | "what-calls" | "where-defined";
 
@@ -33,7 +33,7 @@ interface AgentGraphSession {
   graph: GraphEngine;
   db: SqliteDatabase;
   /** Absent for caller-injected sessions, which make no freshness claim. */
-  observationClass?: ReadObservationClass;
+  degradations?: readonly GraphReadDegradation[];
   /** The status a degraded answer must declare; present only when drifted. */
   graphStatus?: GraphStatus;
   readIndexedSource?: (filePath: string) => string;
@@ -693,6 +693,9 @@ export function runGraphScope(
         : []),
       ...(isConfigDrifted(session)
         ? ["Graph build configuration changed after this index was built; flows and other resolved relationships may be out of date."]
+        : []),
+      ...(isParseDegraded(session)
+        ? ["Some indexed files did not parse completely; this answer may be missing symbols they define."]
         : []),
     ];
     const status = returnedFiles.length === 0 && facts.length === 0 && flowRecords.length === 0
@@ -1967,7 +1970,7 @@ function runScopeAgentSession(
         manifestUnavailable(write);
         return;
       }
-      session = { ...session, observationClass: "config-drifted" };
+      session = { ...session, degradations: ["config-drift"] };
     }
     task(session, (line) => pending.push(line));
     const validation = session.validate?.() ?? { valid: true };
@@ -2000,7 +2003,7 @@ async function runFreshAgentSession(
       ...deps.__internal?.freshRead,
       dbPath,
       loadSession: true,
-      allowConfigDrift: true,
+      allowDegradedReads: true,
     });
     if (!loaded.session) {
       graphStatusUnavailable(write, loaded.graphStatus, undefined, loaded.configDriftTolerated);
@@ -2008,7 +2011,7 @@ async function runFreshAgentSession(
     }
     session = {
       ...loaded.session,
-      observationClass: loaded.session.observationClass,
+      degradations: loaded.session.degradations,
       graphStatus: loaded.graphStatus,
     };
     try {
@@ -2047,7 +2050,20 @@ async function runFreshAgentSession(
  * following an edge may name the wrong target.
  */
 function isConfigDrifted(session: AgentGraphSession): boolean {
-  return session.observationClass === "config-drifted";
+  return session.degradations?.includes("config-drift") === true;
+}
+
+/**
+ * True when some files in this store parsed partially or not at all.
+ *
+ * This is a different claim from config drift, and a weaker one. Every fact
+ * the store holds is still true; there are simply fewer of them than the
+ * repository contains, so an answer can be missing a caller or a definition
+ * that lives in a file the parser could not finish. Nothing is relabelled
+ * `stale` for it — the answer is incomplete, not out of date.
+ */
+function isParseDegraded(session: AgentGraphSession): boolean {
+  return session.degradations?.includes("parse-degraded") === true;
 }
 
 /** Mark one record as resolution-derived under config drift; otherwise unchanged. */
@@ -2063,31 +2079,55 @@ function markResolutionStale(session: AgentGraphSession, record: Rec): Rec {
  * refusal used to carry, as a record rather than an exception.
  */
 function configDriftRecords(session: AgentGraphSession): Rec[] {
-  if (!isConfigDrifted(session)) return [];
+  const degradations = [...(session.degradations ?? [])].sort();
+  if (degradations.length === 0) return [];
   // Scope classifies from the store's own manifest and has no inspection to
   // quote, so the record degrades to its fixed half rather than disappearing.
   const status = session.graphStatus;
-  const drift = status?.diagnostics.find((entry) => entry.code === "GRAPH_SEMANTIC_INPUTS_CHANGED")
-    ?? status?.diagnostics.find((entry) => entry.code === "GRAPH_BUILD_MANIFEST_CHANGED");
-  const changedPaths = [...new Set((status?.diagnostics ?? [])
+  const diagnostics = status?.diagnostics ?? [];
+  const drifted = isConfigDrifted(session);
+  const incomplete = isParseDegraded(session);
+  const reasonDiagnostic = drifted
+    ? diagnostics.find((entry) => entry.code === "GRAPH_SEMANTIC_INPUTS_CHANGED")
+      ?? diagnostics.find((entry) => entry.code === "GRAPH_BUILD_MANIFEST_CHANGED")
+    : diagnostics.find((entry) => entry.code === "GRAPH_PARSE_DEGRADED");
+  const changedPaths = [...new Set(diagnostics
     .filter((entry) => entry.code === "GRAPH_SEMANTIC_INPUT_CHANGED")
     .map((entry) => (entry as { path?: unknown }).path)
     .filter((path): path is string => typeof path === "string"))].sort();
-  const recoveryCommand = (status?.diagnostics ?? [])
+  const recoveryCommand = diagnostics
     .flatMap((entry) => entry.remediation ?? [])
     .find((entry) => entry.command)?.command
     ?? "mex graph refresh";
+  const parseHealth = status?.parseHealth;
   return [{
     type: "status",
-    graphStatus: "stale",
-    reason: "config-drift",
-    ...(drift?.code ? { reasonCode: drift.code } : {}),
-    message: drift?.message
-      ?? "Graph build configuration changed after this index was built.",
-    // Say which half of the answer the label applies to, rather than leaving
+    // Config drift makes the store out of date; an unfinished parse only makes
+    // it incomplete. Report the kind the status inspection actually reached.
+    graphStatus: drifted ? "stale" : "degraded",
+    reasons: degradations,
+    ...(reasonDiagnostic?.code ? { reasonCode: reasonDiagnostic.code } : {}),
+    message: reasonDiagnostic?.message
+      ?? (drifted
+        ? "Graph build configuration changed after this index was built."
+        : "Some files could not be parsed completely when this index was built."),
+    // Say which part of the answer each label applies to, rather than leaving
     // the reader to guess how much of it to discard.
     trusted: ["definitions", "containment", "source"],
-    stale: ["resolution", "edges"],
+    ...(drifted ? { stale: ["resolution", "edges"] } : {}),
+    ...(incomplete
+      ? {
+          incomplete: ["files that did not parse completely"],
+          partialFiles: parseHealth?.partial ?? 0,
+          failedFiles: parseHealth?.failed ?? 0,
+          ...(parseHealth && parseHealth.failedPaths.length > 0
+            ? {
+                failedPaths: [...parseHealth.failedPaths].sort(),
+                ...(parseHealth.failedPathsTruncated ? { failedPathsTruncated: true } : {}),
+              }
+            : {}),
+        }
+      : {}),
     ...(changedPaths.length > 0 ? { changedInputs: changedPaths } : {}),
     ...(recoveryCommand ? { recoveryCommand } : {}),
   }];

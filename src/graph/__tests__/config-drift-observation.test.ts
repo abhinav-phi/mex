@@ -69,7 +69,7 @@ describe("config-drift read observation", () => {
     const inspection = await inspect(root);
     expect(inspection.graphStatus.status).toBe("fresh");
     expect(inspection.freshObservation).not.toBeNull();
-    expect(inspection.configDriftObservation ?? null).toBeNull();
+    expect(inspection.degradedObservation ?? null).toBeNull();
   });
 
   it("binds a store whose only drift is config content", async () => {
@@ -85,10 +85,11 @@ describe("config-drift read observation", () => {
       branchChanged: false,
     });
     expect(inspection.freshObservation).toBeNull();
-    const token = inspection.configDriftObservation;
-    expect(token).not.toBeNull();
-    expect(token!.snapshotHash).toMatch(/^[0-9a-f]{64}$/);
-    expect(parseGraphSnapshot(token!.snapshotRaw)).not.toBeNull();
+    const observed = inspection.degradedObservation;
+    expect(observed).not.toBeNull();
+    expect(observed!.degradations).toEqual(["config-drift"]);
+    expect(observed!.token.snapshotHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(parseGraphSnapshot(observed!.token.snapshotRaw)).not.toBeNull();
   });
 
   it("is deterministic across repeated inspections of one drifted store", async () => {
@@ -96,7 +97,7 @@ describe("config-drift read observation", () => {
     bumpDependency(root);
     const first = await inspect(root);
     const second = await inspect(root);
-    expect(second.configDriftObservation).toEqual(first.configDriftObservation);
+    expect(second.degradedObservation).toEqual(first.degradedObservation);
   });
 
   it("refuses to bind when engine identity cannot be reproduced", async () => {
@@ -107,7 +108,7 @@ describe("config-drift read observation", () => {
     expect(inspection.graphStatus.status).toBe("stale");
     expect(inspection.graphStatus.changes.configChanged).toBe(true);
     expect(inspection.freshObservation).toBeNull();
-    expect(inspection.configDriftObservation ?? null).toBeNull();
+    expect(inspection.degradedObservation ?? null).toBeNull();
   });
 
   it("refuses to bind when the grammar also moved", async () => {
@@ -116,7 +117,7 @@ describe("config-drift read observation", () => {
     updateSnapshot(root, (snapshot) => ({ ...snapshot, grammarHash: "0".repeat(64) }));
     const inspection = await inspect(root);
     expect(inspection.graphStatus.changes.grammarChanged).toBe(true);
-    expect(inspection.configDriftObservation ?? null).toBeNull();
+    expect(inspection.degradedObservation ?? null).toBeNull();
   });
 
   it("refuses to bind when indexed source also drifted", async () => {
@@ -126,7 +127,7 @@ describe("config-drift read observation", () => {
     const inspection = await inspect(root);
     expect(inspection.graphStatus.status).toBe("stale");
     expect(inspection.graphStatus.changes.total).toBeGreaterThan(0);
-    expect(inspection.configDriftObservation ?? null).toBeNull();
+    expect(inspection.degradedObservation ?? null).toBeNull();
   });
 
   it("refuses to bind when a new source file is not indexed", async () => {
@@ -134,6 +135,6 @@ describe("config-drift read observation", () => {
     bumpDependency(root);
     write(root, "src/b.ts", "export const b = 1;\n");
     const inspection = await inspect(root);
-    expect(inspection.configDriftObservation ?? null).toBeNull();
+    expect(inspection.degradedObservation ?? null).toBeNull();
   });
 });

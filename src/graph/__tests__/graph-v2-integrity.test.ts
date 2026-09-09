@@ -603,7 +603,7 @@ describe("graph construction integration", () => {
     expect(staleRecords).toContainEqual(expect.objectContaining({
       type: "status",
       graphStatus: "stale",
-      reason: "config-drift",
+      reasons: ["config-drift"],
       recoveryCommand: "mex graph refresh",
     }));
     const refreshEngine = createGraphEngine({ rootDir: root });

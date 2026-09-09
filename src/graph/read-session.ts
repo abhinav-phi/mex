@@ -23,7 +23,7 @@ import {
   type GraphSidecarProbe,
   type InternalGraphFreshObservationToken,
   type InternalGraphStatusInspection,
-  type ReadObservationClass,
+  type GraphReadDegradation,
 } from "./status.js";
 import {
   GRAPH_SNAPSHOT_METADATA_KEY,
@@ -56,11 +56,12 @@ export interface GraphFreshnessRevalidation extends GraphReadValidation {
 export interface InternalFreshGraphReadSession extends InternalGraphReadSession {
   graphStatus: GraphStatus;
   /**
-   * Why this session was allowed to open. `config-drifted` means the store is
-   * bound exactly and its indexed source is current, but the compiler inputs
-   * that produced its resolution have changed since it was built.
+   * The ways this store falls short of `fresh`, empty when it does not.
+   *
+   * It is bound exactly either way; these say what a reader must qualify when
+   * it reports the answer.
    */
-  observationClass: ReadObservationClass;
+  degradations: readonly GraphReadDegradation[];
   revalidateFreshness(): Promise<GraphFreshnessRevalidation>;
 }
 
@@ -94,7 +95,7 @@ export interface LoadFreshGraphReadSessionOptions {
    * so in its output. A consumer that cannot label a degraded answer must not
    * receive one.
    */
-  allowConfigDrift?: boolean;
+  allowDegradedReads?: boolean;
   inspectObservation?: typeof inspectGraphStatusWithFreshObservation;
   inspectSidecars?: typeof inspectGraphSidecars;
   afterStatusInspection?: (
@@ -365,17 +366,17 @@ export async function loadFreshGraphReadSession(
   const inspection = await inspectObservation({ projectRoot, dbPath });
   await options.afterStatusInspection?.(inspection);
   const { graphStatus } = inspection;
-  const configDrifted = graphStatus.status !== "fresh"
-    && options.allowConfigDrift === true
-    && (inspection.configDriftObservation ?? null) !== null;
-  const observationClass: ReadObservationClass = configDrifted ? "config-drifted" : "fresh";
+  const degraded = graphStatus.status !== "fresh"
+    && options.allowDegradedReads === true
+    && (inspection.degradedObservation ?? null) !== null
+      ? inspection.degradedObservation!
+      : null;
+  const degradations: readonly GraphReadDegradation[] = degraded?.degradations ?? [];
   const configDriftTolerated = inspection.configDriftTolerated === true;
   const withTolerance = (result: InternalFreshGraphReadResult): InternalFreshGraphReadResult =>
     ({ ...result, configDriftTolerated });
-  const freshObservation = configDrifted
-    ? inspection.configDriftObservation!
-    : inspection.freshObservation;
-  if ((graphStatus.status !== "fresh" && !configDrifted) || options.loadSession === false) {
+  const freshObservation = degraded ? degraded.token : inspection.freshObservation;
+  if ((graphStatus.status !== "fresh" && !degraded) || options.loadSession === false) {
     return withTolerance({ graphStatus, session: null });
   }
   if (!freshObservation || sha256(freshObservation.snapshotRaw) !== freshObservation.snapshotHash) {
@@ -427,7 +428,7 @@ export async function loadFreshGraphReadSession(
     const session: InternalFreshGraphReadSession = {
       ...ownedBase,
       graphStatus: guardedStatus,
-      observationClass,
+      degradations,
       validate: () => ownedBase.validate(),
       revalidateFreshness: async () => {
         const before = session.validate();
@@ -437,8 +438,11 @@ export async function loadFreshGraphReadSession(
         // repaired while being read as drifted — carries a label the buffered
         // records no longer earn, so the response is discarded rather than
         // relabelled after the fact.
-        const finalObservation = observationClass === "config-drifted"
-          ? finalInspection.configDriftObservation ?? null
+        const finalDegraded = finalInspection.degradedObservation ?? null;
+        const finalObservation = degradations.length > 0
+          ? (finalDegraded && sameDegradations(finalDegraded.degradations, degradations)
+              ? finalDegraded.token
+              : null)
           : finalInspection.graphStatus.status === "fresh"
             ? finalInspection.freshObservation
             : null;
@@ -798,6 +802,14 @@ function snapshotMatchesIndexedFiles(
     && snapshot.parseHealth.ok === ok
     && snapshot.parseHealth.partial === partial
     && snapshot.parseHealth.failed === failed;
+}
+
+/** Order-independent equality; the producer sorts, this must not depend on it. */
+function sameDegradations(
+  left: readonly GraphReadDegradation[],
+  right: readonly GraphReadDegradation[],
+): boolean {
+  return left.length === right.length && left.every((entry) => right.includes(entry));
 }
 
 function sameObservation(
