@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  events: vi.fn(), startTelemetry: vi.fn(), stopTelemetry: vi.fn(async () => undefined),
+  events: vi.fn(), createCapture: vi.fn(), startTelemetry: vi.fn(), stopTelemetry: vi.fn(async () => undefined),
   startServer: vi.fn(), closeServer: vi.fn(async () => undefined),
   createApp: vi.fn(), initializeJobs: vi.fn(), shutdownJobs: vi.fn(async () => undefined),
   jobOptions: vi.fn(), order: [] as string[],
 }));
-vi.mock("../../telemetry/index.js", () => ({ captureEvent: mocks.events, startHubTelemetry: mocks.startTelemetry }));
+vi.mock("../../telemetry/index.js", () => ({ createProjectTelemetryCapture: mocks.createCapture, startHubTelemetry: mocks.startTelemetry }));
 vi.mock("../static/assets.js", () => ({ HubAssetManifest: class {} }));
 vi.mock("../security/session.js", () => ({ createBootstrapToken: () => "private-bootstrap-token", HubSessionManager: class {} }));
 vi.mock("../app.js", () => ({ createHubApp: mocks.createApp }));
@@ -36,6 +36,7 @@ beforeEach(() => {
   mocks.shutdownJobs.mockImplementation(async () => { mocks.order.push("jobs"); });
   mocks.stopTelemetry.mockImplementation(async () => { mocks.order.push("telemetry"); });
   mocks.startTelemetry.mockReturnValue(mocks.stopTelemetry);
+  mocks.createCapture.mockReturnValue(mocks.events);
   vi.spyOn(process.stdout, "write").mockReturnValue(true);
 });
 afterEach(() => vi.restoreAllMocks());
@@ -48,6 +49,7 @@ describe("Hub production telemetry lifecycle", () => {
     const running = runHubCommand({ projectRoot: "/Users/private/project", scaffoldId: "private-scaffold", openBrowser: false });
     await vi.waitFor(() => expect(mocks.startServer).toHaveBeenCalledOnce());
     expect(mocks.events).not.toHaveBeenCalled();
+    expect(mocks.createCapture).toHaveBeenCalledWith("/Users/private/project");
     expect(mocks.startTelemetry).not.toHaveBeenCalled();
     ready({ origin: "http://127.0.0.1:48123", close: mocks.closeServer });
     await vi.waitFor(() => expect(mocks.events).toHaveBeenCalledOnce());

@@ -37,9 +37,16 @@ export const TELEMETRY_ACTIONS = [
 export const TELEMETRY_JOB_KINDS = ["graph_refresh", "graph_rebuild", "wiki_refresh", "wiki_rebuild"] as const;
 export const TELEMETRY_OUTCOMES = ["success", "failure", "cancelled"] as const;
 export const TELEMETRY_STAGES = ["preview", "apply", "direct"] as const;
+/** Persisted tool selections, never a claim about the agent invoking a command. */
+export const TELEMETRY_AI_TOOLS = ["claude", "codex", "copilot", "cursor", "opencode", "windsurf"] as const;
+export type TelemetryAiTool = typeof TELEMETRY_AI_TOOLS[number];
+export interface TelemetryProjectContext {
+  scaffold_id?: string;
+  configured_ai_tools?: TelemetryAiTool[];
+}
 
 /** Strings are checked against the catalog at runtime, including data read from disk. */
-export interface TelemetryAttributes {
+export interface TelemetryAttributes extends TelemetryProjectContext {
   command?: string;
   page?: string;
   action?: string;
@@ -49,7 +56,7 @@ export interface TelemetryAttributes {
   duration_ms?: number;
   replayed?: boolean;
 }
-export type TelemetryProperties = Record<string, string | number | boolean>;
+export type TelemetryProperties = Record<string, string | number | boolean | string[]>;
 export interface TelemetryEvent {
   event: TelemetryEventName;
   uuid: string;
@@ -64,6 +71,15 @@ const plain = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value)
   && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 
+function configuredAiTools(value: unknown): value is TelemetryAiTool[] {
+  if (!Array.isArray(value) || value.length > TELEMETRY_AI_TOOLS.length) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.hasOwn(value, index) || !includes(TELEMETRY_AI_TOOLS, value[index])
+      || (index > 0 && value[index - 1] >= value[index])) return false;
+  }
+  return true;
+}
+
 export function eventAttributes(name: string, value: unknown): TelemetryAttributes | undefined {
   if (!includes(TELEMETRY_EVENTS, name) || !plain(value)) return undefined;
   let required: string[];
@@ -74,8 +90,11 @@ export function eventAttributes(name: string, value: unknown): TelemetryAttribut
   else if (name === "hub.action_completed") { required = ["action", "stage", "outcome", "duration_ms"]; optional = ["replayed"]; }
   else if (name === "hub.job_completed") required = ["job_kind", "outcome", "duration_ms"];
   else required = [];
+  optional.push("scaffold_id", "configured_ai_tools");
   if (Object.keys(value).some((key) => !required.includes(key) && !optional.includes(key))) return undefined;
   if (required.some((key) => !Object.hasOwn(value, key) || value[key] === undefined)) return undefined;
+  if (value.scaffold_id !== undefined && (!isTelemetryId(value.scaffold_id) || value.scaffold_id.length !== 36)) return undefined;
+  if (value.configured_ai_tools !== undefined && !configuredAiTools(value.configured_ai_tools)) return undefined;
   if (value.command !== undefined && !includes(TELEMETRY_COMMANDS, value.command)) return undefined;
   if (value.page !== undefined && !includes(TELEMETRY_PAGES, value.page)) return undefined;
   if (value.action !== undefined && !includes(TELEMETRY_ACTIONS, value.action)) return undefined;
@@ -85,10 +104,12 @@ export function eventAttributes(name: string, value: unknown): TelemetryAttribut
   if (value.replayed !== undefined && (typeof value.replayed !== "boolean" || value.stage !== "apply")) return undefined;
   if (value.duration_ms !== undefined && (typeof value.duration_ms !== "number"
     || !Number.isFinite(value.duration_ms) || value.duration_ms < 0 || value.duration_ms > 86_400_000)) return undefined;
-  const projected: Record<string, string | number | boolean> = {};
+  const projected: TelemetryProperties = {};
   for (const key of [...required, ...optional]) {
     const item = value[key];
-    if (item !== undefined) projected[key] = key === "duration_ms" ? Math.floor(item as number) : item as string | boolean;
+    if (item === undefined) continue;
+    if (key === "configured_ai_tools") projected[key] = [...item as TelemetryAiTool[]];
+    else projected[key] = key === "duration_ms" ? Math.floor(item as number) : item as string | boolean;
   }
   return projected as TelemetryAttributes;
 }

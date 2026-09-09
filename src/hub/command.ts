@@ -12,7 +12,7 @@ import { createRepositoryGraphPort } from "../graph/application-adapter.js";
 import { createRepositoryWikiPort } from "../wiki/application-adapter.js";
 import { createRepositoryTeamWorkflowPort } from "../team/workflow/repository-team-workflow-port.js";
 import { createSpecReadService } from "../team/specs/index.js";
-import { captureEvent, startHubTelemetry } from "../telemetry/index.js";
+import { createProjectTelemetryCapture, startHubTelemetry } from "../telemetry/index.js";
 import { emitHubTelemetry } from "./telemetry.js";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,6 +31,7 @@ export interface RunHubCommandOptions {
  * boundary for local schema migration and interrupted-job reconciliation.
  */
 export async function runHubCommand(options: RunHubCommandOptions): Promise<void> {
+  const captureEvent = createProjectTelemetryCapture(options.projectRoot);
   // Bind and verify the tracked scaffold identity before the explicit Hub
   // startup boundary creates or migrates any local state.
   const team = await createRepositoryTeamWorkflowPort(options.projectRoot);

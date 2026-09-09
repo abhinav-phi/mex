@@ -452,7 +452,7 @@ describe("telemetry keeps Wiki arguments behind the shared projection", () => {
     const callers = FILES.filter((path) => importSpecifiers(withoutComments(read(path)))
       .some((specifier) => resolveSpecifier(path, specifier) === "src/telemetry/index.js"));
     expect(callers.sort()).toEqual([...TELEMETRY_COMPOSITION_ROOTS].sort());
-    expect(read("src/cli.ts")).toContain("createCliTelemetry(captureEvent, flush)");
+    expect(read("src/cli.ts")).toContain("createCliTelemetry(captureEvent, flush,");
   });
 
   it("rejects bypasses, including aliased imports and direct transport access", () => {

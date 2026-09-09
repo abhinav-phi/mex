@@ -155,10 +155,16 @@ Then read this file fully before doing anything else in this session.
 - Graph performance PR #180 passed the final checks (run `34291831733`) and
   merged into `codex/0.8.1` as `d64f171`; the preceding calibration notes are
   historical. Main remains separate.
-- Telemetry v2 is implemented and locally verified on
-  `codex/0.8.1-telemetry`, based on that merge; PR/platform CI remains pending.
-  The approved random installation UUID is shared across CLI and Hub; no project
-  UUID, content, paths, queries, or contact data enters the event catalog.
+- Telemetry v2 is implemented on `codex/0.8.1-telemetry`, based on that merge,
+  and shared in draft PR #188 targeting `codex/0.8.1`. Local verification and
+  latency evidence for `9cbfab8` are retained. The follow-up context additions
+  pass 353 focused tests, typecheck/build and a separate actual-CLI benchmark;
+  fresh full and platform CI remains required. The approved random installation UUID is shared
+  across CLI and Hub. The user additionally approved existing scaffold UUIDs
+  for shared-project estimates and configured AI-tool names from project setup;
+  these cannot establish team size or identify the invoking agent. The bounded
+  reader never creates or repairs project identity. Content, paths, queries,
+  names, repository remotes, and contact data remain outside the event catalog.
   Namespaced CLI outcomes, explicit Hub actions/pages, and terminal jobs use a
   bounded per-user queue and cancellable delivery. Pure discovery/read commands
   remain quiet. CLI feedback uses the existing Hub hosted form without an

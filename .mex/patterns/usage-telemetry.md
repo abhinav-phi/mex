@@ -19,15 +19,20 @@ last_updated: 2026-09-09
 
 Read `TELEMETRY.md`, `docs/design/telemetry-v2.md`, and the closed catalog in
 `src/telemetry/schema.ts`. The shared random installation ID is approved for
-CLI/Hub repeat-use measurement. It is not a person/team identity. Contact details
-belong to the separate voluntary hosted form, with no installation ID appended.
+CLI/Hub repeat-use measurement. The user also approved the existing scaffold
+UUID for shared-project estimates and the project's configured AI-tool names.
+Neither installation counts nor shared scaffold IDs establish team size.
+Contact details belong to the separate voluntary hosted form, with no
+installation or scaffold ID appended.
 
 ## Steps
 
 1. State the product question and denominator. Separate attempts, successful
    completion, previews, applied changes, replay, and background job completion.
-2. Add only fixed names and bounded enum/numeric properties to the central
-   catalog. Never spread request bodies, arguments, error objects, URLs, or IDs.
+2. Add only fixed names and bounded approved properties to the central catalog.
+   Project context permits an existing UUIDv4 and a sorted, unique selection of
+   at most six known AI-tool names. Never spread config, request bodies,
+   arguments, error objects, URLs, or other IDs.
 3. Capture from registered CLI command ancestry or a validated Hub server action.
    Derive page categories locally. Pure discovery/read contracts, Hub polling,
    SSE and idle timers must not manufacture engagement events.
@@ -53,6 +58,22 @@ belong to the separate voluntary hosted form, with no installation ID appended.
   keep Node alive. Run the built CLI against a real hanging loopback endpoint.
 - Fixtures should inject a silent sink. Tests that enable telemetry must isolate
   `MEX_HOME`, redirect only to loopback, and deny all other egress.
+- Read project metadata through the bounded, non-mutating telemetry reader;
+  never mint a scaffold ID to fill an event. Ordinary CLI operations reuse one
+  snapshot; setup/init can reread at completion after saving configuration.
+  Hub metadata stays fixed from its first enabled event until restart.
+- Match each command's actual project selection. Graph maintenance/status use
+  their exact root with local `--root` before parent `--root`; they must not
+  borrow an ancestor scaffold. Hub capture uses its bound project root exactly.
+  Ordinary commands retain their nearest-Git-root discovery behavior.
+- `configured_ai_tools` describes project setup, not the invoking agent.
+  Allow multiple selected tools without process/account probing. Missing or
+  malformed configuration omits context; unknown tool names never enter events.
+- Count distinct installations per scaffold over a stated window, such as 28
+  completed UTC days, and label two or more as a shared-project estimate.
+  One person's several machines and copied scaffold IDs can inflate it;
+  shared installations can hide it. Anyone with project config access can
+  associate its UUID with that project.
 
 ## Verify
 

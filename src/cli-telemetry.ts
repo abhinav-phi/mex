@@ -1,11 +1,21 @@
 import type { Command } from "commander";
-import { TELEMETRY_COMMANDS, type TelemetryAttributes, type TelemetryEventName } from "./telemetry/schema.js";
+import { TELEMETRY_COMMANDS, type TelemetryAttributes, type TelemetryEventName, type TelemetryProjectContext } from "./telemetry/schema.js";
 
 /** Only names registered by Commander enter telemetry; argument values never do. */
 export function telemetryCommandPath(command: Command): string {
   const parts: string[] = [];
   for (let node: Command | null = command; node?.parent; node = node.parent) parts.unshift(node.name());
   return parts.join(".") || "mex";
+}
+
+/** Match the command's project selection; option values never enter events. */
+export function telemetryProjectLocation(command: Command, cwd = process.cwd()): { root: string; discovery: "git-root" | "exact" } {
+  const path = telemetryCommandPath(command);
+  if (["graph", "graph.status", "graph.refresh", "graph.rebuild", "graph.repair"].includes(path)) {
+    const root = command.opts().root ?? (path === "graph" ? undefined : command.parent?.opts().root);
+    return { root: typeof root === "string" ? root : cwd, discovery: "exact" };
+  }
+  return { root: cwd, discovery: "git-root" };
 }
 
 export function isTelemetryExemptCommand(commandName: string, parentName?: string, fullPath?: string): boolean {
@@ -27,15 +37,27 @@ export function createCliTelemetry(
   capture: (name: TelemetryEventName, attributes: TelemetryAttributes) => void,
   flush: () => Promise<void>,
   now: () => number = () => performance.now(),
+  readProjectContext?: (command: Command) => TelemetryProjectContext,
 ) {
-  let active: { command: string; stage: TelemetryAttributes["stage"]; started: number } | undefined;
+  let active: {
+    command: string; stage: TelemetryAttributes["stage"]; started: number;
+    context: TelemetryProjectContext; refreshContext?: () => TelemetryProjectContext;
+  } | undefined;
   return {
     start(command: Command): void {
       try {
         const path = telemetryCommandPath(command);
         if (isTelemetryExemptCommand(command.name(), command.parent?.name(), path)) return;
-        active = { command: path, stage: telemetryStage(command, path), started: now() };
-        capture("cli.command_started", { command: active.command, stage: active.stage });
+        const context = (): TelemetryProjectContext => {
+          try { return readProjectContext?.(command) ?? {}; } catch { return {}; }
+        };
+        active = {
+          command: path, stage: telemetryStage(command, path), started: now(), context: context(),
+          // Setup/init may create the first identity and tool selection after
+          // preAction. Ordinary commands reuse one snapshot for both events.
+          ...(["setup", "init"].includes(path) ? { refreshContext: context } : {}),
+        };
+        capture("cli.command_started", { ...active.context, command: active.command, stage: active.stage });
       } catch { /* Telemetry cannot change command behavior. */ }
     },
     async finish(exitCode: string | number | null | undefined): Promise<void> {
@@ -44,6 +66,7 @@ export function createCliTelemetry(
       if (!invocation) return;
       try {
         capture("cli.command_completed", {
+          ...(invocation.refreshContext?.() ?? invocation.context),
           command: invocation.command,
           stage: invocation.stage,
           outcome: exitCode == null || Number(exitCode) === 0 ? "success" : "failure",

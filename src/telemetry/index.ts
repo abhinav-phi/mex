@@ -1,8 +1,10 @@
-/** Pseudonymous, opt-out usage analytics. No project identity, content or arguments. */
+/** Pseudonymous, opt-out usage analytics. No content, names or raw arguments. */
 import { getMachineId, readMachineId, readGlobalConfig, readTelemetryPreference, setGlobalConfigKey, isDevRepo, mexHomeDir } from "../global-config.js";
 import { claimBatch, closeOutbox, enqueue, finishBatch, inspectOutbox, OUTBOX_LIMITS, purgeOutbox } from "./outbox.js";
 import { eventAttributes, makeEvent, previewEvent, TELEMETRY_ACTIONS, TELEMETRY_COMMANDS, TELEMETRY_EVENTS,
-  TELEMETRY_JOB_KINDS, TELEMETRY_PAGES, type TelemetryAttributes, type TelemetryEventName } from "./schema.js";
+  TELEMETRY_JOB_KINDS, TELEMETRY_PAGES, TELEMETRY_AI_TOOLS, type TelemetryAttributes,
+  type TelemetryEventName, type TelemetryProjectContext } from "./schema.js";
+import { readTelemetryProjectContext } from "./project-context.js";
 import { sendBatch, setEndpointForTest, TELEMETRY_ENDPOINT, type BatchRequest } from "./transport.js";
 export type { TelemetryAttributes, TelemetryEventName, TelemetryEvent } from "./schema.js";
 export { TELEMETRY_ACTIONS, TELEMETRY_COMMANDS, TELEMETRY_EVENTS, TELEMETRY_JOB_KINDS, TELEMETRY_PAGES } from "./schema.js";
@@ -61,6 +63,24 @@ export function captureEvent(name: TelemetryEventName, attributes: TelemetryAttr
       scheduled.unref();
     }
   } catch { /* Analytics never changes command results or writes to stdout/stderr. */ }
+}
+
+/** Opt-outs never trigger project discovery for ordinary telemetry captures. */
+export function getProjectTelemetryContext(startDir: string, discovery: "git-root" | "exact" = "git-root"): TelemetryProjectContext {
+  try { return checkEnabled() ? readTelemetryProjectContext(startDir, discovery) : {}; }
+  catch { return {}; }
+}
+
+/** Each Hub binds one lazy context snapshot to its own project, not process cwd. */
+export function createProjectTelemetryCapture(startDir: string): typeof captureEvent {
+  let context: TelemetryProjectContext | undefined;
+  return (name, attributes = {}) => {
+    try {
+      if (!eventAttributes(name, attributes) || !checkEnabled()) return;
+      context ??= readTelemetryProjectContext(startDir, "exact");
+      captureEvent(name, { ...attributes, ...context });
+    } catch { /* Metadata must never change the result of a Hub operation. */ }
+  };
 }
 
 function dispatch(): void {
@@ -145,20 +165,21 @@ export function disableTelemetry(): { purged: boolean } {
 /** No captures, identity creation, database repair, configuration writes, or sends. */
 export function getTelemetryInspection(): Record<string, unknown> {
   const id = readMachineId();
+  const context = readTelemetryProjectContext(process.cwd());
   return {
     schema_version: 2, ...isEnabled(), endpoint: TELEMETRY_ENDPOINT,
-    installation_id: id ?? null, queue: inspectOutbox(), limits: OUTBOX_LIMITS,
+    installation_id: id ?? null, project_context: context, queue: inspectOutbox(), limits: OUTBOX_LIMITS,
     catalog: { events: TELEMETRY_EVENTS, commands: TELEMETRY_COMMANDS, pages: TELEMETRY_PAGES,
-      actions: TELEMETRY_ACTIONS, job_kinds: TELEMETRY_JOB_KINDS },
+      actions: TELEMETRY_ACTIONS, job_kinds: TELEMETRY_JOB_KINDS, configured_ai_tools: TELEMETRY_AI_TOOLS },
     batch_example: { api_key: "<public MEX project token>", batch: [
-      previewEvent("cli.command_started", { command: "wiki.query", stage: "direct" }, id),
-      previewEvent("cli.command_completed", { command: "wiki.query", stage: "direct", outcome: "success", duration_ms: 12 }, id),
-      previewEvent("hub.page_viewed", { page: "knowledge" }, id),
+      previewEvent("cli.command_started", { ...context, command: "wiki.query", stage: "direct" }, id),
+      previewEvent("cli.command_completed", { ...context, command: "wiki.query", stage: "direct", outcome: "success", duration_ms: 12 }, id),
+      previewEvent("hub.page_viewed", { ...context, page: "knowledge" }, id),
     ] },
   };
 }
 
-/** Compatibility for old hooks; project IDs are intentionally ignored. */
+/** Compatibility for old hooks; context comes from the bounded config reader. */
 export function captureCommand(command: string, _scaffoldId?: string): void {
   captureEvent("cli.command_started", { command: command.replaceAll(" ", ".") });
 }
@@ -174,8 +195,9 @@ export function showFirstRunNotice(): boolean {
   try {
     if (!isEnabled().enabled || readGlobalConfig().firstRunNoticeShown || !process.stderr.isTTY) return false;
     process.stderr.write("\n  MEX collects pseudonymous feature usage and outcomes using a random\n"
-      + "  installation ID shared by this CLI and local Hub. No content, paths,\n"
-      + "  queries, member identities or repository IDs are included. Events are\n"
+      + "  installation ID shared by this CLI and local Hub. Events may include\n"
+      + "  an existing random scaffold UUID and configured AI-tool names. No\n"
+      + "  content, paths, queries, member identities or contact details. Events are\n"
       + "  queued locally; entries older than 7 days are dropped on next use.\n"
       + "  Inspect: mex telemetry inspect\n"
       + "  Opt out: mex telemetry disable, DO_NOT_TRACK=1 or MEX_TELEMETRY=0.\n\n");

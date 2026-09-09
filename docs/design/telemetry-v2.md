@@ -2,13 +2,20 @@
 
 Branch: `codex/0.8.1-telemetry`, based on release commit `d64f171`.
 This change targets `codex/0.8.1`; it does not authorize merging to main.
+Draft PR: [#188](https://github.com/mex-memory/mex/pull/188).
+The initial implementation and retained measurements are from `9cbfab8`.
+The subsequently approved project-context additions are locally verified in
+their separate addendum below; new full and platform CI remains required.
 
 ## Product questions and measurement definitions
 
 The shared random installation UUID is explicitly approved for CLI and Hub.
-The older scaffold UUID is omitted. An installation is the unit of measurement;
-we cannot infer people, organizations, or teams from it. Agent-generated command
-activity is included and cannot be reliably separated from human invocations.
+The user subsequently approved restoring the existing scaffold UUID and adding
+configured AI-tool names. An installation remains the repeat-use unit; multiple
+installations using one scaffold provide a shared-project signal. This cannot
+establish people, organizations, team membership, or team size. Agent-generated
+command activity is included and cannot be reliably separated from human
+invocations, and configured tools do not identify the invoking agent.
 
 | Question | Definition |
 | --- | --- |
@@ -18,6 +25,8 @@ activity is included and cannot be reliably separated from human invocations.
 | Do installations return? | UTC day-1/day-7 retention after first meaningful activity: another qualifying activity on that exact later day. Offer a separate rolling-week measure rather than calling both D7 retention. |
 | Is use habitual? | DAU/WAU and DAU/MAU of qualifying installation activity; also active days per installation per week. Use completed calendar windows and original event timestamps. |
 | Is the Hub useful? | Returning installations with page navigation or explicit actions; views by category; successful apply and terminal job outcomes. A session start, idle timer, polling request, or SSE reconnect is not active use. |
+| Does a project appear to be shared? | During the last 28 completed UTC days, count distinct installation IDs with qualifying activity per nonempty `scaffold_id`. Two or more is a shared-project estimate. For an adoption percentage, divide qualifying scaffold IDs with at least two installations by all observed qualifying scaffold IDs; report missing-context coverage separately. |
+| Which AI integrations are configured? | Break down observed project/installation activity by membership in `configured_ai_tools`. Label this configured-tool adoption, not actual agent usage. Selections can overlap, so percentages need not sum to 100%; state whether the denominator is distinct installations or distinct scaffold IDs. |
 
 Qualifying CLI engagement is a completed product operation, including a failed
 attempt. Exclude `commands`, `completion`, `feedback`, `log`, `heartbeat`,
@@ -28,6 +37,20 @@ analysis filter, not a claim about whether an action was automated. CLI
 count as invocations, not additional mutations. CLI completion does not expose
 replay detail, so CLI invocations must not be presented as unique mutations.
 
+Shared-project estimates can overcount one person's several machines or copied
+scaffolds that retain an ID, and undercount users sharing one installation.
+Reset installation IDs also change the count. A scaffold UUID has no embedded
+name, but anyone with access to a project's config can associate it with that
+project. Do not present the signal as verified team accounts or anonymized
+project identities. Missing context is unknown, not a new or single-user
+project.
+
+`configured_ai_tools` is the saved project selection: `claude`, `codex`,
+`copilot`, `cursor`, `opencode`, and/or `windsurf`. Several selections are valid;
+the payload uses a sorted, unique array of at most six names. No running
+processes, parent shells, editor sessions, or account data are inspected. The
+selection can be stale or differ from the agent actually invoking MEX.
+
 Do not join voluntary research contact details to installation IDs. The CLI
 and Hub open the same hosted form without identifiers in URL parameters.
 The form fields and follow-up consent are managed outside this repository.
@@ -35,7 +58,23 @@ The form fields and follow-up consent are managed outside this repository.
 ## Implementation
 
 - `src/telemetry/schema.ts` defines the complete vocabulary and reconstructs
-  allowlisted payloads. Stored events are revalidated before delivery.
+  allowlisted payloads. All six events accept optional `scaffold_id` and
+  `configured_ai_tools`; a scaffold ID must be exactly a UUIDv4, and tool values
+  come from the six-name catalog. Stored events are revalidated before delivery.
+  These are additive fields in unreleased schema v2; older queued v2 events
+  without them remain valid.
+- `src/telemetry/project-context.ts` reads bounded existing config bytes through
+  a read-only, file-identity-checked snapshot. It never initializes, repairs, or
+  mints project identity. Missing, malformed, unreadable, or unsafe config omits
+  metadata; invalid IDs and unknown tool names are excluded. Ordinary CLI
+  operations reuse one snapshot, while setup/init reread at completion for newly
+  saved configuration. The Hub binds a snapshot to its project on the first
+  enabled event; subsequent config changes appear after Hub restart. No project
+  names, Git remotes, paths, content, or contact details enter that projection.
+  Graph maintenance/status metadata follows the exact selected root, honoring
+  local `--root` before the parent option; Hub metadata also uses its exact root.
+  A missing nested scaffold never falls back to an unrelated ancestor identity.
+  Other CLI operations retain nearest-Git-root discovery.
 - `src/cli-telemetry.ts` uses registered Commander ancestry, derives a closed
   stage value, and completes each action once. Action errors retain exit codes
   and output while allowing bounded telemetry cleanup. TUI/watch launcher
@@ -65,6 +104,11 @@ production dependencies. The published package now includes `TELEMETRY.md`. The 
 
 ## Performance verification
 
+The methodology below applies to future comparison runs. The retained results
+are historical evidence for `9cbfab8`, before optional project context. The new
+reader and added payload fields have separate measurements recorded in the
+validation addendum.
+
 The standalone benchmark runs actual built CLI entry points from process spawn
 through natural close. It pairs a preserved release build with this candidate,
 interleaves conditions, and compares telemetry off, healthy loopback delivery,
@@ -87,7 +131,7 @@ npm run benchmark:telemetry:test
 npm run benchmark:telemetry -- --baseline /absolute/baseline/dist/cli.js --output test-results/telemetry.json
 ```
 
-### Measured result
+### Historical measured result: `9cbfab8`
 
 [Retained evidence](telemetry-performance-results.json) includes raw samples and
 paired differences. On the local Apple M4 / Node 22.17.1 host, each of 16 CLI
@@ -122,9 +166,13 @@ Internet/TLS latency and production delivery rates are not measured by the
 loopback benchmark. Short-only usage can defer events repeatedly until enough
 runtime is available for a send or a Hub session drains the queue. The local
 measurements cover backlogs up to 50 events; maximum-cap queue timing is not
-claimed. The full implementation validation record follows below.
+claimed. The initial implementation validation record follows below.
 
-## Verify Checklist
+## Historical Verify Checklist: `9cbfab8`
+
+These results belong to the original telemetry implementation, before the
+scaffold/tool follow-up. They remain retained evidence, not a pass for the
+current working tree.
 
 1. **Public surface/declarations — pass.** `src/index.ts` and root emitted declaration bytes are unchanged; telemetry remains internal.
 2. **Read and write safety — pass.** Pure reads skip capture; page input is authenticated and bounded; queued data is revalidated; explicit opt-out owns preference/cleanup.
@@ -133,3 +181,56 @@ claimed. The full implementation validation record follows below.
 5. **Packaging/evaluator — pass.** Full build and fresh packed-install/Project Hub/official-skills smoke pass. The packaged CLI hash matches the retained benchmark candidate. No evaluator or graph protocol change requires a new evaluator run.
 6. **Diff and scope — pass.** `git diff --check` passes. Changes are limited to telemetry, feedback, supporting tests/CI and documentation. Generated indexes, checkout local state and dist remain unstaged; the real graph database hash is unchanged.
 7. **Graph/Wiki protocols — pass.** Existing command, application-adapter, golden protocol, immutable-read and Hub integration suites pass. No graph/Wiki protocol, error, ordering, cursor, or maintenance contract changed. macOS/Windows CI and the pinned release-performance gate remain required before release.
+
+## Project-context validation addendum
+
+The follow-up adds only optional existing scaffold UUID/configured-tool context.
+Its baseline is the initial telemetry revision `9cbfab8`, whose Node 22/24,
+macOS/Windows, browser and release-performance CI all passed in run
+`34361480149`. Those results are historical; the follow-up has separate local
+checks and requires new CI before merge.
+
+[Retained project-context measurements](telemetry-project-context-performance.json)
+compare the preserved `9cbfab8` build against candidate CLI SHA-256
+`99ebd1b40c434de47bcfdbe5db74af43a5be27afa84c96d0bc401cbdb52e067b`.
+The Apple M4 / Node 22.17.1 run used five warmups and 20 samples for each of 16
+groups, plus pristine-home and module probes. Pass `--project-context` to the
+benchmark command above: this creates an isolated existing scaffold/tool
+configuration and uses a deliberate missing source path for the failed check.
+
+The enabled metadata helper measured p95 **0.221 ms** with healthy ingestion,
+**0.210 ms** with refused connections and **0.659 ms** with hanging ingestion.
+Capture-call p95 was at most **2.466 ms**, first capture at most **3.351 ms**,
+and the longest observed flush was **29.130 ms**.
+
+Whole-process timing was noisy, so it does not establish zero overhead or a
+speedup. These are paired candidate-minus-`9cbfab8` differences in milliseconds:
+
+| Command result | Disabled p50 / p95 | Healthy p50 / p95 | Refused p50 / p95 | Hanging p50 / p95 |
+| --- | --- | --- | --- | --- |
+| Success | -12.129 / 4.260 | 7.895 / 86.162 | -13.317 / -0.500 | 1.304 / 88.612 |
+| Failure | -3.250 / 89.533 | -22.682 / 11.645 | -4.699 / 72.043 | -16.031 / 3.420 |
+
+The disabled comparison itself includes a roughly 90 ms p95 difference, where
+project config is not read. Retain this noise rather than treating positive
+tails as measured metadata cost or negative medians as an optimization. The
+module probe isolates the small metadata cost; the full CLI run verifies real
+process cleanup, outputs and delivery under the tested conditions. These are
+local observations, not a portable latency guarantee.
+
+Every received and queued event passed exact existing UUID/tool checks and
+private-field rejection. All processes exited naturally, sockets and delivery
+claims were cleared, disabled pristine homes stayed empty, and canonical
+fixture bytes were unchanged. Healthy success accounted for all 50 events;
+healthy failure received 49 and retained the final completion locally, for a
+50-event union. Refused/hanging queues retained 50 events in 49,152 bytes. This
+also verifies the documented best-effort delivery boundary. All timing samples
+are retained without event/installation/scaffold IDs or private fixture values.
+
+1. **Public surface/declarations — pass.** `src/index.ts` is unchanged, and the final build's root declaration bytes match the preserved `9cbfab8` build. The new reader and metadata types remain internal.
+2. **Read and write safety — pass.** Metadata reads never mint identity or modify project state. Opt-outs skip discovery; unavailable or unsafe config omits context. Tests cover nested projects, exact Graph/Hub roots, parent/local Graph option precedence, read-only inspection, setup completion refresh and independent Hub snapshots.
+3. **Deterministic bounds — pass.** Discovery is capped at 64 ancestors and 64 KiB of config. Only an existing UUIDv4 and at most six known, sorted, unique tool names survive projection. File identity, UTF-8, schema, symlink/junction and hardlink checks remain enforced. Queue and transport bounds are unchanged.
+4. **Tests/typecheck — pass.** This follow-up passed 353 distinct tests across 15 files covering schema, reader, capture, CLI, Hub wiring/actions/jobs, delivery, capabilities, feedback and architecture. The final root-attribution correction was rechecked with 142 tests across six files, followed by workspace typecheck. Seven standalone benchmark-harness tests pass. The previous full regression, web and browser counts above belong to `9cbfab8`; no new full-suite result is claimed here.
+5. **Packaging/evaluator — pass for the changed scope.** Full build passes, and the final built CLI is exercised by the dedicated latency harness. Package layout, dependencies and frontend assets are unchanged by this follow-up; the initial packed-install smoke remains historical evidence. No evaluator or Graph protocol change requires another evaluator run.
+6. **Diff and scope — pass.** `git diff --check` passes, including the retained benchmark report. Source, tests, CI and docs are the intended changes; generated indexes, local state and dist remain excluded. The real graph database still matches its pre-change SHA-256 `0b6dd1f8e161f19e4a15111f125a83d2245f01c01e791f21e38f2c8a4a61af41`.
+7. **Graph/Wiki protocols — pass for the changed scope.** No Graph/Wiki payload, error, ordering, cursor or maintenance implementation changed. The focused CLI/capability/immutable-read regressions pass; the attribution correction changes only which safe telemetry context is selected. Fresh full and platform CI remains required before merge.

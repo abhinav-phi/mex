@@ -107,6 +107,9 @@ jobs:
           test/capabilities.test.ts
           test/telemetry.test.ts
           test/telemetry-delivery.test.ts
+          test/telemetry-context-schema.test.ts
+          test/telemetry-project-context.test.ts
+          test/telemetry-project-capture.test.ts
           src/logging/__tests__/policy.test.ts
           src/wiki/operations/__tests__/durability.test.ts
           src/wiki/operations/__tests__/identity-precision.test.ts

@@ -6,9 +6,9 @@ import { pathToFileURL } from "node:url";
 import { findConfig, getScaffoldIdentity } from "./config.js";
 import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporter.js";
 import { VERSION } from "./version.js";
-import { captureEvent, flush, isEnabled, getTelemetryInspection, disableTelemetry, showFirstRunNotice } from "./telemetry/index.js";
+import { captureEvent, flush, isEnabled, getProjectTelemetryContext, getTelemetryInspection, disableTelemetry, showFirstRunNotice } from "./telemetry/index.js";
 import { setGlobalConfigKey } from "./global-config.js";
-import { createCliTelemetry } from "./cli-telemetry.js";
+import { createCliTelemetry, telemetryProjectLocation } from "./cli-telemetry.js";
 export { isTelemetryExemptCommand } from "./cli-telemetry.js";
 import { buildLoggingCommand } from "./logging/cli.js";
 import { runFeedback, maybeShowInvite, dismissInvite, enableInvite } from "./feedback/index.js";
@@ -172,7 +172,10 @@ async function runTuiCommand(): Promise<void> {
 
 // ── Telemetry hooks ──
 
-const cliTelemetry = createCliTelemetry(captureEvent, flush);
+const cliTelemetry = createCliTelemetry(captureEvent, flush, undefined, (command) => {
+  const { root, discovery } = telemetryProjectLocation(command);
+  return getProjectTelemetryContext(root, discovery);
+});
 program.hook("preAction", (_thisCommand, actionCommand) => cliTelemetry.start(actionCommand));
 program.hook("postAction", () => cliTelemetry.finish(process.exitCode));
 

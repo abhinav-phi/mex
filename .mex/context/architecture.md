@@ -23,7 +23,7 @@ edges:
 # Broad overview: keep this empty unless a claim depends on a few specific symbols.
 # Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh:64:<hex>" }
 grounds_to: []
-last_updated: 2026-09-06
+last_updated: 2026-09-09
 mex:
   id: mx_01M1M0CJ5C5XQV0HM5VM787WQS
   type: architecture
@@ -99,7 +99,7 @@ revision: 1
   can use Claude Code, Codex, or OpenCode, and prompt-only fallback works with
   any file-reading agent.
 - A local browser connects only to the loopback Project Hub and exchanges a one-use bootstrap token for a private session.
-- **PostHog ingestion** — optional pseudonymous CLI/Hub events share one random installation UUID, with no project identity or content. A bounded per-user outbox and cancellable Node HTTP transport replace the SDK. Development checkouts and opt-out controls disable collection/delivery; see `TELEMETRY.md`.
+- **PostHog ingestion** — optional pseudonymous CLI/Hub events share one random installation UUID. A bounded read-only configuration snapshot can add the existing scaffold UUID for shared-project estimates and known configured AI-tool names; it never identifies the invoking agent or creates project identity. Names, remotes, paths, content, queries, and contact details remain excluded. A bounded per-user outbox and cancellable Node HTTP transport replace the SDK. Development checkouts and opt-out controls disable collection/delivery; see `TELEMETRY.md`.
 
 <!-- mex:entity
 id: mx_01M1M0CJ1E1X7BW1Q7PMGPVCRC
