@@ -8,6 +8,7 @@ import { Button } from "../components/primitives/button";
 import { formatTime, StatePanel, StatusPill } from "../components/ui";
 import styles from "../styles/shell.module.css";
 import { JobLifecycleObserver } from "./JobLifecycleObserver";
+import { PageViewObserver } from "./PageViewObserver";
 import { HubSidebar } from "./HubSidebar";
 
 /**
@@ -181,6 +182,7 @@ export function HubLayout({
 
   return (
     <div className={styles.viewportFrame}>
+      <PageViewObserver />
       {isOverview ? null : <JobLifecycleObserver channelScope={session.expiresAt} />}
       <a className={styles.skipLink} href="#main-content">Skip to main content</a>
       <HubSidebar capabilities={capabilities} home={trustedHome} />

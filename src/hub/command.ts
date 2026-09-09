@@ -12,6 +12,8 @@ import { createRepositoryGraphPort } from "../graph/application-adapter.js";
 import { createRepositoryWikiPort } from "../wiki/application-adapter.js";
 import { createRepositoryTeamWorkflowPort } from "../team/workflow/repository-team-workflow-port.js";
 import { createSpecReadService } from "../team/specs/index.js";
+import { createProjectTelemetryCapture, startHubTelemetry } from "../telemetry/index.js";
+import { emitHubTelemetry } from "./telemetry.js";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,6 +31,7 @@ export interface RunHubCommandOptions {
  * boundary for local schema migration and interrupted-job reconciliation.
  */
 export async function runHubCommand(options: RunHubCommandOptions): Promise<void> {
+  const captureEvent = createProjectTelemetryCapture(options.projectRoot);
   // Bind and verify the tracked scaffold identity before the explicit Hub
   // startup boundary creates or migrates any local state.
   const team = await createRepositoryTeamWorkflowPort(options.projectRoot);
@@ -49,9 +52,11 @@ export async function runHubCommand(options: RunHubCommandOptions): Promise<void
       ...createWikiJobExecutors(wiki),
     },
     shutdownTimeoutMs: 60_000,
+    telemetry: captureEvent,
   });
   jobs.initialize();
   let server: Awaited<ReturnType<typeof startHubNodeServer>> | undefined;
+  let stopTelemetry: (() => Promise<void>) | undefined;
   try {
     const bootstrapToken = createBootstrapToken();
     let expectedOrigin: string | null = null;
@@ -73,10 +78,12 @@ export async function runHubCommand(options: RunHubCommandOptions): Promise<void
       wiki,
     });
     const assets = new HubAssetManifest(resolveHubAssetRoot());
-    const app = createHubApp({ security, services, jobs, assets });
+    const app = createHubApp({ security, services, jobs, assets, telemetry: captureEvent });
 
     server = await startHubNodeServer({ app, port: options.port });
     expectedOrigin = server.origin;
+    stopTelemetry = startHubTelemetry();
+    emitHubTelemetry(captureEvent, "hub.session_started", {});
     const bootstrapUrl = `${server.origin}/#token=${encodeURIComponent(bootstrapToken)}`;
 
     process.stdout.write(`\nProject Hub running at ${server.origin}\n`);
@@ -89,7 +96,11 @@ export async function runHubCommand(options: RunHubCommandOptions): Promise<void
     try {
       await server?.close();
     } finally {
-      await jobs.shutdown();
+      try {
+        await jobs.shutdown();
+      } finally {
+        await stopTelemetry?.();
+      }
     }
   }
 }

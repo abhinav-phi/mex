@@ -1329,8 +1329,9 @@ export function defineTeamInboxSpecAuthoringContract(
       });
     });
 
-    it("fails closed across every canonical/local containment boundary and root swap", async () => {
-      for (const target of ["local", "proposal", "activity", "spec"] as const) {
+    it.each(["local", "proposal", "activity", "spec"] as const)(
+      "fails closed across the %s containment boundary",
+      async (target) => {
         await withHarness(factory, "empty", async (harness) => {
           const envelope = await harness.prepareContainmentEnvelope(target);
           await harness.installEscapingAncestor(target);
@@ -1340,8 +1341,10 @@ export function defineTeamInboxSpecAuthoringContract(
           });
           expect((await harness.snapshot()).outsideDigest).toBe(before.outsideDigest);
         });
-      }
+      },
+    );
 
+    it("fails closed after a project root swap", async () => {
       await withHarness(factory, "empty", async (harness) => {
         const envelope = await harness.port.previewInbox(command(
           "inbox_contract_root_swap",

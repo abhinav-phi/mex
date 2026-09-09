@@ -1259,13 +1259,15 @@ describe("mex capabilities manifest", () => {
     expect(capabilities?.options.map((option) => option.long)).toEqual(["--json"]);
     expect(isTelemetryExemptCommand("capabilities", "mex")).toBe(true);
     expect(isTelemetryExemptCommand("list", "member")).toBe(true);
-    expect(isTelemetryExemptCommand("record", "activity")).toBe(true);
+    expect(isTelemetryExemptCommand("record", "activity")).toBe(false);
     expect(isTelemetryExemptCommand("list", "workstream")).toBe(true);
     expect(isTelemetryExemptCommand("save", "draft")).toBe(true);
     expect(isTelemetryExemptCommand("approve", "proposal")).toBe(true);
     expect(isTelemetryExemptCommand("list", "relay")).toBe(true);
     expect(isTelemetryExemptCommand("list", "spec")).toBe(true);
     expect(isTelemetryExemptCommand("sync", "skills")).toBe(true);
+    expect(isFirstRunNoticeExemptCommand("telemetry")).toBe(true);
+    expect(isFirstRunNoticeExemptCommand("config")).toBe(true);
     expect(isFirstRunNoticeExemptCommand("capabilities")).toBe(true);
     expect(isFirstRunNoticeExemptCommand("member")).toBe(true);
     expect(isFirstRunNoticeExemptCommand("activity")).toBe(true);

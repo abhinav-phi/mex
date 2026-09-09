@@ -4,6 +4,7 @@ Lookup table for project-specific pattern files.
 
 | Pattern | Use when |
 |---------|----------|
+| [`usage-telemetry.md`](usage-telemetry.md) | Changing CLI/Hub event coverage, opt-out, queue delivery, or usage measurement |
 | [`contract-first-external-adapter.md`](contract-first-external-adapter.md) | Freezing a consumer port before an independently owned implementation is pinned |
 | [`fresh-graph-hub-integration.md`](fresh-graph-hub-integration.md) | Connecting a real graph read or maintenance capability to the local Project Hub |
 | [`local-first-team-state.md`](local-first-team-state.md) | Adding canonical team artifacts, read-only repository observations, or per-user SQLite state |

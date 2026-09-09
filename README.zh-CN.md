@@ -386,17 +386,17 @@ mex capabilities --json
 
 MEX 不会将其权威记录、Graph、Wiki 索引、草稿、身份选择或 Hub 会话上传到 MEX 服务。它不提供自动的团队数据传输：共享依靠你执行的常规 Git 操作。Hub 绑定到回环地址，MEX 的本地检索层无需模型凭证。
 
-MEX 具有**使用假名标识的 CLI 使用遥测**，默认启用，除非你选择退出。符合条件的调用最多发送一个事件。MEX 允许发送的字段包括随机机器标识符、命令名、MEX 版本、操作系统、Node 版本，以及在已有身份可用时的基础结构标识符；PostHog SDK 还会添加其库名称和版本元数据。MEX 不会向载荷添加命令参数、文件路径、仓库名、文件内容或 IP 地址，但接收服务可以观察到常规传输元数据。
+MEX 具有**使用假名标识的 CLI 和 Hub 使用遥测**，默认启用，除非你选择退出。遥测记录命令名称和结果、Hub 的明确操作、页面类别及后台任务结果。两者共用一个随机安装 UUID，以衡量重复使用情况。如果配置可用，事件还会包含已有的 scaffold UUID，用于估算项目的共享使用情况，以及项目配置中选定的 AI 工具名称；这些信息不能识别当前调用命令的智能体，也不能确定团队人数。能访问项目配置的人可以将该 scaffold UUID 与项目关联。不会发送名称、仓库远程地址、参数值、路径、内容、搜索文本或联系方式。接收服务可以观察到常规传输元数据。事件使用有大小限制的本地队列；CLI 退出时只短暂等待，离线发送不会改变命令结果。
 
 通过以下命令检查或关闭遥测：
 
 ```bash
 mex telemetry inspect
 mex telemetry status
-mex config set telemetry off
+mex telemetry disable
 ```
 
-也可以通过 `MEX_TELEMETRY=0` 或 `DO_NOT_TRACK=1` 禁用。控制选项和精确载荷见[遥测政策](https://github.com/mex-memory/mex/blob/v0.8.0/TELEMETRY.md)。连接到 MEX 的编程智能体可能有自己的网络和遥测行为；这些由相应工具决定，而非 MEX。
+也可以通过 `MEX_TELEMETRY=0` 或 `DO_NOT_TRACK=1` 禁用。控制选项和精确载荷见[遥测政策](TELEMETRY.md)。连接到 MEX 的编程智能体可能有自己的网络和遥测行为；这些由相应工具决定，而非 MEX。
 
 <a id="what-mex-is-not"></a>
 

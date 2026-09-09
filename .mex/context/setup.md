@@ -82,7 +82,7 @@ revision: 1
 ## Environment Variables
 
 - No environment variable is required for normal local CLI/library operation.
-- `MEX_TELEMETRY=0` or `DO_NOT_TRACK=1` (optional) — disable anonymous telemetry; the development repository also disables it automatically.
+- `MEX_TELEMETRY=0` or `DO_NOT_TRACK=1` (optional) — disable pseudonymous CLI/Hub telemetry; the development repository also disables it automatically.
 - `MEX_HOME` (optional) — override the base directory used for global MEX configuration, primarily for isolation in tests.
 - `MEX_DEV` (optional) — force development-repository behavior, including telemetry suppression.
 - `MEX_ENFORCE_RELEASE_BUDGETS=1` (release CI only) — enforce the pinned release resource budgets on the calibrated runner.

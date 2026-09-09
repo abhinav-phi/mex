@@ -386,17 +386,17 @@ As estruturas existentes em Markdown continuam válidas, e as consultas ao Graph
 
 O MEX não envia seus registros canônicos, Graph, índice da Wiki, rascunhos, seleção de identidade ou sessões do Hub para um serviço MEX. Ele não oferece transporte automático entre integrantes da equipe: o compartilhamento acontece pelas ações normais do Git que você executa. O Hub escuta no endereço de loopback, e a camada local de consulta do MEX não exige credenciais de modelo.
 
-O MEX tem **telemetria pseudônima de uso da CLI**, ativada por padrão, a menos que você a desative. Uma execução elegível envia no máximo um evento. Os campos permitidos pelo MEX são um identificador aleatório da máquina, nome do comando, versão do MEX, sistema operacional, versão do Node e — quando uma identidade existente está disponível — um identificador da estrutura MEX; o SDK do PostHog também acrescenta metadados com o nome e a versão de sua biblioteca. O MEX não inclui argumentos de comandos, caminhos de arquivos, nomes de repositórios, conteúdo de arquivos ou endereços IP nos dados enviados, embora o serviço de ingestão possa observar os metadados normais de transporte.
+O MEX tem **telemetria pseudônima de uso da CLI e do Hub**, ativada por padrão, a menos que você a desative. Registra nomes de comandos, resultados, ações explícitas do Hub, categorias de páginas e resultados de tarefas. Ambos usam um UUID aleatório da instalação para medir o uso recorrente. Quando disponíveis, também são enviados o UUID existente do scaffold para estimar o uso compartilhado de um projeto e os nomes das ferramentas de IA selecionadas na configuração; esses dados não identificam o agente que executa o comando nem comprovam o tamanho da equipe. Quem tem acesso à configuração pode associar o UUID do scaffold àquele projeto. Não são enviados nomes, remotos de repositórios, argumentos, caminhos, conteúdo, pesquisas ou dados de contato. O serviço receptor pode observar metadados normais de transporte. Uma fila local limitada e uma breve espera ao encerrar a CLI permitem adiar o envio sem alterar o resultado do comando.
 
 Confira ou desative a telemetria com:
 
 ```bash
 mex telemetry inspect
 mex telemetry status
-mex config set telemetry off
+mex telemetry disable
 ```
 
-Ela também pode ser desativada com `MEX_TELEMETRY=0` ou `DO_NOT_TRACK=1`. Consulte a [política de telemetria](https://github.com/mex-memory/mex/blob/v0.8.0/TELEMETRY.md) para conhecer os controles e os dados exatos enviados. Os agentes de programação conectados ao MEX podem ter seus próprios comportamentos de rede e telemetria; isso é regido por essas ferramentas, não pelo MEX.
+Ela também pode ser desativada com `MEX_TELEMETRY=0` ou `DO_NOT_TRACK=1`. Consulte a [política de telemetria](TELEMETRY.md) para conhecer os controles e os dados exatos enviados. Os agentes de programação conectados ao MEX podem ter seus próprios comportamentos de rede e telemetria; isso é regido por essas ferramentas, não pelo MEX.
 
 <a id="what-mex-is-not"></a>
 
