@@ -310,6 +310,13 @@ export function persistMovedGroundings(
     const scaffoldFile = relative(config.projectRoot, filePath).replaceAll("\\", "/");
     let dirty = false;
     const pendingMoves = new Map<string, { previous: GroundedSource; newId: string }>();
+    // Per-node migration is atomic (#128): a node grounded both in
+    // grounds_to and as an inline mex:// anchor must migrate through ONE
+    // resolution. The grounds_to pass records its resolution per old id so
+    // the anchor pass can follow it even when the store has already lost
+    // the old node's rows (no baseline, no fingerprint, no alias) — instead
+    // of skipping the anchor and leaving GROUNDING_GONE behind.
+    const migratedNodes = new Map<string, string>();
     for (const grounding of groundings) {
       const aliasedNode = runtime.graph.getNode(grounding.node);
       if (aliasedNode) {
@@ -320,6 +327,7 @@ export function persistMovedGroundings(
         const fingerprint = runtime.reconciler.getFingerprint(aliasedNode.id);
         if (fingerprint) grounding.fingerprint = serializeFingerprint(fingerprint);
         moveGroundingBaseline(scaffoldFile, oldId, grounding.node, runtime, pendingMoves, grounding);
+        migratedNodes.set(oldId, grounding.node);
         dirty = true;
         moved += 1;
         continue;
@@ -336,6 +344,7 @@ export function persistMovedGroundings(
       const fingerprint = runtime.reconciler.getFingerprint(resolution.nodeId);
       if (fingerprint) grounding.fingerprint = serializeFingerprint(fingerprint);
       moveGroundingBaseline(scaffoldFile, oldId, grounding.node, runtime, pendingMoves, grounding);
+      migratedNodes.set(oldId, grounding.node);
       dirty = true;
       moved += 1;
     }
@@ -343,6 +352,13 @@ export function persistMovedGroundings(
     let anchoredContent = groundedContent;
     const anchors = findMexAnchors(anchoredContent);
     for (const anchor of [...anchors].reverse()) {
+      const migratedId = migratedNodes.get(anchor.nodeId);
+      if (migratedId !== undefined) {
+        if (migratedId === anchor.nodeId) continue;
+        anchoredContent = rewriteMexAnchor(anchoredContent, anchor, migratedId);
+        moved += 1;
+        continue;
+      }
       const aliasedNode = runtime.graph.getNode(anchor.nodeId);
       if (aliasedNode) {
         if (aliasedNode.id === anchor.nodeId) continue;
