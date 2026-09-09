@@ -234,3 +234,26 @@ are retained without event/installation/scaffold IDs or private fixture values.
 5. **Packaging/evaluator — pass for the changed scope.** Full build passes, and the final built CLI is exercised by the dedicated latency harness. Package layout, dependencies and frontend assets are unchanged by this follow-up; the initial packed-install smoke remains historical evidence. No evaluator or Graph protocol change requires another evaluator run.
 6. **Diff and scope — pass.** `git diff --check` passes, including the retained benchmark report. Source, tests, CI and docs are the intended changes; generated indexes, local state and dist remain excluded. The real graph database still matches its pre-change SHA-256 `0b6dd1f8e161f19e4a15111f125a83d2245f01c01e791f21e38f2c8a4a61af41`.
 7. **Graph/Wiki protocols — pass for the changed scope.** No Graph/Wiki payload, error, ordering, cursor or maintenance implementation changed. The focused CLI/capability/immutable-read regressions pass; the attribution correction changes only which safe telemetry context is selected. Fresh full and platform CI remains required before merge.
+
+## Windows DNS test correction
+
+At `e725551`, CI run `34375530581` passed Node 22/24, macOS portability,
+browser and release-performance checks. Windows passed 522 tests and skipped
+three; one real DNS cancellation test measured 174.8385 ms against its 150 ms
+elapsed limit. The new scaffold/tool tests passed on Windows.
+
+That test used a 10 ms sleep to assume dispatch had reached its loopback DNS
+server. It now waits for the first observed UDP query and confirms it is still
+pending before timing `flush`. This removes setup ambiguity without changing
+the 25 ms production grace, 150 ms elapsed assertion, real `ECANCELLED` result,
+stopped-query assertion or retained-event check. No production code changed.
+The original log does not isolate whether cold setup, scheduling or local
+cleanup caused its elapsed overrun; a fresh Windows run must verify the fix.
+
+1. **Public surface/declarations — pass.** Test/documentation-only correction; public source and built declarations are unchanged.
+2. **Read/write safety — pass.** Real DNS remains pinned to a loopback blackhole. Cancellation and retained queue assertions are preserved.
+3. **Bounds — pass.** Existing runtime and elapsed bounds are unchanged; waiting for the first query has a one-second setup guard.
+4. **Tests/typecheck — pass locally.** All 45 delivery tests and workspace typecheck pass. Windows verification is pending the new CI run.
+5. **Packaging/evaluator — not affected.** No runtime, packaging, asset or evaluator changes; the retained built-CLI measurements remain applicable.
+6. **Diff/scope — pass.** `git diff --check` passes. Only the delivery test, this validation record and the telemetry test guidance changed.
+7. **Graph/Wiki protocols — not affected.** No Graph/Wiki code, database, protocol, error or maintenance change.

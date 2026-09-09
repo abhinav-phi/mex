@@ -366,8 +366,12 @@ describe("silent bounded delivery", () => {
       // DNS is hard-pinned to the blackhole above before any resolver call; no
       // PostHog address can be resolved and no production connection can start.
       __setTelemetryEndpointForTest(null);
+      const firstQuery = once(blackhole, "message", { signal: AbortSignal.timeout(1000) });
       captureEvent("cli.command_started", { command: "check" });
-      await pause(10);
+      // Observe an in-flight query before measuring cancellation. A fixed sleep
+      // can leave scheduled dispatch and cold HTTPS setup inside this interval.
+      await firstQuery;
+      expect(callbacks).toEqual([]); expect(cancel).not.toHaveBeenCalled();
       const started = performance.now(); await flush({ deadlineMs: 25 });
       expect(performance.now() - started).toBeLessThan(150);
       await pause(10);

@@ -56,6 +56,10 @@ installation or scaffold ID appended.
   without a daemon, an untouched disk file may physically remain longer.
 - A request timeout alone is insufficient if unresolved DNS or referenced sockets
   keep Node alive. Run the built CLI against a real hanging loopback endpoint.
+- For a cancellation test, await the actual loopback request/query before
+  timing the flush. Fixed setup sleeps can put first-use transport initialization
+  inside the cancellation interval. Preserve the production grace and elapsed
+  limit, and assert real cancellation, stopped queries and retained queue data.
 - Fixtures should inject a silent sink. Tests that enable telemetry must isolate
   `MEX_HOME`, redirect only to loopback, and deny all other egress.
 - Read project metadata through the bounded, non-mutating telemetry reader;
