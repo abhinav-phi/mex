@@ -495,7 +495,8 @@ const graphCommand = program
       const { runGraph } = await import("./graph/cli-graph.js");
       await runGraph({ root: opts.root, json: opts.json });
     } catch (err) {
-      console.error((err as Error).message);
+      const { describeGraphMaintenanceFailure } = await import("./graph/cli-graph.js");
+      console.error(describeGraphMaintenanceFailure(err));
       process.exit(1);
     }
   });
@@ -531,7 +532,8 @@ graphCommand
         json: opts.json ?? graphCommand.opts().json,
       });
     } catch (err) {
-      console.error((err as Error).message);
+      const { describeGraphMaintenanceFailure } = await import("./graph/cli-graph.js");
+      console.error(describeGraphMaintenanceFailure(err));
       process.exit(1);
     }
   });
@@ -549,7 +551,8 @@ graphCommand
         json: opts.json ?? graphCommand.opts().json,
       });
     } catch (err) {
-      console.error((err as Error).message);
+      const { describeGraphMaintenanceFailure } = await import("./graph/cli-graph.js");
+      console.error(describeGraphMaintenanceFailure(err));
       process.exit(1);
     }
   });

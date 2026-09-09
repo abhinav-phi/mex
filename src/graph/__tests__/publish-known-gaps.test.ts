@@ -53,3 +53,27 @@ describe("publishing a candidate with known gaps", () => {
   }, 60_000);
 
 });
+
+describe("a failed publication explains itself", () => {
+  it("reports the diagnostics the error carries, not just its headline", async () => {
+    const { describeGraphMaintenanceFailure } = await import("../cli-graph.js");
+    const { GraphMaintenanceError } = await import("../maintenance.js");
+    const described = describeGraphMaintenanceFailure(new GraphMaintenanceError(
+      "GRAPH_CANDIDATE_INVALID",
+      "The isolated graph candidate validated as degraded; the live graph was not replaced.",
+      [
+        { code: "GRAPH_SOURCE_FILE_SKIPPED", severity: "warning", message: "too large", path: "src/big.ts" },
+        { code: "GRAPH_PARSE_DEGRADED", severity: "warning", message: "1 partial", remediation: [{ label: "Rebuild", command: "mex graph rebuild" }] },
+      ],
+    ));
+    expect(described).toContain("Observed 2 diagnostic(s)");
+    expect(described).toContain("GRAPH_SOURCE_FILE_SKIPPED [src/big.ts]");
+    expect(described).toContain("GRAPH_PARSE_DEGRADED");
+    expect(described).toContain("Next: mex graph rebuild");
+  });
+
+  it("passes a plain error through unchanged", async () => {
+    const { describeGraphMaintenanceFailure } = await import("../cli-graph.js");
+    expect(describeGraphMaintenanceFailure(new Error("boom"))).toBe("boom");
+  });
+});
