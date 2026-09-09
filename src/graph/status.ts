@@ -12,6 +12,7 @@ import {
   statSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { isSameResolvedPath } from "../paths.js";
 import { promisify } from "node:util";
 import type {
   GraphParseHealth,
@@ -35,7 +36,7 @@ import {
   createGraphSemanticInputLedger,
   discoverBoundedGraphPaths,
 } from "./corpus-policy.js";
-import { graphManifest } from "./engine-impl.js";
+import { graphManifest, graphManifestDiffersOnlyByConfig } from "./engine-impl.js";
 import { isSupportedSourceFile } from "./extraction/grammars.js";
 import { bandHashInts, decodeMinhash } from "./fingerprint.js";
 import type { Fingerprint } from "./reconcile.js";
@@ -244,6 +245,25 @@ export interface InternalGraphFreshObservationToken {
 export interface InternalGraphStatusInspection {
   readonly graphStatus: GraphStatus;
   readonly freshObservation: InternalGraphFreshObservationToken | null;
+  /**
+   * @internal Exact identity for a store that would read `fresh` if its config
+   * inputs had not drifted.
+   *
+   * Optional so a caller-supplied status function, which cannot prove the
+   * distinction, keeps abstaining. Present only alongside a `stale` status:
+   * the store is bindable, but what it says about resolution is not current.
+   */
+  readonly degradedObservation?: InternalGraphDegradedObservation | null;
+  /**
+   * @internal True when config content drifted under an engine identity that
+   * still reproduces — whether or not the store was servable.
+   *
+   * A refusal must name what is actually blocking it. Config drift is excused
+   * by the read gate, so when something else blocks the same store, reporting
+   * the config change as the reason sends a reader to revert an edit that was
+   * never the problem.
+   */
+  readonly configDriftTolerated?: boolean;
 }
 
 interface FileRow {
@@ -297,6 +317,38 @@ interface InspectionContext {
   maxChangedPaths: number;
 }
 
+/**
+ * @internal A known, bounded way a bindable store falls short of `fresh`.
+ *
+ * `config-drift` — the compiler inputs that produced its resolution changed,
+ * so what it says about resolved references may be out of date.
+ * `parse-degraded` — some files parsed partially or not at all, so what it
+ * holds is incomplete. Its facts are still true; there are simply fewer of
+ * them than the repository contains.
+ * `source-drift` — some indexed files no longer match the working tree, so
+ * everything the store says about *those* files describes an older revision.
+ * Facts about every other file are unaffected.
+ *
+ * They make different claims and are reported separately.
+ */
+export type GraphReadDegradation = "config-drift" | "parse-degraded" | "source-drift";
+
+/** @internal Exact identity plus the reasons the store is not provably fresh. */
+export interface InternalGraphDegradedObservation {
+  readonly token: InternalGraphFreshObservationToken;
+  readonly degradations: readonly GraphReadDegradation[];
+  /**
+   * Every repository path whose indexed facts no longer describe the working
+   * tree, complete and sorted.
+   *
+   * Complete is the load-bearing word: a reader excludes these files and
+   * answers from the rest, so a partial list would let it serve a fact about
+   * a file that has moved on. The classification refuses whenever the change
+   * list was truncated, which is what makes this exhaustive.
+   */
+  readonly driftedSources: readonly string[];
+}
+
 interface FreshObservation {
   repo: RepoObservation;
   live: LiveSources;
@@ -320,6 +372,8 @@ interface InspectionAttempt {
   status: GraphStatus;
   retry: boolean;
   freshObservation?: InternalGraphFreshObservationToken;
+  degradedObservation?: InternalGraphDegradedObservation;
+  configDriftTolerated?: boolean;
 }
 
 interface ClassifiedError {
@@ -369,12 +423,16 @@ export async function inspectGraphStatusWithFreshObservation(
       return {
         graphStatus: inspected.status,
         freshObservation: inspected.freshObservation ?? null,
+        degradedObservation: inspected.degradedObservation ?? null,
+        configDriftTolerated: inspected.configDriftTolerated === true,
       };
     }
   }
   return {
     graphStatus: lastAttempt!.status,
     freshObservation: null,
+    degradedObservation: null,
+    configDriftTolerated: lastAttempt!.configDriftTolerated === true,
   };
 }
 
@@ -913,8 +971,59 @@ async function inspectGraphStatusAttempt(
       changes: sourceChanges.changes,
       diagnostics,
     });
-    if (status !== "fresh" || !snapshot || !snapshotRaw || !manifest) {
-      return finishDatabaseResult(result);
+    // A store whose only unproven input is config content is still an exact
+    // description of the source it indexed. Bind it like a fresh one so a
+    // reader can serve it labelled, and keep every other reason to distrust it
+    // — engine identity, source drift, branch, corpus digest, parse health,
+    // incomplete inspection — refusing exactly as before.
+    // Config content is forgivable on its own whenever engine identity still
+    // reproduces, independently of whether anything else also blocks the read.
+    // A caller that must explain a refusal needs that separately: config is
+    // then the input that was excused, never the reason.
+    const configDriftTolerated = snapshot !== undefined
+      && manifest !== null
+      && sourceChanges.changes.configChanged
+      && (snapshot.manifestHash === manifest.manifestHash
+        || graphManifestDiffersOnlyByConfig(manifest, snapshot.manifestHash, snapshot.configHash));
+    // Everything except the store's own completeness must still hold. A
+    // corpus, branch, digest, grammar or engine-identity difference, an
+    // unfinished inspection, or a demanded rebuild all refuse exactly as
+    // before; the two entries below are the only shortfalls a bound read
+    // tolerates, and each is reported to whatever serves it.
+    // Drifted source is tolerable only while the complete list of drifted
+    // paths is known: a reader excludes exactly those files and answers from
+    // the rest, and a truncated list would let one through. The change-path
+    // ceiling therefore doubles as the bound on how much drift can still be
+    // served — past it, this is a stale index rather than a partial answer.
+    const sourceDrifted = sourceChanges.changes.total > 0;
+    const sourceDriftBounded = sourceDrifted && !sourceChanges.changes.truncated;
+    const boundable = !rebuildRequired
+      && !freshnessUnproven
+      && !sourceChanges.changes.branchChanged
+      && !sourceChanges.changes.grammarChanged
+      && (configDriftTolerated || !sourceChanges.changes.configChanged)
+      && (!sourceDrifted || sourceDriftBounded)
+      && (!sourceChanges.digestChanged || sourceDriftBounded);
+    const degradations: GraphReadDegradation[] = boundable
+      ? [
+          ...(sourceChanges.changes.configChanged ? ["config-drift" as const] : []),
+          ...(parseDegraded ? ["parse-degraded" as const] : []),
+          ...(sourceDrifted ? ["source-drift" as const] : []),
+        ]
+      : [];
+    const driftedSources = sourceDriftBounded
+      ? [...new Set([
+          ...sourceChanges.changes.added,
+          ...sourceChanges.changes.modified,
+          ...sourceChanges.changes.deleted,
+        ])].sort(compareCodePoints)
+      : [];
+    // `stale` and `degraded` are the only non-fresh kinds those shortfalls can
+    // produce here; any other kind was returned long before this point.
+    const bindable = status === "fresh"
+      || (boundable && degradations.length > 0 && (status === "stale" || status === "degraded"));
+    if (!bindable || !snapshot || !snapshotRaw || !manifest) {
+      return { ...finishDatabaseResult(result), configDriftTolerated };
     }
 
     await context.options.internal?.beforeFreshValidation?.(attempt);
@@ -927,12 +1036,21 @@ async function inspectGraphStatusAttempt(
       snapshotRaw,
       database,
       databaseIdentity: databaseFileIdentity(fileStat),
-    });
+    }, degradations);
     if (validation.stable) {
       return {
         retry: false,
         status: result,
-        freshObservation: validation.freshObservation,
+        configDriftTolerated,
+        ...(degradations.length === 0
+          ? { freshObservation: validation.freshObservation }
+          : {
+              degradedObservation: {
+                token: validation.freshObservation!,
+                degradations: Object.freeze([...degradations]),
+                driftedSources: Object.freeze([...driftedSources]),
+              },
+            }),
       };
     }
     const unstable = {
@@ -1182,14 +1300,14 @@ function stabilizeDatabaseResult(
     // A missing/replaced database is handled as an unstable observation below.
   }
   if (sidecars.state === "clear"
-    && resolvedPath === dbPath
+    && isSameResolvedPath(resolvedPath, dbPath)
     && identityAfter === identityBefore) {
     return { retry: false, status: result };
   }
   const diagnostics = [
     ...(sidecars.state === "clear" ? [] : [sidecarDiagnostic(sidecars)]),
     observationRaceDiagnostic([
-      resolvedPath !== dbPath
+      !isSameResolvedPath(resolvedPath, dbPath)
         ? "graph database path"
         : identityAfter === identityBefore
           ? "SQLite sidecars"
@@ -1209,6 +1327,7 @@ function stabilizeDatabaseResult(
 async function validateFreshObservation(
   context: InspectionContext,
   before: FreshObservation,
+  degradations: readonly GraphReadDegradation[] = [],
 ): Promise<FreshValidation> {
   const firstSidecars = inspectGraphSidecars(before.database.canonicalPath);
   if (firstSidecars.state !== "clear") {
@@ -1323,9 +1442,19 @@ async function validateFreshObservation(
 
   const changed: string[] = [];
   if (!sameRepoState(before.repo.state, repo.state)) changed.push("Git state");
+  // Comparing the two observations to each other is the race check and always
+  // applies; comparing either to the stored snapshot is the freshness question
+  // the caller already answered.
   if (liveSourceIdentity(before.live) !== liveSourceIdentity(live)) changed.push("source corpus");
+  // Two comparisons live here. Whether the two observations agree with each
+  // other is a race check and always applies. Whether they agree with the
+  // stored snapshot is a freshness check, already decided by the caller — for
+  // a config-drifted read it is the very condition being served, so repeating
+  // it here would report a race that did not happen.
   if (semanticInputIdentity(before.semantic) !== semanticInputIdentity(semantic)
-    || semantic.changedPaths.length > 0) changed.push("compiler semantic inputs");
+    || (!degradations.includes("config-drift") && semantic.changedPaths.length > 0)) {
+    changed.push("compiler semantic inputs");
+  }
   if (!sameManifest(before.manifest, manifest)) changed.push("graph manifest");
   if (before.snapshotRaw !== snapshotRaw || before.databaseIdentity !== identity) changed.push("graph snapshot");
   if (finalContained.database.canonicalPath !== contained.database.canonicalPath
@@ -1594,7 +1723,7 @@ function readStableContainedUtf8File(
     const resolvedAfter = realpathSync(absolutePath);
     const pathAfter = lstatSync(resolvedAfter);
     if (databaseFileIdentity(opened) !== databaseFileIdentity(after)
-      || resolvedAfter !== canonicalPath
+      || !isSameResolvedPath(resolvedAfter, canonicalPath)
       || !pathAfter.isFile()
       || pathAfter.isSymbolicLink()
       || databaseFileIdentity(opened) !== databaseFileIdentity(pathAfter)) {

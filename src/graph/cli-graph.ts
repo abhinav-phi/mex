@@ -108,6 +108,37 @@ function printDeclinedInputs(declined: GraphRefreshResult["declinedInputs"]): vo
 /** Human output stays bounded; `--json` carries the complete list. */
 const MAX_SKIPPED_PATHS_SHOWN = 10;
 
+/**
+ * Explain a maintenance failure with the observation that caused it.
+ *
+ * A failed publication used to print one sentence naming the status it
+ * refused, and discard the diagnostics the error carries. That left a user
+ * with a long build, no graph, and no way to learn which file was responsible
+ * or what was skipped along the way.
+ */
+export function describeGraphMaintenanceFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!(error instanceof GraphMaintenanceError) || error.diagnostics.length === 0) return message;
+  const lines = [message];
+  const shown = error.diagnostics.slice(0, MAX_DIAGNOSTICS_SHOWN);
+  lines.push(`Observed ${error.diagnostics.length} diagnostic(s):`);
+  for (const diagnostic of shown) {
+    const path = (diagnostic as { path?: unknown }).path;
+    const where = typeof path === "string" ? ` [${path}]` : "";
+    lines.push(`  ${diagnostic.severity.toUpperCase()} ${diagnostic.code}${where}: ${diagnostic.message}`);
+  }
+  const omitted = error.diagnostics.length - shown.length;
+  if (omitted > 0) lines.push(`  …and ${omitted} more`);
+  const command = error.diagnostics
+    .flatMap((diagnostic) => diagnostic.remediation ?? [])
+    .find((action) => action.command)?.command;
+  if (command) lines.push(`Next: ${command}`);
+  if (error.recoveryPath) lines.push(`Previous index retained at: ${error.recoveryPath}`);
+  return lines.join("\n");
+}
+
+const MAX_DIAGNOSTICS_SHOWN = 20;
+
 function printStatus(status: GraphStatus): void {
   const branch = status.currentRepo.branch ?? "detached/no branch";
   const head = status.currentRepo.head?.slice(0, 12) ?? "no HEAD";

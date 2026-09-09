@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { toPosix } from "../paths.js";
+import { isSameResolvedPath, toPosix } from "../paths.js";
 import type {
   BuildResult, DeclinedCompilerInput, GraphEngine, NodeSearchOptions, SkippedSourceFile,
 } from "./engine.js";
@@ -33,6 +33,7 @@ import {
   discoverBoundedGraphPaths,
   isPerFileCorpusLimitError,
 } from "./corpus-policy.js";
+import { graphConfigIdentity } from "./config-identity.js";
 import { DB_SCHEMA_VERSION, markGraphReady, openGraphDatabase } from "./db/database.js";
 import {
   GraphStore,
@@ -274,6 +275,27 @@ export interface GraphManifest {
   manifestHash: string;
   configHash: string;
   grammarHash: string;
+  /**
+   * The exact inputs `manifestHash` was folded from.
+   *
+   * Kept alongside the hash so a reader can ask which *class* of input moved
+   * rather than only whether the fold changed. Config content is a build input
+   * that may shift under a usable index; the remaining entries are engine
+   * identity, and a difference in any of them means the store was written by
+   * code that no longer exists here.
+   */
+  inputs: GraphManifestInputs;
+}
+
+/** One fixed key order; the serialized form is the manifest hash preimage. */
+export interface GraphManifestInputs {
+  db: number;
+  compiler: string;
+  extractor: string;
+  resolver: string;
+  corpusPolicyHash: string;
+  grammarHash: string;
+  configHash: string;
 }
 
 class GraphEngineImpl implements GraphEngine {
@@ -1504,7 +1526,7 @@ function readStableUtf8File(
     const resolvedAfter = realpathSync(sourcePath);
     const pathAfter = lstatSync(resolvedAfter);
     if (!sameFileIdentity(opened, after)
-      || resolvedAfter !== canonicalPath
+      || !isSameResolvedPath(resolvedAfter, canonicalPath)
       || !pathAfter.isFile()
       || pathAfter.isSymbolicLink()
       || !sameFileIdentity(opened, pathAfter)) {
@@ -1756,7 +1778,7 @@ export function graphManifest(root: string): GraphManifest {
   const configSources = discoverGraphConfigSources(root);
   const configHash = configHashForSources(configSources);
   const grammarHash = grammarManifestHash();
-  const manifestHash = sha256(JSON.stringify({
+  const inputs: GraphManifestInputs = {
     db: DB_SCHEMA_VERSION,
     compiler: TYPESCRIPT_COMPILER_VERSION,
     extractor: CORPUS_EXTRACTOR_VERSION,
@@ -1764,8 +1786,58 @@ export function graphManifest(root: string): GraphManifest {
     corpusPolicyHash: graphCorpusPolicyHash(root),
     grammarHash,
     configHash,
+  };
+  return {
+    manifestHash: graphManifestHash(inputs),
+    configHash,
+    grammarHash,
+    inputs: Object.freeze(inputs),
+  };
+}
+
+/**
+ * Fold manifest inputs in one fixed order.
+ *
+ * Exported so a reader can re-fold *these* inputs with a different config hash
+ * and compare the result to a stored manifest. That substitution is the only
+ * supported way to ask whether a stored manifest and the current one differ by
+ * config alone, so the preimage must never be constructed anywhere else.
+ */
+export function graphManifestHash(inputs: GraphManifestInputs): string {
+  return sha256(JSON.stringify({
+    db: inputs.db,
+    compiler: inputs.compiler,
+    extractor: inputs.extractor,
+    resolver: inputs.resolver,
+    corpusPolicyHash: inputs.corpusPolicyHash,
+    grammarHash: inputs.grammarHash,
+    configHash: inputs.configHash,
   }));
-  return { manifestHash, configHash, grammarHash };
+}
+
+/**
+ * True when a stored manifest is reproducible from the current engine identity
+ * and the config hash that store recorded — that is, when config content is the
+ * only manifest input that moved.
+ *
+ * This deliberately proves identity by reconstruction rather than by comparing
+ * a stored engine-identity field. A store written before this check existed
+ * records no such field, and those are exactly the stores that need to keep
+ * answering. Reconstruction also covers `corpusPolicyHash`, which no snapshot
+ * records at all, so an ignore-policy change cannot pass as config drift.
+ *
+ * Fails closed on anything it cannot prove: a store with no recorded config
+ * hash, or one whose manifest does not reproduce, is not config-drifted.
+ */
+export function graphManifestDiffersOnlyByConfig(
+  current: GraphManifest,
+  storedManifestHash: string | undefined,
+  storedConfigHash: string | undefined,
+): boolean {
+  if (typeof storedManifestHash !== "string" || typeof storedConfigHash !== "string") return false;
+  if (storedManifestHash === current.manifestHash) return false;
+  if (storedConfigHash === current.configHash) return false;
+  return graphManifestHash({ ...current.inputs, configHash: storedConfigHash }) === storedManifestHash;
 }
 
 function discoverGraphConfigSources(root: string): Map<string, string> {
@@ -1804,9 +1876,18 @@ function discoverGraphConfigSources(root: string): Map<string, string> {
   return new Map(configs);
 }
 
+/**
+ * Identify config inputs by what they contribute to extraction, not by bytes.
+ *
+ * Hashing raw content made a dependency bump, an npm script or a reindent
+ * indistinguishable from a change to module resolution, and every one of them
+ * invalidated the index. `graphConfigIdentity` projects each file down to the
+ * fields that decide what the compiler resolves, and falls back to exact bytes
+ * for anything it cannot parse or recognize.
+ */
 function configHashForSources(configSources: ReadonlyMap<string, string>): string {
   return sha256(JSON.stringify([...configSources.entries()]
-    .map(([path, source]) => [path, sha256(source)])
+    .map(([path, source]) => [path, sha256(graphConfigIdentity(path, source))])
     .sort(([left], [right]) => compareCodePoints(left!, right!))));
 }
 

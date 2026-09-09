@@ -16,7 +16,7 @@ edges:
     condition: when starting a task — check the pattern index for a matching pattern file
   - target: patterns/release-readme-visuals.md
     condition: when refreshing the release README, badges, community links, or architecture illustrations
-last_updated: 2026-09-06
+last_updated: 2026-09-09
 ---
 
 # Session Bootstrap
@@ -75,6 +75,21 @@ Then read this file fully before doing anything else in this session.
   the last trustworthy index behind one cross-process maintenance lease.
 - Targeted graph get/query/impact consumers use one provenance-bound immutable
   snapshot and discard output if graph or exact source identity changes.
+- Graph reads separate engine identity from bounded, reportable shortfalls. A
+  store built by incompatible code still refuses every read. A store whose
+  config inputs drifted, whose files parsed partially, or whose indexed source
+  changed is answered and labelled: resolved edges are marked stale under config
+  drift, an incomplete parse reports its affected files, and drifted source is
+  excluded by an exhaustive path set the response names. Definitions,
+  containment and verified source stay unlabelled. Scope classifies through the
+  same predicate and refuses through the same record while keeping its own
+  per-file text-only fallback.
+- Publication applies the same judgement: a candidate whose only fault is a
+  skipped or partially parsed file is published rather than discarded, and a
+  failed maintenance run reports the diagnostics that blocked it.
+- Config inputs are identified by the fields that affect extraction rather than
+  by raw bytes, so a dependency bump or a reformat no longer invalidates an
+  index; anything unparseable falls back to exact bytes.
 - The graph half of Checkpoint 2 is working in the Project Hub: grouped symbol
   and source Search, the read-only Code workspace, structured graph Health, and
   explicit refresh/rebuild jobs all use the repository-bound GraphPort adapter.
