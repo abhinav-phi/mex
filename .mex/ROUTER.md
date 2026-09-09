@@ -77,8 +77,8 @@ Then read this file fully before doing anything else in this session.
   agent exit no longer authorizes baseline renewal. Interactive sync offers
   bounded default-no review of individual groundings, releases the graph lease
   before asking, and revalidates document bytes and graph facts before applying.
-  The remaining release phases, including logging cadence/retrieval, Windows
-  hardening, and separate final telemetry work, are tracked in
+  All planned release phases are implemented; the current main integration,
+  validation status, and remaining release preparation are tracked in
   `docs/design/0.8.1-release-plan.md`.
 - Phase 2 adds a graph-first Context Hub at `/knowledge`, with every usual
   Wiki entity (including unlinked sections), recorded relationships, and direct
@@ -117,8 +117,8 @@ Then read this file fully before doing anything else in this session.
   operation actor/time/session; completed plain creates replay without duplicate
   records. Legacy Team/Spec recovery bytes stay unchanged. This is local
   implementation on `codex/0.8.1`. The three missing Settings heap limits are now
-  calibrated from retained pinned Linux run `34286120355`; a clean enforcing
-  run after correction remains a release gate. Evidence is in
+  calibrated from retained pinned Linux run `34286120355`; subsequent enforcing
+  CI passed, as recorded below. Evidence is in
   `docs/design/settings-heap-calibration.json`. The separately accepted Graph
   isolation timing calibration below changes only its five owned time limits.
 - Phase 5 narrows shared artifact I/O to exact bytes by default, with explicit
@@ -155,11 +155,12 @@ Then read this file fully before doing anything else in this session.
 - Graph performance PR #180 passed the final checks (run `34291831733`) and
   merged into `codex/0.8.1` as `d64f171`; the preceding calibration notes are
   historical. Main remains separate.
-- Telemetry v2 is implemented on `codex/0.8.1-telemetry`, based on that merge,
-  and shared in draft PR #188 targeting `codex/0.8.1`. Local verification and
-  latency evidence for `9cbfab8` are retained. The follow-up context additions
-  pass 353 focused tests, typecheck/build and a separate actual-CLI benchmark;
-  fresh full and platform CI remains required. The approved random installation UUID is shared
+- Telemetry v2, developed on `codex/0.8.1-telemetry`, merged through PR #188
+  into `codex/0.8.1` as `0ad565d`. Final head `a37277b` passed all required
+  checks in run `34378404972`, including Windows and release performance.
+  Local verification and latency evidence for the initial implementation and
+  approved project-context follow-up remain in `docs/design/telemetry-v2.md`.
+  The approved random installation UUID is shared
   across CLI and Hub. The user additionally approved existing scaffold UUIDs
   for shared-project estimates and configured AI-tool names from project setup;
   these cannot establish team size or identify the invoking agent. The bounded
@@ -168,9 +169,36 @@ Then read this file fully before doing anything else in this session.
   Namespaced CLI outcomes, explicit Hub actions/pages, and terminal jobs use a
   bounded per-user queue and cancellable delivery. Pure discovery/read commands
   remain quiet. CLI feedback uses the existing Hub hosted form without an
-  analytics identity. See `docs/design/telemetry-v2.md` for validation status.
+  analytics identity.
+- The authorized main sync incorporates 18 upstream commits through
+  `bc2d40a5b3db15fc27d9d2ee19ca642050bccc04` into `codex/0.8.1`.
+  Three catch-block conflicts in `src/cli.ts` combine upstream detailed Graph
+  diagnostics with the release branch's `process.exitCode`/return behavior. Upstream
+  degraded Graph reads and extraction-relevant config identity are retained;
+  Hub reads keep strict freshness and isolated candidate publication keeps its
+  parent-owned authority checks. Build, typecheck, 257 focused tests, and 85
+  evaluator tests pass. Full regression passed 3,668 tests with one skip and
+  four timeouts; all four passed a serial rerun at unchanged limits. The
+  release-plan addendum records this evidence; fresh integrated CI remains
+  required. Main is not updated by this sync, and release versioning, notes,
+  tagging, and publication remain a separate checkpoint.
 - Targeted graph get/query/impact consumers use one provenance-bound immutable
   snapshot and discard output if graph or exact source identity changes.
+- Graph reads separate engine identity from bounded, reportable shortfalls. A
+  store built by incompatible code still refuses every read. A store whose
+  config inputs drifted, whose files parsed partially, or whose indexed source
+  changed is answered and labelled: resolved edges are marked stale under config
+  drift, an incomplete parse reports its affected files, and drifted source is
+  excluded by an exhaustive path set the response names. Definitions,
+  containment and verified source stay unlabelled. Scope classifies through the
+  same predicate and refuses through the same record while keeping its own
+  per-file text-only fallback.
+- Publication applies the same judgement: a candidate whose only fault is a
+  skipped or partially parsed file is published rather than discarded, and a
+  failed maintenance run reports the diagnostics that blocked it.
+- Config inputs are identified by the fields that affect extraction rather than
+  by raw bytes, so a dependency bump or a reformat no longer invalidates an
+  index; anything unparseable falls back to exact bytes.
 - The graph half of Checkpoint 2 is working in the Project Hub: grouped symbol
   and source Search, the read-only Code workspace, structured graph Health, and
   explicit refresh/rebuild jobs all use the repository-bound GraphPort adapter.
@@ -274,8 +302,9 @@ Then read this file fully before doing anything else in this session.
   retained-memory experiments; neither it nor the implementation rules out all
   native, slow, or repository-specific leaks. Process isolation can increase
   aggregate peak memory even while reducing memory left in the surviving Hub.
-  Corrected PR #180 platform and browser suites passed; runtime release
-  enforcement remains pending the accepted five-leaf timing calibration.
+  PR #180's final platform, browser, and release-performance checks passed after
+  the accepted five-leaf timing calibration; each later integration requires
+  its own verification.
 - Graph schema v4 is operational in this checkout, with two partially parsed
   source files and no failed files. Treat partial graph evidence as degraded and
   narrow or fall back to source discovery when needed.

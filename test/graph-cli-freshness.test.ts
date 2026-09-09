@@ -92,7 +92,7 @@ function expectUnavailableOnly(records: Record<string, unknown>[], reason?: stri
 }
 
 describe("agent graph freshness-bound readers", () => {
-  it("makes Get, Query, and Impact abstain instead of pairing old nodes with changed live source", async () => {
+  it("never pairs an old node with changed live source, and excludes that file instead", async () => {
     const built = await fixture("mex-cli-stale-read-");
     const fixed = new Date("2024-01-01T00:00:00.000Z");
     const changed = built.original.replace("\"old\"", "\"new\"");
@@ -108,10 +108,22 @@ describe("agent graph freshness-bound readers", () => {
       "stableFact", built.root, deps, { detail: "source" },
     ));
 
+    // The invariant is that a node from a changed file is never described,
+    // and its live text never returned. The whole repository is one file here,
+    // so excluding it leaves nothing to answer from — but the response says
+    // which file it excluded rather than only that something was wrong.
     for (const records of [get, query, impact]) {
-      expectUnavailableOnly(records, "GRAPH_SOURCE_CORPUS_MISMATCH");
-      expect(records[0]).toMatchObject({ graphStatus: "stale", recoveryCommand: "mex graph refresh" });
+      const status = records.find((record) => record.type === "status");
+      expect(status).toMatchObject({
+        graphStatus: "stale",
+        reasons: ["source-drift"],
+        excludedFiles: ["src/service.ts"],
+        recoveryCommand: "mex graph refresh",
+      });
+      expect(records.some((record) => record.type === "source")).toBe(false);
+      expect(records.some((record) => record.type === "result" || record.type === "defines")).toBe(false);
       expect(JSON.stringify(records)).not.toContain("return \\\"new\\\"");
+      expect(JSON.stringify(records)).not.toContain("return \\\"old\\\"");
     }
   });
 

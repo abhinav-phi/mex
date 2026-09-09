@@ -1911,19 +1911,43 @@ function assertRepairPublishableCandidate(status: GraphStatus): void {
   assertPublishableCandidate(status);
 }
 
+/**
+ * Diagnostics that describe a gap the build made deliberately and completely.
+ *
+ * A file the corpus policy declined to read, or one that parsed partially, is
+ * a known hole in an otherwise complete candidate — the indexing, publication
+ * and freshness paths all agree it is not in the corpus. Refusing to publish
+ * over one of these throws away every other file's facts to punish a gap that
+ * a rebuild would reproduce exactly, which leaves the repository with no graph
+ * at all rather than a graph with a documented hole.
+ *
+ * Corpus-*wide* breaches and incomplete inspections are deliberately absent:
+ * those mean the observation itself is untrustworthy, not that one file is
+ * missing from a trustworthy one.
+ */
+const PUBLISHABLE_DEGRADED_CODES = new Set([
+  "GRAPH_PARSE_DEGRADED",
+  "GRAPH_INDEX_HEAD_CHANGED",
+  // Added by the per-file skip path. Without it the publish gate discarded the
+  // candidate that path exists to produce.
+  "GRAPH_SOURCE_FILE_SKIPPED",
+  // Bounded companion of the above: emitted when more files were skipped than
+  // the diagnostic limit reports individually.
+  "GRAPH_SOURCE_DIAGNOSTICS_TRUNCATED",
+]);
+
 function assertPublishableCandidate(status: GraphStatus): void {
   if (status.status === "fresh") return;
-  const degradedOnlyByParse = status.status === "degraded"
+  const degradedOnlyByKnownGaps = status.status === "degraded"
     && status.changes.total === 0
     && !status.changes.branchChanged
     && !status.changes.manifestChanged
     && !status.changes.configChanged
     && !status.changes.grammarChanged
     && status.diagnostics.every((diagnostic) => (
-      diagnostic.severity !== "error"
-      && (diagnostic.code === "GRAPH_PARSE_DEGRADED" || diagnostic.code === "GRAPH_INDEX_HEAD_CHANGED")
+      diagnostic.severity !== "error" && PUBLISHABLE_DEGRADED_CODES.has(diagnostic.code)
     ));
-  if (degradedOnlyByParse) return;
+  if (degradedOnlyByKnownGaps) return;
   throw new GraphMaintenanceError(
     "GRAPH_CANDIDATE_INVALID",
     `The isolated graph candidate validated as ${status.status}; the live graph was not replaced.`,

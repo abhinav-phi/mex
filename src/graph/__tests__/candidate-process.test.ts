@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { boundedCandidateMessage } from "../candidate-protocol.js";
 import { createGraphCandidateProgressSender } from "../candidate-progress.js";
 import { runGraphCandidateProcess } from "../candidate-process.js";
+import { GRAPH_CORPUS_LIMITS } from "../corpus-policy.js";
 import { createGraphEngine } from "../engine-impl.js";
 import { rebuildGraph, refreshGraph, type GraphMaintenanceExecutionOptions } from "../maintenance.js";
 import { openSqlite } from "../db/sqlite.js";
@@ -141,6 +142,45 @@ describe("isolated graph candidate construction", () => {
     } finally { db.close(); }
     expect(artifacts(path)).toEqual([]);
   });
+
+  it("publishes rebuild and refresh candidates with an oversized-file gap and cleans their child workspaces", async () => {
+    const path = root();
+    const filler = `# ${"x".repeat(120)}\n`;
+    writeFileSync(join(path, "generated.py"), "def oversized():\n    return True\n"
+      + filler.repeat(Math.ceil(GRAPH_CORPUS_LIMITS.maxSourceFileBytes / filler.length) + 1));
+    const spawned: Array<{ pid: number; workspace: string }> = [];
+    const options = isolated(realEntry, {
+      onSpawn: (pid: number, workspace: string) => { spawned.push({ pid, workspace }); },
+    });
+
+    for (const operation of ["rebuild", "refresh"] as const) {
+      if (operation === "refresh") {
+        writeFileSync(join(path, "service.py"), "def service():\n    return 2\n\ndef next_service():\n    return service()\n");
+      }
+      const result = await (operation === "rebuild" ? rebuildGraph : refreshGraph)(path, options);
+      expect(result.state).toBe("succeeded");
+      expect(result.filesIndexed).toBe(1);
+      expect(result.skipped).toEqual([expect.objectContaining({
+        filePath: "generated.py", reason: "corpus-limit", limit: "maxSourceFileBytes",
+      })]);
+      expect(result.status.changes.total).toBe(0);
+      expect(result.status.diagnostics).toContainEqual(expect.objectContaining({
+        code: "GRAPH_SOURCE_FILE_SKIPPED", path: "generated.py",
+      }));
+      const db = openSqlite(join(path, ".mex/graph.db"), { readOnly: true });
+      try {
+        const symbol = operation === "rebuild" ? "service" : "next_service";
+        expect(db.prepare("SELECT name FROM nodes WHERE name = ?").all(symbol)).toEqual([{ name: symbol }]);
+        expect(db.prepare("SELECT name FROM nodes WHERE name = 'oversized'").all()).toEqual([]);
+        expect(db.prepare("PRAGMA quick_check").get()).toMatchObject({ quick_check: "ok" });
+        expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      } finally { db.close(); }
+      expect(spawned).toHaveLength(operation === "rebuild" ? 1 : 2);
+      expect(processAlive(spawned.at(-1)!.pid)).toBe(false);
+      expect(existsSync(spawned.at(-1)!.workspace)).toBe(false);
+      expect(artifacts(path)).toEqual([]);
+    }
+  }, 60_000);
 
   it("cancels real synchronous busy work, waits for process death, and preserves the prior index", async () => {
     const path = root();
