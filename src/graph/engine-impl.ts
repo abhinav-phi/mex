@@ -33,6 +33,7 @@ import {
   discoverBoundedGraphPaths,
   isPerFileCorpusLimitError,
 } from "./corpus-policy.js";
+import { graphConfigIdentity } from "./config-identity.js";
 import { DB_SCHEMA_VERSION, markGraphReady, openGraphDatabase } from "./db/database.js";
 import {
   GraphStore,
@@ -1875,9 +1876,18 @@ function discoverGraphConfigSources(root: string): Map<string, string> {
   return new Map(configs);
 }
 
+/**
+ * Identify config inputs by what they contribute to extraction, not by bytes.
+ *
+ * Hashing raw content made a dependency bump, an npm script or a reindent
+ * indistinguishable from a change to module resolution, and every one of them
+ * invalidated the index. `graphConfigIdentity` projects each file down to the
+ * fields that decide what the compiler resolves, and falls back to exact bytes
+ * for anything it cannot parse or recognize.
+ */
 function configHashForSources(configSources: ReadonlyMap<string, string>): string {
   return sha256(JSON.stringify([...configSources.entries()]
-    .map(([path, source]) => [path, sha256(source)])
+    .map(([path, source]) => [path, sha256(graphConfigIdentity(path, source))])
     .sort(([left], [right]) => compareCodePoints(left!, right!))));
 }
 
