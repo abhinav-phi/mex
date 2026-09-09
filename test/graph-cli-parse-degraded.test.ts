@@ -109,7 +109,7 @@ describe("graph reads from a parse-degraded store", () => {
 
   it("reports both shortfalls when config also drifted", async () => {
     const root = await parseDegradedFixture();
-    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "fixture", version: "1.0.1" }));
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "fixture", type: "commonjs" }));
     const records = await capture((deps) => runGraphQuery("who-calls", "beta", root, deps, {}));
     expect(records.find((record) => record.type === "error")).toBeUndefined();
     const status = statusRecord(records);

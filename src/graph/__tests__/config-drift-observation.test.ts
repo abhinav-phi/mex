@@ -45,8 +45,17 @@ async function inspect(root: string) {
   return inspectGraphStatusWithFreshObservation({ projectRoot: root, now: NOW });
 }
 
-function bumpDependency(root: string): void {
-  write(root, "package.json", JSON.stringify({ name: "fixture", dependencies: { dep: "1.0.1" } }));
+/**
+ * Change a config field that genuinely affects extraction.
+ *
+ * A dependency *version* deliberately no longer registers: config inputs are
+ * identified by the fields that decide what the compiler resolves. `type` is
+ * one of those, so this is drift the graph must notice.
+ */
+function driftConfig(root: string): void {
+  write(root, "package.json", JSON.stringify({
+    name: "fixture", type: "commonjs", dependencies: { dep: "1.0.0" },
+  }));
 }
 
 function updateSnapshot(root: string, update: (snapshot: GraphSnapshot) => GraphSnapshot): void {
@@ -74,7 +83,7 @@ describe("config-drift read observation", () => {
 
   it("binds a store whose only drift is config content", async () => {
     const root = await project();
-    bumpDependency(root);
+    driftConfig(root);
     const inspection = await inspect(root);
     expect(inspection.graphStatus.status).toBe("stale");
     expect(inspection.graphStatus.changes).toMatchObject({
@@ -94,7 +103,7 @@ describe("config-drift read observation", () => {
 
   it("is deterministic across repeated inspections of one drifted store", async () => {
     const root = await project();
-    bumpDependency(root);
+    driftConfig(root);
     const first = await inspect(root);
     const second = await inspect(root);
     expect(second.degradedObservation).toEqual(first.degradedObservation);
@@ -102,7 +111,7 @@ describe("config-drift read observation", () => {
 
   it("refuses to bind when engine identity cannot be reproduced", async () => {
     const root = await project();
-    bumpDependency(root);
+    driftConfig(root);
     updateSnapshot(root, (snapshot) => ({ ...snapshot, manifestHash: "0".repeat(64) }));
     const inspection = await inspect(root);
     expect(inspection.graphStatus.status).toBe("stale");
@@ -113,7 +122,7 @@ describe("config-drift read observation", () => {
 
   it("refuses to bind when the grammar also moved", async () => {
     const root = await project();
-    bumpDependency(root);
+    driftConfig(root);
     updateSnapshot(root, (snapshot) => ({ ...snapshot, grammarHash: "0".repeat(64) }));
     const inspection = await inspect(root);
     expect(inspection.graphStatus.changes.grammarChanged).toBe(true);
@@ -122,7 +131,7 @@ describe("config-drift read observation", () => {
 
   it("binds a store with drifted source, and reports the exact drifted paths", async () => {
     const root = await project();
-    bumpDependency(root);
+    driftConfig(root);
     write(root, "src/a.ts", "export function alpha(): number {\n  return 2;\n}\n");
     const inspection = await inspect(root);
     expect(inspection.graphStatus.status).toBe("stale");
@@ -136,7 +145,7 @@ describe("config-drift read observation", () => {
 
   it("counts a new unindexed file as drift and names it", async () => {
     const root = await project();
-    bumpDependency(root);
+    driftConfig(root);
     write(root, "src/b.ts", "export const b = 1;\n");
     const inspection = await inspect(root);
     const observed = inspection.degradedObservation;

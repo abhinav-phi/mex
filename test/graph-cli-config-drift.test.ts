@@ -61,10 +61,17 @@ async function fixture(): Promise<Fixture> {
   return { root, targetId: node.id };
 }
 
-function bumpDependency(root: string): void {
+/**
+ * Change a config field that genuinely affects extraction.
+ *
+ * A dependency *version* deliberately no longer registers: config inputs are
+ * identified by the fields that decide what the compiler resolves. `type` is
+ * one of those, so this is drift the graph must notice.
+ */
+function driftConfig(root: string): void {
   writeFileSync(join(root, "package.json"), JSON.stringify({
-    name: "fixture-root", private: true, workspaces: ["packages/*"],
-    dependencies: { "some-dependency": "1.0.1" },
+    name: "fixture-root", private: true, type: "commonjs", workspaces: ["packages/*"],
+    dependencies: { "some-dependency": "1.0.0" },
   }));
 }
 
@@ -100,7 +107,7 @@ const ofType = (records: Rec[], type: string): Rec[] =>
 describe("graph reads after a config-only change", () => {
   it("answers query, get and impact, labelled, instead of refusing", async () => {
     const { root, targetId } = await fixture();
-    bumpDependency(root);
+    driftConfig(root);
 
     const query = await capture((deps) => runGraphQuery("who-calls", "normalizePath", root, deps, {}));
     expect(errorRecord(query)).toBeUndefined();
@@ -132,7 +139,7 @@ describe("graph reads after a config-only change", () => {
 
   it("does not label where-defined, which no resolution produced", async () => {
     const { root } = await fixture();
-    bumpDependency(root);
+    driftConfig(root);
     const records = await capture((deps) => runGraphQuery("where-defined", "normalizePath", root, deps, {}));
     expect(statusRecord(records)).toBeDefined();
     expect(ofType(records, "result").every((record) => record.stale === undefined)).toBe(true);
@@ -140,7 +147,7 @@ describe("graph reads after a config-only change", () => {
 
   it("answers scope, labelled, on the same gate", async () => {
     const { root } = await fixture();
-    bumpDependency(root);
+    driftConfig(root);
     const records = await capture((deps) => runGraphScope("normalize request path", root, deps, {}));
     expect(errorRecord(records)).toBeUndefined();
     expect(statusRecord(records)).toMatchObject({
@@ -165,7 +172,7 @@ describe("graph reads after a config-only change", () => {
 
   it("still refuses every command when engine identity does not match", async () => {
     const { root, targetId } = await fixture();
-    bumpDependency(root);
+    driftConfig(root);
     breakEngineIdentity(root);
     const cases: Array<[string, Rec[]]> = [
       ["query", await capture((deps) => runGraphQuery("who-calls", "normalizePath", root, deps, {}))],
@@ -181,7 +188,7 @@ describe("graph reads after a config-only change", () => {
 
   it("labels scope flow records, not their planning envelope", async () => {
     const { root } = await fixture();
-    bumpDependency(root);
+    driftConfig(root);
     const records = await capture((deps) =>
       runGraphScope("render page handle request normalize path", root, deps, { detail: "standard" }));
     const flows = ofType(records, "flow");
@@ -192,7 +199,7 @@ describe("graph reads after a config-only change", () => {
 
   it("answers around a source file that drifted alongside the config", async () => {
     const { root } = await fixture();
-    bumpDependency(root);
+    driftConfig(root);
     writeFileSync(join(root, "packages", "api", "src", "index.ts"),
       "export function normalizePath(path: string): string { return path; }");
     const records = await capture((deps) => runGraphQuery("where-defined", "renderPage", root, deps, {}));
@@ -216,7 +223,7 @@ describe("graph reads after a config-only change", () => {
 
   it("does not touch the store while reading it drifted", async () => {
     const { root } = await fixture();
-    bumpDependency(root);
+    driftConfig(root);
     const mexDir = join(root, ".mex");
     const before = readdirSync(mexDir).sort().map((name) => {
       const path = join(mexDir, name);
@@ -237,7 +244,7 @@ describe("graph reads after a config-only change", () => {
 
   it("is byte-identical across repeated drifted reads", async () => {
     const { root } = await fixture();
-    bumpDependency(root);
+    driftConfig(root);
     const once: string[] = [];
     const twice: string[] = [];
     await runGraphQuery("who-calls", "normalizePath", root, { write: (line) => once.push(line) }, {});

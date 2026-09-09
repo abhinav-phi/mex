@@ -30,7 +30,8 @@ describe("graph manifest identity", () => {
 
   it("moves the manifest hash when only config content changes", () => {
     const before = graphManifest(root);
-    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "fixture", version: "1.0.1" }));
+    // A field that affects resolution; a version bump deliberately does not.
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "fixture", type: "module" }));
     const after = graphManifest(root);
     expect(after.configHash).not.toBe(before.configHash);
     expect(after.manifestHash).not.toBe(before.manifestHash);
