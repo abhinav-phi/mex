@@ -179,8 +179,12 @@ Then read this file fully before doing anything else in this session.
   parent-owned authority checks. Build, typecheck, 257 focused tests, and 85
   evaluator tests pass. Full regression passed 3,668 tests with one skip and
   four timeouts; all four passed a serial rerun at unchanged limits. The
-  release-plan addendum records this evidence; fresh integrated CI remains
-  required. Main is not updated by this sync, and release versioning, notes,
+  release-plan addendum records this evidence. Merge `465c192` passed Node
+  22/24 and Windows/macOS CI; browser/performance setup failed twice on an
+  unused Google Chrome apt repository checksum mismatch before tests ran.
+  CI now removes its legacy `.list` and newer `.sources` entries before
+  installing Playwright's own Chromium; fresh CI remains required. Main is
+  not updated by this sync, and release versioning, notes,
   tagging, and publication remain a separate checkpoint.
 - Targeted graph get/query/impact consumers use one provenance-bound immutable
   snapshot and discard output if graph or exact source identity changes.

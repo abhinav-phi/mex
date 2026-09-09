@@ -134,7 +134,12 @@ jobs:
           node-version: 22.22.0
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - name: Install Playwright Chromium
+        run: |
+          # Playwright downloads its own Chromium. Exclude the unused runner
+          # Chrome apt source so unrelated metadata errors cannot block setup.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+          npx playwright install --with-deps chromium
       - run: npm run test:hub:web
       - run: npm run test:hub:e2e
       - name: Upload browser failure artifacts
@@ -165,7 +170,12 @@ jobs:
           node-version: 22.22.0
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - name: Install Playwright Chromium
+        run: |
+          # Playwright downloads its own Chromium. Exclude the unused runner
+          # Chrome apt source so unrelated metadata errors cannot block setup.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+          npx playwright install --with-deps chromium
       - run: npm run build
       - name: Measure the first release-performance attempt
         env:
@@ -205,7 +215,12 @@ jobs:
           node-version: 22.22.0
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - name: Install Playwright Chromium
+        run: |
+          # Playwright downloads its own Chromium. Exclude the unused runner
+          # Chrome apt source so unrelated metadata errors cannot block setup.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+          npx playwright install --with-deps chromium
       - run: npm run build
       - name: Measure the fresh-runner confirmation attempt
         env:
