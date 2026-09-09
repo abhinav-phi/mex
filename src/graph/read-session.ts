@@ -10,6 +10,7 @@ import {
   statSync,
 } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
+import { isSameResolvedPath } from "../paths.js";
 import type { GraphStatus } from "../team/contracts/graph.js";
 import { GRAPH_CORPUS_LIMITS, GraphCorpusLimitError } from "./corpus-policy.js";
 import { openGraphDatabase } from "./db/database.js";
@@ -570,7 +571,7 @@ function readStableContainedSource(projectRoot: string, filePath: string): Buffe
     const resolvedAfter = realpathSync(absolutePath);
     const pathAfter = lstatSync(resolvedAfter);
     if (!sameFileIdentity(opened, after)
-      || resolvedAfter !== canonicalPath
+      || !isSameResolvedPath(resolvedAfter, canonicalPath)
       || !pathAfter.isFile()
       || pathAfter.isSymbolicLink()
       || !sameFileIdentity(opened, pathAfter)) {
@@ -714,7 +715,7 @@ function bindDatabaseFile(dbPath: string, afterClose?: () => void): BoundDatabas
     const resolvedAfter = realpathSync(dbPath);
     const pathAfter = lstatSync(resolvedAfter);
     if (!opened.isFile()
-      || resolvedAfter !== dbPath
+      || !isSameResolvedPath(resolvedAfter, dbPath)
       || !pathAfter.isFile()
       || pathAfter.isSymbolicLink()
       || !sameFileIdentity(before, opened)

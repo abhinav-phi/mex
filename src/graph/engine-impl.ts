@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { toPosix } from "../paths.js";
+import { isSameResolvedPath, toPosix } from "../paths.js";
 import type {
   BuildResult, DeclinedCompilerInput, GraphEngine, NodeSearchOptions, SkippedSourceFile,
 } from "./engine.js";
@@ -1526,7 +1526,7 @@ function readStableUtf8File(
     const resolvedAfter = realpathSync(sourcePath);
     const pathAfter = lstatSync(resolvedAfter);
     if (!sameFileIdentity(opened, after)
-      || resolvedAfter !== canonicalPath
+      || !isSameResolvedPath(resolvedAfter, canonicalPath)
       || !pathAfter.isFile()
       || pathAfter.isSymbolicLink()
       || !sameFileIdentity(opened, pathAfter)) {

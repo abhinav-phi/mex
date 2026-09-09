@@ -12,6 +12,7 @@ import {
   statSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { isSameResolvedPath } from "../paths.js";
 import { promisify } from "node:util";
 import type {
   GraphParseHealth,
@@ -1299,14 +1300,14 @@ function stabilizeDatabaseResult(
     // A missing/replaced database is handled as an unstable observation below.
   }
   if (sidecars.state === "clear"
-    && resolvedPath === dbPath
+    && isSameResolvedPath(resolvedPath, dbPath)
     && identityAfter === identityBefore) {
     return { retry: false, status: result };
   }
   const diagnostics = [
     ...(sidecars.state === "clear" ? [] : [sidecarDiagnostic(sidecars)]),
     observationRaceDiagnostic([
-      resolvedPath !== dbPath
+      !isSameResolvedPath(resolvedPath, dbPath)
         ? "graph database path"
         : identityAfter === identityBefore
           ? "SQLite sidecars"
@@ -1722,7 +1723,7 @@ function readStableContainedUtf8File(
     const resolvedAfter = realpathSync(absolutePath);
     const pathAfter = lstatSync(resolvedAfter);
     if (databaseFileIdentity(opened) !== databaseFileIdentity(after)
-      || resolvedAfter !== canonicalPath
+      || !isSameResolvedPath(resolvedAfter, canonicalPath)
       || !pathAfter.isFile()
       || pathAfter.isSymbolicLink()
       || databaseFileIdentity(opened) !== databaseFileIdentity(pathAfter)) {
