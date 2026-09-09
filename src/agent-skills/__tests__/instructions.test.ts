@@ -31,7 +31,7 @@ describe("managed MEX instruction blocks", () => {
       expect(block).toContain('mex timeline --query "subject phrase" --file src/example.ts --limit 10 --json');
       expect(block).toContain("historical evidence, not accepted current knowledge");
       expect(block).toContain(
-        "MEX context used: <specific records/files/entities consulted>.",
+        "mention MEX and the relevant finding naturally in your explanation",
       );
       expect(block).toContain("unless the retrieved data actually provides it");
       expect(block).toContain("local draft is checkout-only and nothing is shared");

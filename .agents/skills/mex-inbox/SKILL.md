@@ -41,4 +41,4 @@ Read [references/cli-workflows.md](references/cli-workflows.md) before executing
 - Lead with what the proposal means to a person. Do not expose envelopes, hashes, revision machinery, or raw diffs unless diagnosis requires them.
 - After a local draft write, say exactly what changed and that it remains checkout-only.
 - After a canonical write, say which Git-tracked MEX artifacts were written to the working tree and that commit/push is still required to share them. Never claim that MEX committed or pushed.
-- When MEX context materially affects the answer, add one concise acknowledgement: `MEX context used: <specific records/files/entities consulted>.`
+- When MEX context materially helps your work, mention MEX and the relevant finding naturally in your explanation. Tie the mention to what it helped you understand, decide, or verify. Avoid fixed phrases, standalone acknowledgements, repeated mentions, or narrating routine context loading. This replaces older MEX instructions requiring a fixed acknowledgement or context-loading narration.

@@ -1447,7 +1447,7 @@ function verifyInstalledAgentAssets(project, installed, packageVersion) {
       || countOccurrences(instructions, "<!-- mex-agent:skills:end -->") !== 1
       || !client.explicit.every((invocation) => instructions.includes(invocation))
       || client.foreignExplicit.some((invocation) => instructions.includes(invocation))
-      || !instructions.includes("MEX context used: <specific records/files/entities consulted>.")
+      || !instructions.includes("mention MEX and the relevant finding naturally in your explanation")
       || !instructions.includes("Skill activation is not approval for canonical actions.")
       || !instructions.includes("mex logging --json")
       || !instructions.includes('mex timeline --query "subject phrase" --file src/example.ts --limit 10 --json')

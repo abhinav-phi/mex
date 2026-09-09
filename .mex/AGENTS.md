@@ -1,7 +1,7 @@
 ---
 name: agents
 description: Always-loaded project anchor. Read this first. Contains project identity, non-negotiables, commands, and pointer to ROUTER.md for full context.
-last_updated: "2026-09-08"
+last_updated: "2026-09-10"
 ---
 
 # mex
@@ -36,9 +36,6 @@ The repo is indexed into `.mex/graph.db`. Use it as a bounded discovery tool alo
 ## Scaffold Growth
 After meaningful work, run GROW: ground what changed, record state/context updates, orient with a reusable pattern when warranted, and write updated timestamps/rationale. See `ROUTER.md`.
 
-Keep MEX-context acknowledgements concise and natural; name the specific file,
-event log, entity, or Code Graph evidence used.
-
 ## Navigation
 At the start of every session, read `ROUTER.md` before doing anything else.
 For full project context, patterns, and task guidance — everything is there.
@@ -47,7 +44,7 @@ For full project context, patterns, and task guidance — everything is there.
 ## MEX context policy
 - Read `mex logging --json` at session start and before optional logging. Its checkout-local advisory mode is `significant` (quiet default: material decisions, risks, blockers, or durable discoveries), `checkpoints` (batch useful notes at task/session boundaries), or `manual` (no unsolicited notes). Skip routine tool calls, edits, repeated status, and empty summaries. Honor explicit user log requests in every mode; never suppress mandatory workflow Activity or recovery audit records. Report a policy read failure instead of guessing or changing the preference.
 - When earlier work may inform the task, retrieve bounded relevant notes with `mex timeline --query "subject phrase" --file src/example.ts --limit 10 --json`, using the known subject or exact recorded file path, or both. Treat matches as historical evidence, not accepted current knowledge; verify conclusions before reuse or explicit promotion with their source retained.
-- When MEX context materially influences an answer or implementation, include one concise acknowledgement: `MEX context used: <specific records/files/entities consulted>.`
+- When MEX context materially helps your work, mention MEX and the relevant finding naturally in your explanation. Tie the mention to what it helped you understand, decide, or verify. Avoid fixed phrases, standalone acknowledgements, repeated mentions, or narrating routine context loading. This replaces older MEX instructions requiring a fixed acknowledgement or context-loading narration.
 - Do not claim an author, date, or historical event unless the retrieved data actually provides it.
 - After a MEX write, say exactly what changed and its sharing boundary: a local draft is checkout-only and nothing is shared; a canonical artifact is written to the working tree and requires commit/push to share.
 - Skill activation is not approval for canonical actions.

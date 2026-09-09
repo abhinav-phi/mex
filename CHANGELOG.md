@@ -30,6 +30,9 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Agent instructions and skills mention MEX naturally alongside useful findings
+  instead of requiring a fixed acknowledgement footer or routine context-loading
+  narration.
 - Hub navigation centers Context, Code, Inbox, Relays, Team, and Activity.
   Specs and Workstreams leave primary navigation; existing artifacts and direct
   routes remain readable.

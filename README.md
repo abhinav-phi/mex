@@ -247,7 +247,7 @@ mex skills sync --tool codex
 
 Use `--tool claude` for Claude Code. Review the resulting instruction and skill files, commit and push them if the team should share the integration, and start a new agent session.
 
-Instructions may select Inbox or Relay from clear natural-language intent, but skill activation never approves a canonical write. When MEX context materially informs work, the agent names the records used; this is transparency, not proof of reasoning.
+Instructions may select Inbox or Relay from clear natural-language intent, but skill activation never approves a canonical write. When MEX context materially helps, the agent mentions MEX and the relevant finding naturally, tying it to what it helped understand, decide, or verify, without a standard footer.
 
 With the 0.8.1 Inbox update, “use MEX Inbox to capture what we decided” produces a contribution to existing project knowledge. The agent checks existing records, then drafts one addition or correction. Architecture, components, conventions, decisions, patterns, and guides are supported alongside existing Spec proposals. A local draft stays in the checkout; publishing writes a Markdown proposal for review; approval updates canonical knowledge and retains the proposal as history. Git shares those files with teammates.
 

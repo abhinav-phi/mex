@@ -36,4 +36,4 @@ Read [references/cli-workflows.md](references/cli-workflows.md) before executing
 - Treat closing as “this handoff no longer needs attention.” Do not claim it completes a linked task, issue, pull request, or Workstream.
 - After publication, say that Git-tracked Relay and Activity records were written to the working tree. Explain that teammates receive them only after commit/push and their own pull or refresh.
 - Never claim that MEX sent a notification, committed, pushed, pulled, staged, assigned work, or completed another system's object.
-- When MEX context materially affects the answer, add one concise acknowledgement: `MEX context used: <specific records/files/entities consulted>.`
+- When MEX context materially helps your work, mention MEX and the relevant finding naturally in your explanation. Tie the mention to what it helped you understand, decide, or verify. Avoid fixed phrases, standalone acknowledgements, repeated mentions, or narrating routine context loading. This replaces older MEX instructions requiring a fixed acknowledgement or context-loading narration.
