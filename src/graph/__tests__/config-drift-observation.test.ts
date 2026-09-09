@@ -120,21 +120,42 @@ describe("config-drift read observation", () => {
     expect(inspection.degradedObservation ?? null).toBeNull();
   });
 
-  it("refuses to bind when indexed source also drifted", async () => {
+  it("binds a store with drifted source, and reports the exact drifted paths", async () => {
     const root = await project();
     bumpDependency(root);
     write(root, "src/a.ts", "export function alpha(): number {\n  return 2;\n}\n");
     const inspection = await inspect(root);
     expect(inspection.graphStatus.status).toBe("stale");
     expect(inspection.graphStatus.changes.total).toBeGreaterThan(0);
-    expect(inspection.degradedObservation ?? null).toBeNull();
+    const observed = inspection.degradedObservation;
+    expect(observed).not.toBeNull();
+    expect(observed!.degradations).toEqual(["config-drift", "source-drift"]);
+    // Complete, because a reader answers by excluding exactly this set.
+    expect(observed!.driftedSources).toEqual(["src/a.ts"]);
   });
 
-  it("refuses to bind when a new source file is not indexed", async () => {
+  it("counts a new unindexed file as drift and names it", async () => {
     const root = await project();
     bumpDependency(root);
     write(root, "src/b.ts", "export const b = 1;\n");
     const inspection = await inspect(root);
+    const observed = inspection.degradedObservation;
+    expect(observed).not.toBeNull();
+    expect(observed!.degradations).toContain("source-drift");
+    expect(observed!.driftedSources).toEqual(["src/b.ts"]);
+  });
+
+  it("refuses to bind when more paths changed than the change list can carry", async () => {
+    const root = await project();
+    for (let index = 0; index < 6; index += 1) {
+      write(root, `src/extra-${index}.ts`, `export const extra${index} = ${index};\n`);
+    }
+    // A truncated change list cannot be excluded from exhaustively, so the
+    // store stops being serveable rather than being served incompletely.
+    const inspection = await inspectGraphStatusWithFreshObservation({
+      projectRoot: root, now: NOW, maxChangedPaths: 3,
+    });
+    expect(inspection.graphStatus.changes.truncated).toBe(true);
     expect(inspection.degradedObservation ?? null).toBeNull();
   });
 });

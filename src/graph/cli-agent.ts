@@ -34,6 +34,8 @@ interface AgentGraphSession {
   db: SqliteDatabase;
   /** Absent for caller-injected sessions, which make no freshness claim. */
   degradations?: readonly GraphReadDegradation[];
+  /** Indexed paths whose facts describe an older revision of the file. */
+  driftedSources?: readonly string[];
   /** The status a degraded answer must declare; present only when drifted. */
   graphStatus?: GraphStatus;
   readIndexedSource?: (filePath: string) => string;
@@ -79,10 +81,13 @@ export function runImpact(
     const fileNodes = nodesForFile(session, rootDir, target);
     const roots = fileNodes.length > 0 ? fileNodes : resolveSymbol(session.graph, target);
     if (roots.length === 0) {
+      for (const record of configDriftRecords(session)) writeJson(write, record);
       writeJson(write, { type: "error", code: "TARGET_NOT_FOUND", target });
       return;
     }
+    if (emitTargetSourceDrifted(session, write, target, roots)) return;
     if (fileNodes.length === 0 && roots.length > 1) {
+      for (const record of configDriftRecords(session)) writeJson(write, record);
       writeJson(write, { type: "error", code: "TARGET_AMBIGUOUS", target, candidates: roots.map(nodeRef) });
       return;
     }
@@ -135,7 +140,10 @@ export function runImpact(
 
     const sourceRecords = planSource(session, ledger, emittedNodes, rootDir, opts);
 
-    const affectedIds = [...new Set([...roots.map((node) => node.id), ...impacted.keys()])];
+    // Grounding is keyed by node, so an excluded node must not reappear
+    // through it. Nodes omitted only by the returned-node cap still count.
+    const affectedIds = [...new Set([...roots.map((node) => node.id), ...impacted.keys()])]
+      .filter((id) => !isDriftedFile(session, session.graph.getNode(id)?.filePath));
     const groundingRecords: Rec[] = [];
     for (const grounding of groundedFiles(session.db, affectedIds)) {
       const record: Rec = { type: "grounding", node: grounding.node_id, file: grounding.scaffold_file };
@@ -175,9 +183,12 @@ export function runGraphQuery(
     if (nodes.length === 0) {
       if (relation === "who-calls"
         && emitUnresolvedCallers(session, write, target, opts)) return;
+      for (const record of configDriftRecords(session)) writeJson(write, record);
       writeJson(write, { type: "error", code: "TARGET_NOT_FOUND", target });
       return;
     }
+
+    if (emitTargetSourceDrifted(session, write, target, nodes)) return;
 
     // Preserve (queried target, result) pairs; dedupe by that pair, not by result id alone.
     const pairs: Array<{ targetId: string; node: GraphNode }> = [];
@@ -766,6 +777,15 @@ export function runGraphGet(
         if (ledger.tryAdd(record)) errorRecords.push(record); else truncated = true;
         continue;
       }
+      // Present in the index, excluded from the answer. Saying so is not the
+      // same as saying the node does not exist.
+      if (isDriftedFile(session, node.filePath)) {
+        const record: Rec = {
+          type: "error", code: "NODE_SOURCE_DRIFTED", id, filePath: node.filePath,
+        };
+        if (ledger.tryAdd(record)) errorRecords.push(record); else truncated = true;
+        continue;
+      }
       nodes.push(node);
     }
     const sourceRecords = planSource(session, ledger, nodes, rootDir, opts);
@@ -1060,6 +1080,10 @@ function scopeFactRecord(fact: CompactFact, score: number, reasons: string[], op
 
 function factFor(session: AgentGraphSession, id: string, detail: DetailLevel, includeFingerprint: boolean): CompactFact | null {
   const fact = compactFact(session.graph, id, detail);
+  // One seam for every command: a fact about a file that has moved on is not
+  // returned at all, rather than returned with coordinates that no longer
+  // point at what they describe.
+  if (fact && isDriftedFile(session, fact.filePath)) return null;
   if (!fact || !includeFingerprint) return fact;
   const fingerprint = new FingerprintStore(session.db).get(id);
   return fingerprint ? { ...fact, fingerprint: serializeFingerprint(fingerprint) } : fact;
@@ -2012,6 +2036,7 @@ async function runFreshAgentSession(
     session = {
       ...loaded.session,
       degradations: loaded.session.degradations,
+      driftedSources: loaded.session.driftedSources,
       graphStatus: loaded.graphStatus,
     };
     try {
@@ -2066,6 +2091,53 @@ function isParseDegraded(session: AgentGraphSession): boolean {
   return session.degradations?.includes("parse-degraded") === true;
 }
 
+/**
+ * The files this answer must leave out.
+ *
+ * A file that changed since indexing invalidates every coordinate the graph
+ * holds for it — a line range now points somewhere else, and a symbol may not
+ * exist any more. Scope answers around that by re-admitting the file as
+ * text-only evidence; a command that returns exact node coordinates has no
+ * such fallback, so it drops those files' facts and answers from the rest.
+ *
+ * Dropping them silently would be the dishonest half. The response names them.
+ */
+function driftedSourceFiles(session: AgentGraphSession): ReadonlySet<string> {
+  return new Set(session.driftedSources ?? []);
+}
+
+function isSourceDrifted(session: AgentGraphSession): boolean {
+  return session.degradations?.includes("source-drift") === true;
+}
+
+function isDriftedFile(session: AgentGraphSession, filePath: string | undefined): boolean {
+  return typeof filePath === "string" && driftedSourceFiles(session).has(filePath);
+}
+
+/**
+ * Report a target that resolved, but only into files this answer excluded.
+ *
+ * Returning an empty result would be true and useless: the symbol exists, the
+ * store simply cannot describe where it is any more. Say that instead, with
+ * the file to refresh.
+ */
+function emitTargetSourceDrifted(
+  session: AgentGraphSession,
+  write: (line: string) => void,
+  target: string,
+  nodes: readonly GraphNode[],
+): boolean {
+  if (nodes.length === 0 || !nodes.every((node) => isDriftedFile(session, node.filePath))) return false;
+  for (const record of configDriftRecords(session)) writeJson(write, record);
+  writeJson(write, {
+    type: "error",
+    code: "TARGET_SOURCE_DRIFTED",
+    target,
+    filePaths: [...new Set(nodes.map((node) => node.filePath))].sort(),
+  });
+  return true;
+}
+
 /** Mark one record as resolution-derived under config drift; otherwise unchanged. */
 function markResolutionStale(session: AgentGraphSession, record: Rec): Rec {
   return isConfigDrifted(session) ? { ...record, stale: true } : record;
@@ -2087,10 +2159,13 @@ function configDriftRecords(session: AgentGraphSession): Rec[] {
   const diagnostics = status?.diagnostics ?? [];
   const drifted = isConfigDrifted(session);
   const incomplete = isParseDegraded(session);
+  const sourceDrifted = isSourceDrifted(session);
   const reasonDiagnostic = drifted
     ? diagnostics.find((entry) => entry.code === "GRAPH_SEMANTIC_INPUTS_CHANGED")
       ?? diagnostics.find((entry) => entry.code === "GRAPH_BUILD_MANIFEST_CHANGED")
-    : diagnostics.find((entry) => entry.code === "GRAPH_PARSE_DEGRADED");
+    : sourceDrifted
+      ? diagnostics.find((entry) => entry.code === "GRAPH_SOURCE_CORPUS_MISMATCH")
+      : diagnostics.find((entry) => entry.code === "GRAPH_PARSE_DEGRADED");
   const changedPaths = [...new Set(diagnostics
     .filter((entry) => entry.code === "GRAPH_SEMANTIC_INPUT_CHANGED")
     .map((entry) => (entry as { path?: unknown }).path)
@@ -2100,17 +2175,20 @@ function configDriftRecords(session: AgentGraphSession): Rec[] {
     .find((entry) => entry.command)?.command
     ?? "mex graph refresh";
   const parseHealth = status?.parseHealth;
+  const excluded = [...(session.driftedSources ?? [])].sort();
   return [{
     type: "status",
     // Config drift makes the store out of date; an unfinished parse only makes
     // it incomplete. Report the kind the status inspection actually reached.
-    graphStatus: drifted ? "stale" : "degraded",
+    graphStatus: drifted || sourceDrifted ? "stale" : "degraded",
     reasons: degradations,
     ...(reasonDiagnostic?.code ? { reasonCode: reasonDiagnostic.code } : {}),
     message: reasonDiagnostic?.message
       ?? (drifted
         ? "Graph build configuration changed after this index was built."
-        : "Some files could not be parsed completely when this index was built."),
+        : sourceDrifted
+          ? "Some indexed files changed after this index was built and were excluded."
+          : "Some files could not be parsed completely when this index was built."),
     // Say which part of the answer each label applies to, rather than leaving
     // the reader to guess how much of it to discard.
     trusted: ["definitions", "containment", "source"],
@@ -2126,6 +2204,14 @@ function configDriftRecords(session: AgentGraphSession): Rec[] {
                 ...(parseHealth.failedPathsTruncated ? { failedPathsTruncated: true } : {}),
               }
             : {}),
+        }
+      : {}),
+    ...(excluded.length > 0
+      ? {
+          // The complete set, because the answer was built by excluding
+          // exactly these. A caller can reproduce what was left out.
+          excludedFiles: excluded,
+          excludedFileCount: excluded.length,
         }
       : {}),
     ...(changedPaths.length > 0 ? { changedInputs: changedPaths } : {}),

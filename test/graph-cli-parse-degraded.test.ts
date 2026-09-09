@@ -124,9 +124,22 @@ describe("graph reads from a parse-degraded store", () => {
       .every((record) => record.stale === true)).toBe(true);
   });
 
-  it("still refuses when the store is degraded for any other reason", async () => {
+  it("still refuses when the store is degraded for a reason it cannot bound", async () => {
     const root = await parseDegradedFixture();
-    writeFileSync(join(root, "src", "b.ts"), "export function gamma(): number {\n  return 3;\n}\n");
+    const db = openSqlite(join(root, ".mex", "graph.db"));
+    try {
+      const row = db.prepare("SELECT value FROM project_metadata WHERE key = ?")
+        .get(GRAPH_SNAPSHOT_METADATA_KEY) as { value: string };
+      const snapshot = parseGraphSnapshot(row.value);
+      if (!snapshot) throw new Error("fixture has no snapshot");
+      // A different grammar is engine identity, not a bounded shortfall.
+      db.prepare("UPDATE project_metadata SET value = ? WHERE key = ?").run(
+        serializeGraphSnapshot({ ...snapshot, grammarHash: "0".repeat(64) }),
+        GRAPH_SNAPSHOT_METADATA_KEY,
+      );
+    } finally {
+      db.close();
+    }
     const records = await capture((deps) => runGraphQuery("who-calls", "beta", root, deps, {}));
     expect(records.find((record) => record.type === "error"))
       .toMatchObject({ code: "GRAPH_UNAVAILABLE" });

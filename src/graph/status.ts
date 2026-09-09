@@ -324,15 +324,28 @@ interface InspectionContext {
  * `parse-degraded` — some files parsed partially or not at all, so what it
  * holds is incomplete. Its facts are still true; there are simply fewer of
  * them than the repository contains.
+ * `source-drift` — some indexed files no longer match the working tree, so
+ * everything the store says about *those* files describes an older revision.
+ * Facts about every other file are unaffected.
  *
- * The two make different claims and are reported separately.
+ * They make different claims and are reported separately.
  */
-export type GraphReadDegradation = "config-drift" | "parse-degraded";
+export type GraphReadDegradation = "config-drift" | "parse-degraded" | "source-drift";
 
 /** @internal Exact identity plus the reasons the store is not provably fresh. */
 export interface InternalGraphDegradedObservation {
   readonly token: InternalGraphFreshObservationToken;
   readonly degradations: readonly GraphReadDegradation[];
+  /**
+   * Every repository path whose indexed facts no longer describe the working
+   * tree, complete and sorted.
+   *
+   * Complete is the load-bearing word: a reader excludes these files and
+   * answers from the rest, so a partial list would let it serve a fact about
+   * a file that has moved on. The classification refuses whenever the change
+   * list was truncated, which is what makes this exhaustive.
+   */
+  readonly driftedSources: readonly string[];
 }
 
 interface FreshObservation {
@@ -976,18 +989,33 @@ async function inspectGraphStatusAttempt(
     // unfinished inspection, or a demanded rebuild all refuse exactly as
     // before; the two entries below are the only shortfalls a bound read
     // tolerates, and each is reported to whatever serves it.
+    // Drifted source is tolerable only while the complete list of drifted
+    // paths is known: a reader excludes exactly those files and answers from
+    // the rest, and a truncated list would let one through. The change-path
+    // ceiling therefore doubles as the bound on how much drift can still be
+    // served — past it, this is a stale index rather than a partial answer.
+    const sourceDrifted = sourceChanges.changes.total > 0;
+    const sourceDriftBounded = sourceDrifted && !sourceChanges.changes.truncated;
     const boundable = !rebuildRequired
       && !freshnessUnproven
-      && sourceChanges.changes.total === 0
       && !sourceChanges.changes.branchChanged
-      && !sourceChanges.digestChanged
       && !sourceChanges.changes.grammarChanged
-      && (configDriftTolerated || !sourceChanges.changes.configChanged);
+      && (configDriftTolerated || !sourceChanges.changes.configChanged)
+      && (!sourceDrifted || sourceDriftBounded)
+      && (!sourceChanges.digestChanged || sourceDriftBounded);
     const degradations: GraphReadDegradation[] = boundable
       ? [
           ...(sourceChanges.changes.configChanged ? ["config-drift" as const] : []),
           ...(parseDegraded ? ["parse-degraded" as const] : []),
+          ...(sourceDrifted ? ["source-drift" as const] : []),
         ]
+      : [];
+    const driftedSources = sourceDriftBounded
+      ? [...new Set([
+          ...sourceChanges.changes.added,
+          ...sourceChanges.changes.modified,
+          ...sourceChanges.changes.deleted,
+        ])].sort(compareCodePoints)
       : [];
     // `stale` and `degraded` are the only non-fresh kinds those shortfalls can
     // produce here; any other kind was returned long before this point.
@@ -1019,6 +1047,7 @@ async function inspectGraphStatusAttempt(
               degradedObservation: {
                 token: validation.freshObservation!,
                 degradations: Object.freeze([...degradations]),
+                driftedSources: Object.freeze([...driftedSources]),
               },
             }),
       };
@@ -1412,6 +1441,9 @@ async function validateFreshObservation(
 
   const changed: string[] = [];
   if (!sameRepoState(before.repo.state, repo.state)) changed.push("Git state");
+  // Comparing the two observations to each other is the race check and always
+  // applies; comparing either to the stored snapshot is the freshness question
+  // the caller already answered.
   if (liveSourceIdentity(before.live) !== liveSourceIdentity(live)) changed.push("source corpus");
   // Two comparisons live here. Whether the two observations agree with each
   // other is a race check and always applies. Whether they agree with the

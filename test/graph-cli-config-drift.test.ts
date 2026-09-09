@@ -190,19 +190,21 @@ describe("graph reads after a config-only change", () => {
     expect(flows.every((record) => record.stepCount === undefined)).toBe(true);
   });
 
-  it("still refuses when indexed source drifted alongside the config, and names the source", async () => {
+  it("answers around a source file that drifted alongside the config", async () => {
     const { root } = await fixture();
     bumpDependency(root);
     writeFileSync(join(root, "packages", "api", "src", "index.ts"),
-      "export function normalizePath(path: string): string {\n  return path;\n}\n");
-    const records = await capture((deps) => runGraphQuery("who-calls", "normalizePath", root, deps, {}));
-    const error = errorRecord(records);
-    expect(error).toMatchObject({ code: "GRAPH_UNAVAILABLE" });
-    // Config is the input the gate excused; the source edit is what refused
-    // the read, so that is what the refusal has to say.
-    expect(error!.reasonCode).not.toBe("GRAPH_BUILD_MANIFEST_CHANGED");
-    expect(error!.reasonCode).not.toBe("GRAPH_SEMANTIC_INPUTS_CHANGED");
-    expect(String(error!.message)).toMatch(/source/i);
+      "export function normalizePath(path: string): string { return path; }");
+    const records = await capture((deps) => runGraphQuery("where-defined", "renderPage", root, deps, {}));
+    expect(errorRecord(records)).toBeUndefined();
+    expect(statusRecord(records)).toMatchObject({
+      reasons: ["config-drift", "source-drift"],
+      excludedFiles: ["packages/api/src/index.ts"],
+    });
+    // The answer comes from the file that did not move.
+    const results = ofType(records, "result");
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.every((record) => record.filePath === "packages/web/src/index.ts")).toBe(true);
   });
 
   it("emits nothing extra while the graph is fresh", async () => {

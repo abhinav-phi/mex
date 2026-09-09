@@ -62,6 +62,8 @@ export interface InternalFreshGraphReadSession extends InternalGraphReadSession 
    * it reports the answer.
    */
   degradations: readonly GraphReadDegradation[];
+  /** Complete, sorted list of indexed paths that no longer match the tree. */
+  driftedSources: readonly string[];
   revalidateFreshness(): Promise<GraphFreshnessRevalidation>;
 }
 
@@ -372,6 +374,7 @@ export async function loadFreshGraphReadSession(
       ? inspection.degradedObservation!
       : null;
   const degradations: readonly GraphReadDegradation[] = degraded?.degradations ?? [];
+  const driftedSources: readonly string[] = degraded?.driftedSources ?? [];
   const configDriftTolerated = inspection.configDriftTolerated === true;
   const withTolerance = (result: InternalFreshGraphReadResult): InternalFreshGraphReadResult =>
     ({ ...result, configDriftTolerated });
@@ -429,6 +432,7 @@ export async function loadFreshGraphReadSession(
       ...ownedBase,
       graphStatus: guardedStatus,
       degradations,
+      driftedSources,
       validate: () => ownedBase.validate(),
       revalidateFreshness: async () => {
         const before = session.validate();
@@ -440,7 +444,12 @@ export async function loadFreshGraphReadSession(
         // relabelled after the fact.
         const finalDegraded = finalInspection.degradedObservation ?? null;
         const finalObservation = degradations.length > 0
-          ? (finalDegraded && sameDegradations(finalDegraded.degradations, degradations)
+          ? (finalDegraded
+            && sameDegradations(finalDegraded.degradations, degradations)
+            // A file that drifted after the answer was assembled would make a
+            // returned fact describe a revision that no longer exists, so the
+            // exact set has to hold for the whole read, not just its kinds.
+            && sameStringSets(finalDegraded.driftedSources, driftedSources)
               ? finalDegraded.token
               : null)
           : finalInspection.graphStatus.status === "fresh"
@@ -809,6 +818,10 @@ function sameDegradations(
   left: readonly GraphReadDegradation[],
   right: readonly GraphReadDegradation[],
 ): boolean {
+  return left.length === right.length && left.every((entry) => right.includes(entry));
+}
+
+function sameStringSets(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((entry) => right.includes(entry));
 }
 
