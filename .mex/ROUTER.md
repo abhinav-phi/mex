@@ -16,7 +16,7 @@ edges:
     condition: when starting a task — check the pattern index for a matching pattern file
   - target: patterns/release-readme-visuals.md
     condition: when refreshing the release README, badges, community links, or architecture illustrations
-last_updated: 2026-09-09
+last_updated: 2026-09-10
 ---
 
 # Session Bootstrap
@@ -183,9 +183,17 @@ Then read this file fully before doing anything else in this session.
   22/24 and Windows/macOS CI; browser/performance setup failed twice on an
   unused Google Chrome apt repository checksum mismatch before tests ran.
   CI now removes its legacy `.list` and newer `.sources` entries before
-  installing Playwright's own Chromium; fresh CI remains required. Main is
-  not updated by this sync, and release versioning, notes,
-  tagging, and publication remain a separate checkpoint.
+  installing Playwright's own Chromium. Final head `0118536` passed all
+  required checks in run `34385511415`, including browser and release
+  performance. Main was not updated by this sync.
+- Release preparation for 0.8.1 is authorized on `codex/0.8.1`: root package
+  metadata and capability goldens now use 0.8.1, and changelog/release notes
+  describe the complete release. Install examples and compatibility guidance
+  cover managed skill refresh, Relay-v4 teammate upgrades, FTS5, and telemetry.
+  Translations retain an explicit older-narrative notice while their upgrade
+  commands and compatibility warnings are refreshed. Verification and sharing
+  state are tracked in `docs/design/0.8.1-release-plan.md`; merging to main,
+  tagging, and publication remain outside this checkpoint.
 - Targeted graph get/query/impact consumers use one provenance-bound immutable
   snapshot and discard output if graph or exact source identity changes.
 - Graph reads separate engine identity from bounded, reportable shortfalls. A

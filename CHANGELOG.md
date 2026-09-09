@@ -4,15 +4,97 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-10
+
+### Added
+
+- A Context graph in the Project Hub showing existing Wiki entities,
+  relationships, and direct code groundings, with type filters, selection
+  details, pan/zoom, and a list alternative.
+- Inbox contributions for one addition or correction to existing architecture,
+  component, convention, decision, pattern, or guide knowledge. Local drafts
+  publish as Git-shareable Markdown proposals; explicit approval writes the
+  existing Wiki knowledge and retains contribution evidence.
+- Open-to-team Relays that eligible active Members can take, including teammates
+  who join later; local drafts may leave recipients undecided.
+  `mex relay draft save --from <draft.json>` shortens local saving through the existing signed workflow.
+  Hub and CLI show audience, current eligibility, and the sharing boundary.
+- Member reactivation with the original identity, plus checkout-local agent
+  logging preferences in Hub Settings and `mex logging`: `significant` (the
+  quiet default), `checkpoints`, and `manual`. Managed agent instructions now
+  retrieve relevant bounded Timeline notes without automatically promoting
+  those notes to accepted project knowledge.
+- Additive Graph ignore globs under `.mex/config.json`'s `graph.ignore`, with
+  repository-relative validation that behaves consistently across platforms.
+- `mex telemetry disable` and `mex telemetry enable`, writing the same `~/.mex/config.json` key as `mex config set telemetry on|off`. `mex telemetry --help` and `mex telemetry status` now name the `DO_NOT_TRACK=1` and `MEX_TELEMETRY=0` env opt-outs and say which one is in effect; previously the only switch lived under `config` and the env vars appeared solely in the first-run notice (#110).
+
+### Changed
+
+- Hub navigation centers Context, Code, Inbox, Relays, Team, and Activity.
+  Specs and Workstreams leave primary navigation; existing artifacts and direct
+  routes remain readable.
+- Hub Graph refresh/rebuild constructs candidates in a disposable Node process,
+  keeping compiler work off the Hub event loop. The parent retains validation,
+  cancellation, and atomic publication. Reused SQLite statements, smaller
+  temporary collections, and outer-owned fingerprint transactions reduce
+  avoidable work. CLI construction remains in process; changed-source builds
+  still rebuild the eligible corpus, and aggregate peak memory is not capped.
+- Targeted CLI Graph reads can report useful results with explicit qualifications
+  for config drift, partial parses, and excluded changed source files. Incompatible
+  engine identity still refuses reads; Hub reads retain strict freshness.
+  Graph config identity now uses extraction-relevant fields, so formatting and
+  dependency-version-only edits no longer invalidate the index. Unparseable
+  configuration still falls back to exact bytes.
+- Telemetry now records namespaced CLI commands and outcomes, fixed Hub
+  page/action categories, and terminal job results through a bounded local queue
+  and cancellable delivery. CLI/Hub share a random installation UUID; optional
+  metadata contains only an existing scaffold UUID and known configured AI-tool
+  names. This supports repeat/shared-project estimates, not verified team size
+  or detection of the invoking agent. Names, remotes, content, paths, search
+  text, and contact details remain excluded; existing opt-outs apply.
+- `mex feedback` opens the same voluntary form as the Hub's Help shape MEX card,
+  without adding an analytics identity to the form URL. See [TELEMETRY.md](TELEMETRY.md)
+  for the event catalog, pseudonymous identifiers, exclusions, and opt-outs.
+
 ### Fixed
+
+- Successful agent exit no longer authorizes grounding baseline renewal.
+  Interactive sync requires explicit acceptance of individual groundings and
+  revalidates document/code identity; moved-symbol repair preserves prior change
+  evidence instead of accepting changed behavior.
+- Unknown untyped `context/*.md` files are no longer automatically classified
+  as architecture. Wiki creation/synthesis preserves supplied provenance or
+  records the operation's provenance; Inbox corrections retain original
+  attribution and grounding alongside proposal evidence.
+- Setup links selected tools to the scaffold even when their instruction files
+  already exist or setup resumes without showing the selection menu. Existing
+  instructions are preserved, and repository self-setup reuses saved tool
+  choices while preserving authored knowledge.
+- Windows artifact handling now uses exact bytes by default, with explicit
+  checkout-neutral handling for canonical Team records. Wiki revisions and
+  recovery stay exact, legacy Timeline IDs remain stable across LF/CRLF, and
+  affected Team/Wiki ownership checks preserve full-width device/inode identity
+  and replacement files during failure cleanup.
+- Graph maintenance can publish otherwise valid candidates with documented
+  per-file skips or incomplete parses, instead of discarding the entire build.
+  Failed maintenance reports the diagnostics that blocked publication.
 - `mex graph` now fails with an actionable message naming the running Node version when the built-in `node:sqlite` module lacks FTS5 support, instead of surfacing SQLite's raw `no such module: fts5` on the first schema statement that needs it. FTS5 availability is not guaranteed by every Node build/version inside the documented `engines` range (#110).
 - The FTS5 preflight now covers every consumer, not only `mex graph`'s writable open: read-only and immutable graph opens (`mex check`, `graph scope`/`query`/`get`, `impact`) and the wiki index, whose `wiki_fts` table has the same dependency. `mex wiki rebuild-index` reports the new `WIKI_INDEX_FTS5_UNAVAILABLE` diagnostic rather than `WIKI_INDEX_REBUILD_REQUIRED`, which would have sent users round a loop rebuilding an index no rebuild can fix (#110).
 - The wiki index's two direct read paths — contract status inspection and the read session — also preflight FTS5 now, instead of letting SQLite's raw error escape. Reachable by building the index on one Node and reading it on another (#110).
 - COMPATIBILITY.md documents the FTS5 requirement, a one-line command to check the Node you actually run, and that the v0.6.3 fallback predates the code graph. The preflight's error message pointed at a document that said nothing about FTS5 (#110).
 - `mex graph rebuild`/`refresh`/`repair` and `mex wiki rebuild-index` now ensure `.mex/.gitignore` exists before creating a store. Only `mex setup` did this, so building a store in a checkout that had never run setup left `graph.db`, `-wal` and `-shm` untracked, ready for the next `git add -A` to commit (#110).
 
-### Added
-- `mex telemetry disable` and `mex telemetry enable`, writing the same `~/.mex/config.json` key as `mex config set telemetry on|off`. `mex telemetry --help` and `mex telemetry status` now name the `DO_NOT_TRACK=1` and `MEX_TELEMETRY=0` env opt-outs and say which one is in effect; previously the only switch lived under `config` and the env vars appeared solely in the first-run notice (#110).
+### Compatibility
+
+- New open-to-team Relays use schema v4. Teammates need MEX 0.8.1 before
+  consuming those artifacts; existing named v1–v3 Relays and legacy Spec
+  proposals remain supported. New named Relays continue using v3.
+- The Graph store remains schema v4. Ordinary reads never migrate or repair
+  indexes. Upgrading the npm package does not update project agent instructions;
+  review `mex skills sync --dry-run`, then run `mex skills sync` in existing
+  projects to refresh managed skills and anchors and start a new agent session.
+  A completed 0.8.0 setup does not need to run again solely for this upgrade;
+  follow any explicit maintenance action reported by `mex graph status`.
 
 ## [0.8.0] - 2026-09-02
 

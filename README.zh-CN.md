@@ -26,7 +26,7 @@ MEX 将团队的架构、决策、需求和交接信息与代码放在一起。�
 
 </div>
 
-> 此译文介绍的是 0.8.0 版本。正在开发的 0.8.1 新增了 Context 知识图谱、Inbox 知识贡献、面向团队开放的 Relay 和日志偏好设置；最新说明请参阅[英文 README](README.md)和[版本计划](docs/design/0.8.1-release-plan.md)。
+> 此译文的主要产品介绍仍对应 0.8.0。安装命令和升级指引已调整为 0.8.1；产品变更请参阅[英文 README](README.md)和 [0.8.1 发行说明](RELEASE_NOTES.md)。
 
 ---
 
@@ -102,7 +102,7 @@ MEX 需要 **Node.js 22.5 或更高版本**，以及一个 Git 仓库。标准 n
 在仓库根目录运行：
 
 ```bash
-npx mex-agent@0.8.0 setup
+npx mex-agent@0.8.1 setup
 ```
 
 设置流程会保留现有指令、构建本地 Code Graph，并安装所选集成。它可以启动已选择且可用的 Claude Code 或 Codex CLI 来填充记忆；如果填充尚未完成，设置流程会打印提示词并暂停。填充完成后，它会采集代码关联信息、构建 Wiki 索引、验证结果，并输出 Git 提交检查点。所连接的智能体需要满足其自身的安装、账户和网络要求。
@@ -117,7 +117,7 @@ git status --short
 
 ```bash
 git commit -m "chore: initialize MEX"
-npx mex-agent@0.8.0 hub
+npx mex-agent@0.8.1 hub
 ```
 
 ![准备好项目的三个步骤：运行设置、填充记忆，然后审阅并提交检查点，再打开 Hub。](docs/diagrams/readme/setup.svg)
@@ -134,9 +134,9 @@ npx mex-agent@0.8.0 hub
 通过 Git 克隆或拉取团队的仓库和分支。如果 0.8 设置已完成并提交，在自己的检出目录中构建派生索引，然后打开 Hub：
 
 ```bash
-npx mex-agent@0.8.0 graph rebuild
-npx mex-agent@0.8.0 wiki rebuild-index
-npx mex-agent@0.8.0 hub
+npx mex-agent@0.8.1 graph rebuild
+npx mex-agent@0.8.1 wiki rebuild-index
+npx mex-agent@0.8.1 hub
 ```
 
 复用共享的项目记忆，不要仅为加入项目而重新生成。在 Team/Members 中检查实际生效的身份，并按需选择你已有的 Member 记录作为本地覆盖设置。如果尚无记录，请通过经过审阅的工作流明确创建一条，并共享其权威记录文件。Members 用于标明归属，不是登录或权限系统。
@@ -149,7 +149,7 @@ npx mex-agent@0.8.0 hub
 <summary><strong>更喜欢全局安装？</strong></summary>
 
 ```bash
-npm install -g mex-agent@0.8.0
+npm install -g mex-agent@0.8.1
 mex setup
 ```
 
@@ -164,14 +164,14 @@ npm 包名为 `mex-agent`，安装后的命令为 `mex`。运行 `mex hub` 前�
 <summary><strong>想将 MEX 用于长期运行的运维智能体？</strong></summary>
 
 ```bash
-npx mex-agent@0.8.0 setup --mode agent-memory
+npx mex-agent@0.8.1 setup --mode agent-memory
 ```
 
 这个独立模板将 MEX 的路由与维护模型应用于家庭实验室、基础设施，以及长期运行的智能体工作空间。它增加了 `HEARTBEAT.md` 约定和清理规范；本 README 描述的 Code Graph、Wiki 和团队 Hub 流程属于默认的 `code-repo` 模式。
 
 </details>
 
-为便于阅读，示例使用 `mex`。你可以按上述方式全局安装，或将其替换为 `npx mex-agent@0.8.0`。
+为便于阅读，示例使用 `mex`。你可以按上述方式全局安装，或将其替换为 `npx mex-agent@0.8.1`。
 
 <a id="how-mex-works"></a>
 
@@ -359,12 +359,14 @@ Relay 是持久交接记录，不是聊天、实时通知、任务分配，也�
 如果使用全局安装，请升级 CLI 并刷新所选 Claude Code/Codex 技能副本：
 
 ```bash
-npm install -g mex-agent@0.8.0
+npm install -g mex-agent@0.8.1
 mex skills sync --dry-run
 mex skills sync
 ```
 
-同步技能后，开启新的智能体会话。仅升级软件包和技能，并不能让旧仓库立即满足 Hub 的运行条件。0.8 的实现可以在已填充的基础结构上重新运行设置并保留已编写的文件，但发行说明将 setup 描述为全新设置路径，而不是适用于所有情况的迁移保证。请先通过 dry run 评估达到完整就绪状态的路径，再实际应用：
+如果已完成 0.8.0 的设置，上述命令会更新受管理的技能和智能体指引；无需仅为升级软件包而重新运行 setup。请检查与本地修改的指引之间报告的冲突，然后开启新的智能体会话。
+
+仅升级软件包和技能，并不能让旧仓库或尚未完成设置的仓库立即满足 Hub 的运行条件。对于这些仓库，请先通过 dry run 检查 setup 的变更，再实际应用；setup 会保留现有编写的文件，其变更仍需审阅：
 
 ```bash
 mex setup --dry-run
@@ -378,7 +380,7 @@ mex capabilities --json
 已有的 Markdown 基础结构仍然有效，Graph 读取从不隐式迁移数据存储。兼容的 schema-v2 和完整的 schema-v3 存储可以通过显式修复升级；schema-v1、不完整、有歧义、格式错误或已损坏的存储则需要重建。请遵循 `mex graph status` 给出的具体操作。不要添加忽略整个 `.mex/` 的规则——这会隐藏团队本应共享的权威记忆文件。
 
 > [!WARNING]
-> 在交换 schema-v3 Relays 之前，请协调全团队升级到 0.8：早于 0.8 的程序无法解析该格式。Node 20 用户应继续使用 MEX 0.6.3，直到能够升级至 Node 22.5 或更高版本。
+> **共享新的面向团队开放的 Relay 之前，请先让全团队升级到 0.8.1**，因为这类 Relay 使用 schema-v4。已有的 schema-v1 至 schema-v3 Relay 仍受支持，指定接收人的交接仍使用 schema-v3。MEX 要求 Node 22.5 或更高版本，且[内置 SQLite 必须支持 FTS5](COMPATIBILITY.md#sqlite-fts5)。Node 20 用户应继续使用 MEX 0.6.3，直到能够换用受支持的 Node 构建版本。
 
 <a id="privacy-and-trust-model"></a>
 
