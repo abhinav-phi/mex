@@ -154,6 +154,32 @@ only to explicit maintenance workflows.
   targeted commands cannot, because they return exact node coordinates. One
   vocabulary and one classifier is the unification; one tolerance is a
   regression wearing its clothes.
+- `degraded` is not `unusable`, and conflating them costs a repository its
+  graph twice over. A candidate whose only fault is a file the policy skipped
+  must publish, or the skip path produces a candidate the publish gate throws
+  away; a store with a partial parse must read, or one unparseable file answers
+  nothing. Enumerate which shortfalls are known, bounded and reportable, and
+  admit exactly those.
+- Adding a diagnostic code is half the change. Every allowlist that enumerates
+  codes — publication, repair, refusal ranking — has to learn it in the same
+  commit, or the new code silently means "refuse".
+- Serving around a gap requires the gap's *complete* extent. Excluding drifted
+  files is only safe while the drifted list is exhaustive, so bind it to the
+  ceiling that truncates the list and refuse past it. A partial exclusion set is
+  worse than refusing outright.
+- Distinguish out-of-date from incomplete when labelling. Drifted config makes
+  resolved edges untrustworthy; an unfinished parse makes the answer smaller
+  while everything in it stays true. One label for both teaches the reader to
+  ignore the label.
+- Hash a config input by what it changes, not by its bytes — and fail towards
+  over-invalidation. A version bump or a reindent invalidating an index is
+  noise; a resolution-affecting field missing from the projection is a stale
+  index reading as current with no label at all.
+- A re-resolved path comparison is a name check, not an identity check. On a
+  case-insensitive volume the same file can come back spelled differently — a
+  path routed through the TypeScript compiler host arrives lowercased — and a
+  byte comparison then rejects a file whose device, inode, size and timestamps
+  all match.
 - Wall-clock status timings vary by machine and process-start overhead. Keep
   the benchmark non-gating, record its environment, and protect correctness
   with deterministic race, non-mutation, and bounded-work tests.
