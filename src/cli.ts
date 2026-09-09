@@ -923,6 +923,7 @@ program
   .command("timeline")
   .description("Show recent mex event log entries")
   .option("--json", "Output events as JSON")
+  .option("--format <format>", "Output format: md for a Markdown table (piped into reports)")
   .option("--since <date>", "Filter from YYYY-MM-DD or relative Nd, e.g. 30d")
   .option("--type <type>", "Filter by event type")
   .option("--limit <n>", "Maximum number of entries", parsePositiveIntArg)

@@ -58,6 +58,8 @@ export interface LogOpts {
 
 export interface TimelineOpts {
   json?: boolean;
+  /** `"md"` renders a Markdown table instead of the terminal output (#55). */
+  format?: string;
   since?: string;
   kind?: string;
   limit?: number;
@@ -113,6 +115,11 @@ export async function runTimeline(config: MexConfig, opts: TimelineOpts = {}): P
     return;
   }
 
+  if (opts.format === "md") {
+    printTimelineMarkdown(filtered);
+    return;
+  }
+
   if (filtered.length === 0) {
     console.log(chalk.dim("No events found."));
     return;
@@ -121,6 +128,25 @@ export async function runTimeline(config: MexConfig, opts: TimelineOpts = {}): P
   for (const e of filtered) {
     const files = e.files.length ? chalk.dim(` (${e.files.join(", ")})`) : "";
     console.log(`${chalk.bold(e.timestamp.slice(0, 10))} ${chalk.cyan(e.kind)} ${e.message}${files}`);
+  }
+}
+
+/**
+ * Markdown rendering for `timeline --format md` — valid inside reports and
+ * standup notes. Pipes and line breaks are escaped so a message cannot break
+ * the table; the default terminal output is untouched (#55).
+ */
+function printTimelineMarkdown(filtered: EventEntry[]): void {
+  if (filtered.length === 0) {
+    console.log("_No events found._");
+    return;
+  }
+  console.log("| Date | Type | Event | Files |");
+  console.log("|---|---|---|---|");
+  for (const e of filtered) {
+    const message = e.message.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+    const files = e.files.length ? e.files.map((f) => `\`${f}\``).join(", ") : "—";
+    console.log(`| ${e.timestamp.slice(0, 10)} | ${e.kind} | ${message} | ${files} |`);
   }
 }
 
