@@ -338,6 +338,7 @@ describe("built CLI main-module guard", () => {
         env: {
           ...process.env,
           HOME: userHome,
+          MEX_HOME: userHome,
           MEX_TELEMETRY: "1",
           NO_COLOR: "1",
         },
@@ -370,7 +371,7 @@ describe("built CLI main-module guard", () => {
         const result = spawnSync(process.execPath, [cliPath, ...args], {
           cwd: project,
           encoding: "utf8",
-          env: { ...process.env, HOME: userHome, MEX_TELEMETRY: "1", NO_COLOR: "1" },
+          env: { ...process.env, HOME: userHome, MEX_HOME: userHome, MEX_TELEMETRY: "1", NO_COLOR: "1" },
         });
         expect(result.status, args.join(" ")).toBe(2);
         expect(result.stderr, args.join(" ")).toBe("");
@@ -977,7 +978,7 @@ describe("built CLI main-module guard", () => {
       ].map((entry) => JSON.stringify({ timestamp: "2026-05-14T00:00:00.000Z", cwd: ".", ...entry })).join("\n") + "\n");
       const before = [configPath, historyPath].map((path) => ({ bytes: readFileSync(path), mtime: lstatSync(path, { bigint: true }).mtimeNs }));
       const result = spawnSync(process.execPath, [cliPath, "timeline", "--json", "--type", "risk", "--query", "AUTH", "--file", "src/auth.ts", "--limit", "10"], {
-        cwd: fixture, encoding: "utf8", env: { ...process.env, HOME: userHome, MEX_TELEMETRY: "1", DO_NOT_TRACK: "0", NO_COLOR: "1" },
+        cwd: fixture, encoding: "utf8", env: { ...process.env, HOME: userHome, MEX_HOME: userHome, MEX_TELEMETRY: "1", DO_NOT_TRACK: "0", NO_COLOR: "1" },
       });
       expect(result.status).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual({
@@ -988,7 +989,7 @@ describe("built CLI main-module guard", () => {
       expect(readdirSync(mexPath).sort()).toEqual(["ROUTER.md", "config.json", "events"]);
       expect(readdirSync(userHome)).toEqual([]);
       const invalid = spawnSync(process.execPath, [cliPath, "timeline", "--type", "checkpoint", "--json"], {
-        cwd: fixture, encoding: "utf8", env: { ...process.env, HOME: userHome, MEX_TELEMETRY: "1", DO_NOT_TRACK: "0", NO_COLOR: "1" },
+        cwd: fixture, encoding: "utf8", env: { ...process.env, HOME: userHome, MEX_HOME: userHome, MEX_TELEMETRY: "1", DO_NOT_TRACK: "0", NO_COLOR: "1" },
       });
       expect(invalid.status).toBe(1);
       expect(invalid.stderr).toContain("Unknown event type");
@@ -1133,7 +1134,7 @@ Canonical read-only release requirements.
         {
           cwd: fixture,
           encoding: "utf8",
-          env: { ...process.env, HOME: userHome, MEX_TELEMETRY: "0", NO_COLOR: "1" },
+          env: { ...process.env, HOME: userHome, MEX_HOME: userHome, MEX_TELEMETRY: "0", NO_COLOR: "1" },
         },
       );
       expect(rebuilt.status, rebuilt.stderr).toBe(0);
@@ -1148,7 +1149,7 @@ Canonical read-only release requirements.
         {
           cwd: fixture,
           encoding: "utf8",
-          env: { ...process.env, HOME: userHome, MEX_TELEMETRY: "0", NO_COLOR: "1" },
+          env: { ...process.env, HOME: userHome, MEX_HOME: userHome, MEX_TELEMETRY: "0", NO_COLOR: "1" },
         },
       );
       expect(capabilityResult.status, capabilityResult.stderr).toBe(0);
@@ -1166,7 +1167,7 @@ Canonical read-only release requirements.
         {
           cwd: fixture,
           encoding: "utf8",
-          env: { ...process.env, HOME: userHome, MEX_TELEMETRY: "0", NO_COLOR: "1" },
+          env: { ...process.env, HOME: userHome, MEX_HOME: userHome, MEX_TELEMETRY: "0", NO_COLOR: "1" },
         },
       );
       expect(listed.status, listed.stderr).toBe(0);
@@ -1456,7 +1457,7 @@ Canonical read-only release requirements.
         const result = spawnSync(process.execPath, [cliPath, ...args], {
           cwd: fixture,
           encoding: "utf8",
-          env: { ...process.env, HOME: userHome, MEX_TELEMETRY: "1", NO_COLOR: "1" },
+          env: { ...process.env, HOME: userHome, MEX_HOME: userHome, MEX_TELEMETRY: "1", NO_COLOR: "1" },
         });
         expect(result.status, `${args.join(" ")}\n${result.stderr}`).toBe(0);
         expect(JSON.parse(result.stdout)).toMatchObject({ schemaVersion: 1, ok: true });
@@ -1476,13 +1477,15 @@ Canonical read-only release requirements.
         },
         expectedRevisions: [],
       }));
+      // Explicit mutation previews now have opt-out telemetry. This assertion
+      // isolates Team provisioning; enabled delivery is covered by telemetry tests.
       const preview = spawnSync(
         process.execPath,
         [cliPath, "activity", "record", requestPath, "--json"],
         {
           cwd: fixture,
           encoding: "utf8",
-          env: { ...process.env, HOME: userHome, MEX_TELEMETRY: "1", NO_COLOR: "1" },
+          env: { ...process.env, HOME: userHome, MEX_HOME: userHome, MEX_TELEMETRY: "0", NO_COLOR: "1" },
         },
       );
       expect(preview.status, preview.stderr).toBe(0);
@@ -1544,7 +1547,7 @@ Canonical read-only release requirements.
         const result = spawnSync(process.execPath, [cliPath, ...testCase.args], {
           cwd: outsideRepository,
           encoding: "utf8",
-          env: { ...process.env, HOME: userHome, MEX_TELEMETRY: "1", NO_COLOR: "1" },
+          env: { ...process.env, HOME: userHome, MEX_HOME: userHome, MEX_TELEMETRY: "1", NO_COLOR: "1" },
         });
         expect(result.status, testCase.args.join(" ")).toBe(2);
         expect(result.stderr, testCase.args.join(" ")).toBe("");
@@ -1567,7 +1570,7 @@ Canonical read-only release requirements.
       const unavailable = spawnSync(process.execPath, [cliPath, "member", "list", "--json"], {
         cwd: outsideRepository,
         encoding: "utf8",
-        env: { ...process.env, HOME: userHome, MEX_TELEMETRY: "1", NO_COLOR: "1" },
+        env: { ...process.env, HOME: userHome, MEX_HOME: userHome, MEX_TELEMETRY: "1", NO_COLOR: "1" },
       });
       expect(unavailable.status).toBe(3);
       expect(unavailable.stderr).toBe("");
@@ -1610,7 +1613,7 @@ Canonical read-only release requirements.
           const result = spawnSync(process.execPath, [cliPath, "activity", "list", "--json"], {
             cwd: fixture,
             encoding: "utf8",
-            env: { ...process.env, HOME: userHome, MEX_TELEMETRY: "1", NO_COLOR: "1" },
+            env: { ...process.env, HOME: userHome, MEX_HOME: userHome, MEX_TELEMETRY: "1", NO_COLOR: "1" },
           });
           expect(result.status).toBe(fixtureKind === "symlink" ? 5 : 1);
           expect(result.stderr).toBe("");

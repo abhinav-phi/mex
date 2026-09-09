@@ -46,6 +46,9 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test
+      - name: Test isolated telemetry benchmark transport
+        if: matrix.node-version == '22.22.0'
+        run: npm run benchmark:telemetry:test
       - name: Run evaluator tests
         if: matrix.node-version == '22.22.0'
         run: npm run eval:test
@@ -102,6 +105,8 @@ jobs:
           src/team/workflow/__tests__/repository-team-workflow-port.test.ts
           test/team-inbox-spec-authoring-real.contract.test.ts
           test/capabilities.test.ts
+          test/telemetry.test.ts
+          test/telemetry-delivery.test.ts
           src/logging/__tests__/policy.test.ts
           src/wiki/operations/__tests__/durability.test.ts
           src/wiki/operations/__tests__/identity-precision.test.ts

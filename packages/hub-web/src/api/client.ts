@@ -107,6 +107,7 @@ import type {
   WikiRelationsResponse,
 } from "./types";
 import type { RelayTransport } from "./relay-client";
+import { isHubTelemetryPage, type HubTelemetryPage } from "./telemetry";
 
 const API_ROOT = "/api/v1";
 
@@ -165,6 +166,7 @@ export interface FixtureApiOptions {
 }
 
 export interface HubApi {
+  recordPageView?(page: HubTelemetryPage): Promise<void>;
   getLoggingPolicy(): Promise<AgentLoggingPolicy>;
   setLoggingPolicy(request: AgentLoggingUpdateRequest): Promise<AgentLoggingPolicy>;
   bootstrap(token: string): Promise<BootstrapResponse>;
@@ -320,6 +322,24 @@ export function clearBootstrapFragment(): void {
 
 export class HttpHubApi implements HubApi {
   #csrfToken: string | null = null;
+  #pageViewPending = false;
+
+  async recordPageView(page: HubTelemetryPage): Promise<void> {
+    if (!this.#csrfToken || this.#pageViewPending || !isHubTelemetryPage(page)) return;
+    this.#pageViewPending = true;
+    try {
+      await fetch(`${API_ROOT}/telemetry/page`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-MEX-CSRF": this.#csrfToken },
+        body: JSON.stringify({ page }),
+        credentials: "same-origin",
+        redirect: "error",
+        referrerPolicy: "no-referrer",
+        signal: AbortSignal.timeout(2_000),
+      });
+    } catch { /* A dropped local usage event must never disturb navigation. */ }
+    finally { this.#pageViewPending = false; }
+  }
   #relayTransport: RelayTransport = {
     request: (path, schema, init, mutation) => this.#request(path, schema, init, mutation),
     invalidIdentifier: (detail) => {

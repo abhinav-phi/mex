@@ -386,17 +386,17 @@ Las estructuras de Markdown existentes siguen siendo válidas y las lecturas del
 
 MEX no sube sus registros canónicos, Graph, índice de la Wiki, borradores, selección de identidad ni sesiones de Hub a un servicio de MEX. No ofrece transporte automático entre miembros del equipo: el contenido se comparte mediante las operaciones habituales de Git que tú realizas. Hub escucha en la interfaz de loopback y la capa de recuperación local de MEX no requiere credenciales de modelos.
 
-MEX tiene **telemetría seudónima de uso de la CLI**, activada por defecto salvo que la desactives. Cada invocación que cumpla las condiciones envía como máximo un evento. Los campos permitidos por MEX son un identificador aleatorio de la máquina, el nombre del comando, la versión de MEX, el sistema operativo, la versión de Node y, cuando existe una identidad disponible, un identificador de la estructura de MEX; el SDK de PostHog también añade metadatos con el nombre y la versión de su biblioteca. MEX no añade argumentos de comandos, rutas de archivos, nombres de repositorios, contenido de archivos ni direcciones IP al contenido enviado, aunque el servicio receptor puede observar los metadatos habituales del transporte.
+MEX tiene **telemetría seudónima de uso de la CLI y del Hub**, activada por defecto salvo que la desactives. Registra nombres de comandos, resultados, acciones explícitas del Hub, categorías de páginas y resultados de trabajos. Ambos usan un UUID aleatorio de instalación para medir el uso recurrente. No se envían identificadores de proyectos, argumentos, rutas, contenido, búsquedas ni datos de contacto. El servicio receptor puede observar los metadatos habituales del transporte. Una cola local limitada y una espera breve al terminar la CLI permiten posponer el envío sin cambiar el resultado del comando.
 
 Consulta o desactiva la telemetría con:
 
 ```bash
 mex telemetry inspect
 mex telemetry status
-mex config set telemetry off
+mex telemetry disable
 ```
 
-También puedes desactivarla con `MEX_TELEMETRY=0` o `DO_NOT_TRACK=1`. Consulta la [política de telemetría](https://github.com/mex-memory/mex/blob/v0.8.0/TELEMETRY.md) para conocer los controles y el contenido exacto que se envía. Los agentes de programación conectados a MEX pueden tener su propio comportamiento de red y telemetría; eso depende de esas herramientas, no de MEX.
+También puedes desactivarla con `MEX_TELEMETRY=0` o `DO_NOT_TRACK=1`. Consulta la [política de telemetría](TELEMETRY.md) para conocer los controles y el contenido exacto que se envía. Los agentes de programación conectados a MEX pueden tener su propio comportamiento de red y telemetría; eso depende de esas herramientas, no de MEX.
 
 <a id="what-mex-is-not"></a>
 

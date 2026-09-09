@@ -513,18 +513,7 @@ function ActivityRow({ item }: { item: ActivityItem }) {
   );
 }
 
-/**
- * Where the signup lives, and why the Hub never sees the address.
- *
- * The form is hosted; this card only opens it. That is not a shortcut — the Hub
- * serves itself under a policy that permits neither an outbound `fetch` nor a
- * cross-origin form post (`src/hub/app.ts`, `connect-src 'self'`,
- * `form-action 'self'`), so an input here could not submit anywhere without
- * loosening the rule that makes "Runs locally" in the sidebar true. Opening a
- * link is a navigation rather than a connection, so it stays inside the policy.
- *
- * The consequence worth stating: **no email address ever passes through mex.**
- */
+/** Hosted voluntary feedback; no address or installation ID passes through the Hub. */
 const UPDATES_FORM = "https://tally.so/r/KYjv4k";
 
 /**
@@ -538,12 +527,12 @@ function UpdatesSignupCard() {
     <Card className={homeStyles.updatesCard} role="region" aria-labelledby="overview-updates-heading">
       <CardHeader className={homeStyles.panelHeader}>
         <div>
-          <CardTitle><h2 id="overview-updates-heading">Help make MEX better</h2></CardTitle>
+          <CardTitle><h2 id="overview-updates-heading">Help shape MEX</h2></CardTitle>
         </div>
       </CardHeader>
       <CardContent className={homeStyles.updatesContent}>
         <p className={homeStyles.updatesBody}>
-          A short form about how you&rsquo;re using it. Your answers help shape mex :)
+          Tell us how you use MEX and what we should improve.
         </p>
         <div className={homeStyles.updatesActions}>
           {/*
@@ -556,7 +545,7 @@ function UpdatesSignupCard() {
             size="sm"
             variant="outline"
           >
-            Open the form
+            Share feedback
             <ExternalLink aria-hidden="true" data-icon="inline-end" />
           </Button>
         </div>

@@ -99,7 +99,7 @@ revision: 1
   can use Claude Code, Codex, or OpenCode, and prompt-only fallback works with
   any file-reading agent.
 - A local browser connects only to the loopback Project Hub and exchanges a one-use bootstrap token for a private session.
-- **posthog-node** — optional anonymous CLI telemetry; disabled for the development repository and by `DO_NOT_TRACK=1` or `MEX_TELEMETRY=0`.
+- **PostHog ingestion** — optional pseudonymous CLI/Hub events share one random installation UUID, with no project identity or content. A bounded per-user outbox and cancellable Node HTTP transport replace the SDK. Development checkouts and opt-out controls disable collection/delivery; see `TELEMETRY.md`.
 
 <!-- mex:entity
 id: mx_01M1M0CJ1E1X7BW1Q7PMGPVCRC

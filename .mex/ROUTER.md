@@ -152,6 +152,17 @@ Then read this file fully before doing anything else in this session.
   all memory and other limits stay unchanged. A clean enforcing run on the new
   calibrated head remains required. Local same-code memory/latency evidence is
   retained in `docs/design/graph-isolation-diagnostic.json`.
+- Graph performance PR #180 passed the final checks (run `34291831733`) and
+  merged into `codex/0.8.1` as `d64f171`; the preceding calibration notes are
+  historical. Main remains separate.
+- Telemetry v2 is implemented and locally verified on
+  `codex/0.8.1-telemetry`, based on that merge; PR/platform CI remains pending.
+  The approved random installation UUID is shared across CLI and Hub; no project
+  UUID, content, paths, queries, or contact data enters the event catalog.
+  Namespaced CLI outcomes, explicit Hub actions/pages, and terminal jobs use a
+  bounded per-user queue and cancellable delivery. Pure discovery/read commands
+  remain quiet. CLI feedback uses the existing Hub hosted form without an
+  analytics identity. See `docs/design/telemetry-v2.md` for validation status.
 - Targeted graph get/query/impact consumers use one provenance-bound immutable
   snapshot and discard output if graph or exact source identity changes.
 - The graph half of Checkpoint 2 is working in the Project Hub: grouped symbol

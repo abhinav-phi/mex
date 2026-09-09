@@ -151,6 +151,7 @@ import {
   validationFailed,
 } from "./http/errors.js";
 import { readBoundedJson, readStrictQuery } from "./http/request.js";
+import { HUB_PAGE_EVENT_BODY_BYTES, HubPageViewSchema, HubTelemetry, type HubTelemetrySink } from "./telemetry.js";
 import {
   type HubSession,
   HubSessionManager,
@@ -283,12 +284,14 @@ export interface CreateHubAppOptions {
   readonly assets?: HubAssetManifest;
   readonly requestId?: () => string;
   readonly now?: () => number;
+  readonly telemetry?: HubTelemetrySink;
 }
 
 export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment> {
   const app = new Hono<HubEnvironment>();
   const requestId = options.requestId ?? createRequestId;
   const now = options.now ?? Date.now;
+  const telemetry = new HubTelemetry(options.telemetry, now);
   const subscribers = new SseSubscriberTracker();
 
   app.onError((error, context) => {
@@ -365,6 +368,15 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
       expiresAt: context.get("session").expiresAt,
     },
   ));
+
+  app.post("/api/v1/telemetry/page", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    const request = parseInput(HubPageViewSchema, await readBoundedJson(context.req.raw, HUB_PAGE_EVENT_BODY_BYTES));
+    telemetry.pageViewed(request.page);
+    // Accepted locally is not a delivery promise. Opt-out and rate-limited
+    // events take the same quiet path without queuing or persisting anything.
+    return new Response(null, { status: 204 });
+  });
 
   app.get("/api/v1/capabilities", async () => resourceResponse(
     HubCapabilitiesSchema,
@@ -479,7 +491,8 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     );
     const preview = options.services.previewInboxOperation;
     if (preview === undefined) throw unavailable("Inbox mutations are not connected in this build.");
-    return resourceResponse(InboxOperationPreviewResponseSchema, await preview(request));
+    return telemetry.action(request.action.kind, "preview", async () =>
+      resourceResponse(InboxOperationPreviewResponseSchema, await preview(request)));
   });
 
   app.post("/api/v1/inbox/operations/apply", async (context) => {
@@ -489,7 +502,11 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     );
     const apply = options.services.applyInboxOperation;
     if (apply === undefined) throw unavailable("Inbox mutations are not connected in this build.");
-    return resourceResponse(InboxOperationApplyResponseSchema, await apply(request));
+    const completed = await telemetry.action(request.request.action.kind, "apply", async () => {
+      const result = await apply(request);
+      return { result, response: resourceResponse(InboxOperationApplyResponseSchema, result) };
+    }, ({ result }) => result.idempotentReplay);
+    return completed.response;
   });
 
   app.get("/api/v1/relays/drafts", async (context) => {
@@ -536,7 +553,8 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     );
     const preview = options.services.previewRelayOperation;
     if (preview === undefined) throw unavailable("Relay mutations are not connected in this build.");
-    return resourceResponse(RelayOperationPreviewResponseSchema, await preview(request));
+    return telemetry.action(request.action.kind, "preview", async () =>
+      resourceResponse(RelayOperationPreviewResponseSchema, await preview(request)));
   });
 
   app.post("/api/v1/relays/operations/apply", async (context) => {
@@ -546,7 +564,11 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     );
     const apply = options.services.applyRelayOperation;
     if (apply === undefined) throw unavailable("Relay mutations are not connected in this build.");
-    return resourceResponse(RelayOperationApplyResponseSchema, await apply(request));
+    const completed = await telemetry.action(request.request.action.kind, "apply", async () => {
+      const result = await apply(request);
+      return { result, response: resourceResponse(RelayOperationApplyResponseSchema, result) };
+    }, ({ result }) => result.idempotentReplay);
+    return completed.response;
   });
 
   app.get("/api/v1/specs", async (context) => {
@@ -585,7 +607,8 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     if (preview === undefined) {
       throw unavailable("Member and Activity mutations are not connected in this build.");
     }
-    return resourceResponse(TeamOperationPreviewResponseSchema, await preview(request));
+    return telemetry.action(request.action.kind, "preview", async () =>
+      resourceResponse(TeamOperationPreviewResponseSchema, await preview(request)));
   });
 
   app.post("/api/v1/team/operations/apply", async (context) => {
@@ -597,7 +620,11 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     if (apply === undefined) {
       throw unavailable("Member and Activity mutations are not connected in this build.");
     }
-    return resourceResponse(TeamOperationApplyResponseSchema, await apply(request));
+    const completed = await telemetry.action(request.request.action.kind, "apply", async () => {
+      const result = await apply(request);
+      return { result, response: resourceResponse(TeamOperationApplyResponseSchema, result) };
+    }, ({ result }) => result.idempotentReplay);
+    return completed.response;
   });
 
   app.get("/api/v1/activity", async (context) => {
@@ -725,7 +752,8 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     readStrictQuery(context.req.raw, []);
     if (!options.services.setLoggingPolicy) throw unavailable("Agent logging preferences are unavailable in this build.");
     const request = parseInput(AgentLoggingUpdateRequestSchema, await readBoundedJson(context.req.raw));
-    return resourceResponse(AgentLoggingPolicySchema, await options.services.setLoggingPolicy(request));
+    return telemetry.action("settings.logging.update", "direct", async () =>
+      resourceResponse(AgentLoggingPolicySchema, await options.services.setLoggingPolicy!(request)));
   });
 
   app.get("/api/v1/health", async () => resourceResponse(
@@ -752,8 +780,10 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
       JobStartRequestSchema,
       await readBoundedJson(context.req.raw),
     );
-    await options.services.assertJobStartAllowed?.(request.kind);
-    return resourceResponse(HubJobSnapshotSchema, await jobs.start(request), 202);
+    return telemetry.action("job.start", "direct", async () => {
+      await options.services.assertJobStartAllowed?.(request.kind);
+      return resourceResponse(HubJobSnapshotSchema, await jobs.start(request), 202);
+    });
   });
 
   app.get("/api/v1/jobs/:id", async (context) => {
@@ -768,7 +798,8 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     const jobs = requireJobs(options.jobs);
     const id = parseJobId(context.req.param("id"));
     parseInput(JobCancelRequestSchema, await readBoundedJson(context.req.raw));
-    return resourceResponse(HubJobSnapshotSchema, await jobs.cancel(id));
+    return telemetry.action("job.cancel", "direct", async () =>
+      resourceResponse(HubJobSnapshotSchema, await jobs.cancel(id)));
   });
 
   app.get("/api/v1/jobs/:id/events", async (context) => {

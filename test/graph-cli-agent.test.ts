@@ -2,11 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { runGraphQuery, runGraphScope, runImpact, type AgentCommandDeps } from "../src/graph/cli-agent.js";
 import type { GraphEngine } from "../src/graph/engine.js";
 import type { GraphEdge, GraphNode } from "../src/graph/types.js";
-import { __setClientForTest, __setTransport, captureCommand, flush } from "../src/telemetry/index.js";
+import { __resetTelemetryForTest, __setTelemetryEndpointForTest, __setTransport, captureCommand, flush, getTelemetryInspection } from "../src/telemetry/index.js";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:http";
 
 function node(id: string, name: string, file = "src/a.ts", line = 1): GraphNode {
   return { id, name, kind: "function", qualifiedName: name, filePath: file, language: "typescript", startLine: line, endLine: line + 1, startColumn: 0, endColumn: 1, updatedAt: 1 };
@@ -226,12 +227,9 @@ describe("agent graph commands", () => {
 
   it("bounds offline telemetry for a machine-facing graph command", async () => {
     const fixture = deps();
-    const never = new Promise<void>(() => undefined);
-    const offlineClient = {
-      captureImmediate: vi.fn(() => never),
-      flush: vi.fn(() => never),
-      shutdown: vi.fn(() => never),
-    };
+    const server = createServer(() => { /* Deliberately never respond. */ });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as { port: number };
     const cwd = process.cwd();
     const home = process.env.MEX_HOME;
     const env = { dnt: process.env.DO_NOT_TRACK, telemetry: process.env.MEX_TELEMETRY, dev: process.env.MEX_DEV };
@@ -242,22 +240,23 @@ describe("agent graph commands", () => {
       delete process.env.DO_NOT_TRACK;
       delete process.env.MEX_TELEMETRY;
       delete process.env.MEX_DEV;
-      __setClientForTest(offlineClient);
+      __resetTelemetryForTest();
+      __setTelemetryEndpointForTest(`http://127.0.0.1:${address.port}/batch/`);
 
       const started = Date.now();
       captureCommand("graph scope");
       runGraphScope("leaf", "/repo", fixture.deps, { detail: "minimal" });
       await flush();
 
-      // Leave scheduler headroom for loaded CI workers while still proving the
-      // SDK's former multi-second retry/shutdown path cannot return.
+      // Allow scheduler headroom in CI while requiring the request to be cancelled
+      // and its event retained. Whole-process timing is measured by the benchmark.
       expect(Date.now() - started).toBeLessThan(2_000);
-      expect(offlineClient.captureImmediate).toHaveBeenCalledOnce();
-      expect(offlineClient.shutdown).toHaveBeenCalledOnce();
-      expect(offlineClient.shutdown.mock.calls[0][0]).toBeLessThanOrEqual(800);
+      expect(getTelemetryInspection().queue).toMatchObject({ state: "available", events: 1 });
       expect(fixture.output.some((line) => JSON.parse(line).type === "summary")).toBe(true);
     } finally {
-      __setClientForTest(null);
+      __resetTelemetryForTest();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
       process.chdir(cwd);
       if (home === undefined) delete process.env.MEX_HOME;
       else process.env.MEX_HOME = home;

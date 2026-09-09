@@ -373,17 +373,17 @@ Existing Markdown scaffolds remain valid, and Graph reads never migrate a store 
 
 MEX does not upload its canonical records, Graph, Wiki index, drafts, identity selection, or Hub sessions to a MEX service. It provides no automatic team transport: sharing happens through normal Git actions you perform. The Hub binds to loopback, and MEX's local retrieval layer requires no model credentials.
 
-MEX has **pseudonymous CLI usage telemetry**, enabled by default unless you opt out. An eligible invocation sends at most one event. MEX's allowlisted fields are a random machine identifier, command name, MEX version, operating system, Node version, and—when an existing identity is available—a scaffold identifier; the PostHog SDK also adds its library name/version metadata. MEX does not add command arguments, file paths, repository names, file contents, or IP addresses to the payload, though the ingestion service can observe ordinary transport metadata.
+MEX has **pseudonymous CLI and Hub usage telemetry**, enabled by default unless you opt out. Namespaced commands, outcomes, explicit Hub actions, page categories, and job results help measure feature use and returning installations. Both surfaces reuse one random installation UUID; no project ID, argument values, paths, content, search text, or contact details enter the event payload. The ingestion service can observe ordinary transport metadata. Delivery uses a bounded local queue and short CLI cleanup grace; offline telemetry does not change command results.
 
 Check or disable telemetry with:
 
 ```bash
 mex telemetry inspect
 mex telemetry status
-mex config set telemetry off
+mex telemetry disable
 ```
 
-It can also be disabled with `MEX_TELEMETRY=0` or `DO_NOT_TRACK=1`. See the [telemetry policy](https://github.com/mex-memory/mex/blob/v0.8.0/TELEMETRY.md) for the controls and exact payload. Coding agents connected to MEX may have their own network and telemetry behavior; that is governed by those tools, not by MEX.
+It can also be disabled with `MEX_TELEMETRY=0` or `DO_NOT_TRACK=1`. See the [telemetry policy](TELEMETRY.md) for the controls, event catalog, privacy boundary, and delivery limits. Coding agents connected to MEX may have their own network and telemetry behavior; that is governed by those tools, not by MEX.
 
 ## What MEX is not
 
