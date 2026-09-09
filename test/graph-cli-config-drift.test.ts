@@ -179,13 +179,30 @@ describe("graph reads after a config-only change", () => {
     }
   });
 
-  it("still refuses when indexed source drifted alongside the config", async () => {
+  it("labels scope flow records, not their planning envelope", async () => {
+    const { root } = await fixture();
+    bumpDependency(root);
+    const records = await capture((deps) =>
+      runGraphScope("render page handle request normalize path", root, deps, { detail: "standard" }));
+    const flows = ofType(records, "flow");
+    expect(flows.length).toBeGreaterThan(0);
+    expect(flows.every((record) => record.stale === true)).toBe(true);
+    expect(flows.every((record) => record.stepCount === undefined)).toBe(true);
+  });
+
+  it("still refuses when indexed source drifted alongside the config, and names the source", async () => {
     const { root } = await fixture();
     bumpDependency(root);
     writeFileSync(join(root, "packages", "api", "src", "index.ts"),
       "export function normalizePath(path: string): string {\n  return path;\n}\n");
     const records = await capture((deps) => runGraphQuery("who-calls", "normalizePath", root, deps, {}));
-    expect(errorRecord(records)).toMatchObject({ code: "GRAPH_UNAVAILABLE" });
+    const error = errorRecord(records);
+    expect(error).toMatchObject({ code: "GRAPH_UNAVAILABLE" });
+    // Config is the input the gate excused; the source edit is what refused
+    // the read, so that is what the refusal has to say.
+    expect(error!.reasonCode).not.toBe("GRAPH_BUILD_MANIFEST_CHANGED");
+    expect(error!.reasonCode).not.toBe("GRAPH_SEMANTIC_INPUTS_CHANGED");
+    expect(String(error!.message)).toMatch(/source/i);
   });
 
   it("emits nothing extra while the graph is fresh", async () => {

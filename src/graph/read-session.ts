@@ -67,6 +67,12 @@ export interface InternalFreshGraphReadSession extends InternalGraphReadSession 
 export interface InternalFreshGraphReadResult {
   graphStatus: GraphStatus;
   session: InternalFreshGraphReadSession | null;
+  /**
+   * True when config content drifted under an engine identity that still
+   * reproduces. A caller explaining a refusal uses this to avoid naming the
+   * one input the gate excused.
+   */
+  configDriftTolerated?: boolean;
 }
 
 interface ImmutableGraphReadHooks {
@@ -363,18 +369,21 @@ export async function loadFreshGraphReadSession(
     && options.allowConfigDrift === true
     && (inspection.configDriftObservation ?? null) !== null;
   const observationClass: ReadObservationClass = configDrifted ? "config-drifted" : "fresh";
+  const configDriftTolerated = inspection.configDriftTolerated === true;
+  const withTolerance = (result: InternalFreshGraphReadResult): InternalFreshGraphReadResult =>
+    ({ ...result, configDriftTolerated });
   const freshObservation = configDrifted
     ? inspection.configDriftObservation!
     : inspection.freshObservation;
   if ((graphStatus.status !== "fresh" && !configDrifted) || options.loadSession === false) {
-    return { graphStatus, session: null };
+    return withTolerance({ graphStatus, session: null });
   }
   if (!freshObservation || sha256(freshObservation.snapshotRaw) !== freshObservation.snapshotHash) {
-    return unavailableFreshGraphReadResult(
+    return withTolerance(unavailableFreshGraphReadResult(
       graphStatus,
       "GRAPH_INDEX_READER_SNAPSHOT_CHANGED",
       "The fresh graph observation could not be bound to an exact snapshot; graph reads were skipped.",
-    );
+    ));
   }
 
   let base: InternalGraphReadSession | null = null;
@@ -395,21 +404,21 @@ export async function loadFreshGraphReadSession(
       || !indexedFiles
       || !snapshotMatchesIndexedFiles(snapshot, indexedFiles)) {
       base.close();
-      return unavailableFreshGraphReadResult(
+      return withTolerance(unavailableFreshGraphReadResult(
         graphStatus,
         "GRAPH_INDEX_READER_SNAPSHOT_CHANGED",
         "The graph snapshot changed while immutable readers were opening; graph reads were skipped.",
-      );
+      ));
     }
     const openedValidation = base.validate();
     if (!openedValidation.valid) {
       base.close();
-      return unavailableFreshGraphReadResult(
+      return withTolerance(unavailableFreshGraphReadResult(
         graphStatus,
         openedValidation.code ?? "GRAPH_INDEX_READER_OPEN_FAILED",
         openedValidation.message
           ?? "The graph changed or became unavailable while immutable readers were opening.",
-      );
+      ));
     }
 
     const guardedStatus: GraphStatus = { ...graphStatus, diagnostics: [...graphStatus.diagnostics] };
@@ -456,11 +465,11 @@ export async function loadFreshGraphReadSession(
           : { ...after, graphStatus: guardedStatus };
       },
     };
-    return { graphStatus: guardedStatus, session };
+    return withTolerance({ graphStatus: guardedStatus, session });
   } catch (error) {
     base?.close();
     const coded = graphReadError(error);
-    return unavailableFreshGraphReadResult(graphStatus, coded.code, coded.message);
+    return withTolerance(unavailableFreshGraphReadResult(graphStatus, coded.code, coded.message));
   }
 }
 

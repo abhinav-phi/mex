@@ -253,6 +253,16 @@ export interface InternalGraphStatusInspection {
    * the store is bindable, but what it says about resolution is not current.
    */
   readonly configDriftObservation?: InternalGraphFreshObservationToken | null;
+  /**
+   * @internal True when config content drifted under an engine identity that
+   * still reproduces — whether or not the store was servable.
+   *
+   * A refusal must name what is actually blocking it. Config drift is excused
+   * by the read gate, so when something else blocks the same store, reporting
+   * the config change as the reason sends a reader to revert an edit that was
+   * never the problem.
+   */
+  readonly configDriftTolerated?: boolean;
 }
 
 interface FileRow {
@@ -333,6 +343,7 @@ interface InspectionAttempt {
   retry: boolean;
   freshObservation?: InternalGraphFreshObservationToken;
   configDriftObservation?: InternalGraphFreshObservationToken;
+  configDriftTolerated?: boolean;
 }
 
 interface ClassifiedError {
@@ -383,6 +394,7 @@ export async function inspectGraphStatusWithFreshObservation(
         graphStatus: inspected.status,
         freshObservation: inspected.freshObservation ?? null,
         configDriftObservation: inspected.configDriftObservation ?? null,
+        configDriftTolerated: inspected.configDriftTolerated === true,
       };
     }
   }
@@ -390,6 +402,7 @@ export async function inspectGraphStatusWithFreshObservation(
     graphStatus: lastAttempt!.status,
     freshObservation: null,
     configDriftObservation: null,
+    configDriftTolerated: lastAttempt!.configDriftTolerated === true,
   };
 }
 
@@ -933,25 +946,30 @@ async function inspectGraphStatusAttempt(
     // reader can serve it labelled, and keep every other reason to distrust it
     // — engine identity, source drift, branch, corpus digest, parse health,
     // incomplete inspection — refusing exactly as before.
+    // Config content is forgivable on its own whenever engine identity still
+    // reproduces, independently of whether anything else also blocks the read.
+    // A caller that must explain a refusal needs that separately: config is
+    // then the input that was excused, never the reason.
+    const configDriftTolerated = snapshot !== undefined
+      && manifest !== null
+      && sourceChanges.changes.configChanged
+      && (snapshot.manifestHash === manifest.manifestHash
+        || graphManifestDiffersOnlyByConfig(manifest, snapshot.manifestHash, snapshot.configHash));
     const driftClass: ReadObservationClass | null = status === "fresh"
       ? "fresh"
       : status === "stale"
-        && snapshot !== undefined
-        && manifest !== null
+        && configDriftTolerated
         && !rebuildRequired
         && !freshnessUnproven
         && !parseDegraded
-        && sourceChanges.changes.configChanged
         && sourceChanges.changes.total === 0
         && !sourceChanges.changes.branchChanged
         && !sourceChanges.digestChanged
         && !sourceChanges.changes.grammarChanged
-        && (snapshot.manifestHash === manifest.manifestHash
-          || graphManifestDiffersOnlyByConfig(manifest, snapshot.manifestHash, snapshot.configHash))
         ? "config-drifted"
         : null;
     if (driftClass === null || !snapshot || !snapshotRaw || !manifest) {
-      return finishDatabaseResult(result);
+      return { ...finishDatabaseResult(result), configDriftTolerated };
     }
 
     await context.options.internal?.beforeFreshValidation?.(attempt);
@@ -969,6 +987,7 @@ async function inspectGraphStatusAttempt(
       return {
         retry: false,
         status: result,
+        configDriftTolerated,
         ...(driftClass === "fresh"
           ? { freshObservation: validation.freshObservation }
           : { configDriftObservation: validation.freshObservation }),

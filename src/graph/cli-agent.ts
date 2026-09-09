@@ -502,10 +502,14 @@ export function runGraphScope(
     // Source is the high-value payload. Give it 75% first, then let unused
     // flow/fact capacity spill back into deferred source records.
     const plannedFlowRecords = trustworthyFlows.flatMap((flow) => {
-      const record = scopeFlowRecord(flow, nodeById, opts.maxFlowSteps);
+      const planned = scopeFlowRecord(flow, nodeById, opts.maxFlowSteps);
       // A flow is a chain of resolved edges, so drifted compiler inputs can
-      // change where it goes even when every file in it is current.
-      return record ? [markResolutionStale(session, record)] : [];
+      // change where it goes even when every file in it is current. The label
+      // belongs on the emitted record, not on the planning envelope that
+      // carries it alongside its step count.
+      return planned
+        ? [{ ...planned, record: markResolutionStale(session, planned.record) }]
+        : [];
     });
     const summaryTokenReserve = estimateTokens(summarySkeleton([])) + RESERVE_PAD;
     const sourceRecords: Rec[] = [];
@@ -1999,7 +2003,7 @@ async function runFreshAgentSession(
       allowConfigDrift: true,
     });
     if (!loaded.session) {
-      graphStatusUnavailable(write, loaded.graphStatus);
+      graphStatusUnavailable(write, loaded.graphStatus, undefined, loaded.configDriftTolerated);
       return;
     }
     session = {
@@ -2122,18 +2126,38 @@ function manifestUnavailable(write: (line: string) => void): void {
   });
 }
 
+/**
+ * Diagnostics that describe drifted build configuration.
+ *
+ * When engine identity still reproduces, the read gate excuses all of these,
+ * so none of them can be the reason a read was refused. Naming one anyway
+ * sends the reader to revert a dependency bump that was never the blocker.
+ */
+const CONFIG_DRIFT_DIAGNOSTIC_CODES = new Set([
+  "GRAPH_BUILD_MANIFEST_CHANGED",
+  "GRAPH_SEMANTIC_INPUTS_CHANGED",
+  "GRAPH_SEMANTIC_INPUT_CHANGED",
+]);
+
 function graphStatusUnavailable(
   write: (line: string) => void,
   status: GraphStatus,
   validation?: GraphReadValidation,
+  configDriftTolerated = false,
 ): void {
+  const blocking = configDriftTolerated
+    ? status.diagnostics.filter((entry) => !CONFIG_DRIFT_DIAGNOSTIC_CODES.has(entry.code))
+    : status.diagnostics;
+  // Fall back to the full list only when config drift was the whole story and
+  // something else — a race, a mid-read change — still refused the read.
+  const candidates = blocking.length > 0 ? blocking : status.diagnostics;
   const diagnostic = validation?.code
     ? status.diagnostics.find((entry) => entry.code === validation.code)
-    : [...status.diagnostics].reverse().find((entry) => entry.severity !== "info")
-      ?? status.diagnostics.at(-1);
+    : [...candidates].reverse().find((entry) => entry.severity !== "info")
+      ?? candidates.at(-1);
   const graphStatus = validation && status.status === "fresh" ? "degraded" : status.status;
   const recoveryCommand = diagnostic?.remediation?.find((entry) => entry.command)?.command
-    ?? status.diagnostics.flatMap((entry) => entry.remediation ?? [])
+    ?? candidates.flatMap((entry) => entry.remediation ?? [])
       .find((entry) => entry.command)?.command;
   writeJson(write, {
     type: "error",
