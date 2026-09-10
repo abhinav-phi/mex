@@ -11,7 +11,7 @@ edges:
     condition: "when persisting a Hub job or migrating team.db"
   - target: "context/architecture.md"
     condition: "when wiring a real Graph or Wiki adapter"
-last_updated: 2026-09-08
+last_updated: 2026-09-10
 mex:
   id: mx_01M1M0CJQ2BSV71G1C7TXZD9RH
   type: pattern
@@ -95,6 +95,10 @@ preview/apply services.
   trace, or origin fields. Hub read models must omit those fields and bound
   subject/message previews before response validation. Schema-v2 Activity
   workflow/custom origin and optional labels use their closed projections.
+- The Overview team-access card POSTs an allowlisted name/email payload (and an
+  optional follow-up) from the browser to `https://api.web3forms.com`. CSP
+  `connect-src` names that host only; Hub must not proxy repo, path, graph, or
+  machine data, and page load must not initiate that request.
 
 - New read surfaces need successful-job cache invalidation as well as their
   initial query. Context's graph, selected record, and compact code queries all

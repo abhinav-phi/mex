@@ -1,0 +1,201 @@
+/**
+ * Checkout-local team-access lead capture. The Hub posts only the fields below
+ * to Web3Forms from the browser; it never attaches repo, path, graph, or machine data.
+ *
+ * Configure the public access key here, or override at Hub build time with
+ * VITE_WEB3FORMS_ACCESS_KEY. Web3Forms access keys are designed to ship in
+ * frontend bundles; do not put SMTP passwords or other private secrets here.
+ */
+export const WEB3FORMS_ACCESS_KEY = "20549db8-9c62-4da9-920a-f70a08c8ee44";
+
+export const WEB3FORMS_SUBMIT_URL = "https://api.web3forms.com/submit";
+export const TEAM_ACCESS_STORAGE_KEY = "mex.hub.team-access.v1";
+export const TEAM_ACCESS_SUBJECT = "mex Hub team access";
+export const TEAM_ACCESS_FOLLOW_UP_SUBJECT = "mex Hub team access follow-up";
+export const TEAM_ACCESS_FROM_NAME = "mex Hub";
+export const TEAM_ACCESS_SOURCE = "mex-hub";
+export const TEAM_ACCESS_SUBMIT_ERROR = "Could not send your request. Try again.";
+
+export const TEAM_ACCESS_TEAM_SIZES = ["Just me", "2–10", "11–50", "50+"] as const;
+export const TEAM_ACCESS_FOUND_MEX = ["GitHub", "X", "friend", "community", "search", "other"] as const;
+export const TEAM_ACCESS_INSTALL_REASONS = ["Agent memory", "team consistency", "token cost", "curiosity"] as const;
+export const TEAM_ACCESS_REPO_KINDS = ["Work", "personal"] as const;
+export const TEAM_ACCESS_OTHERS_USE_AGENTS = ["Yes", "No"] as const;
+export const TEAM_ACCESS_NEEDS = ["Local only is fine", "Shared team memory", "Not sure"] as const;
+
+export interface TeamAccessContact {
+  name: string;
+  email: string;
+}
+
+export interface TeamAccessFollowUp extends TeamAccessContact {
+  company: string;
+  teamSize: string;
+  foundMex: string;
+  installReason: string;
+  repoKind: string;
+  othersUseAgents: string;
+  need: string;
+  missing: string;
+}
+
+export interface TeamAccessLocalState {
+  contactSent: true;
+}
+
+const NAME_MAX = 200;
+const EMAIL_MAX = 320;
+const COMPANY_MAX = 200;
+const MISSING_MAX = 240;
+
+let accessKeyOverride: string | null = null;
+
+/** Test seam: inject a public access key without touching import.meta.env. */
+export function __setWeb3FormsAccessKeyForTests(value: string | null): void {
+  accessKeyOverride = value;
+}
+
+export function getWeb3FormsAccessKey(): string {
+  if (accessKeyOverride !== null) return accessKeyOverride;
+  const fromEnv = import.meta.env.VITE_WEB3FORMS_ACCESS_KEY;
+  if (typeof fromEnv === "string" && fromEnv.trim() !== "") return fromEnv.trim();
+  return WEB3FORMS_ACCESS_KEY.trim();
+}
+
+export function boundName(value: string): string {
+  return value.trim().slice(0, NAME_MAX);
+}
+
+export function boundEmail(value: string): string {
+  return value.trim().slice(0, EMAIL_MAX);
+}
+
+export function boundCompany(value: string): string {
+  return value.trim().slice(0, COMPANY_MAX);
+}
+
+export function boundMissing(value: string): string {
+  return value.trim().slice(0, MISSING_MAX);
+}
+
+function includeAllowed(
+  payload: Record<string, string>,
+  key: string,
+  value: string,
+  allowed: readonly string[],
+): void {
+  if (allowed.includes(value)) payload[key] = value;
+}
+
+export function validateTeamAccessContact(name: string, email: string): {
+  name?: string;
+  email?: string;
+} {
+  const errors: { name?: string; email?: string } = {};
+  if (boundName(name) === "") errors.name = "Enter your name.";
+  const trimmedEmail = boundEmail(email);
+  if (trimmedEmail === "") errors.email = "Enter your email.";
+  else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) errors.email = "Enter a valid email.";
+  return errors;
+}
+
+export function buildTeamAccessContactPayload(contact: TeamAccessContact, accessKey = getWeb3FormsAccessKey()) {
+  return {
+    access_key: accessKey,
+    name: boundName(contact.name),
+    email: boundEmail(contact.email),
+    subject: TEAM_ACCESS_SUBJECT,
+    from_name: TEAM_ACCESS_FROM_NAME,
+    source: TEAM_ACCESS_SOURCE,
+  };
+}
+
+export function buildTeamAccessFollowUpPayload(details: TeamAccessFollowUp, accessKey = getWeb3FormsAccessKey()) {
+  const payload: Record<string, string> = {
+    access_key: accessKey,
+    name: boundName(details.name),
+    email: boundEmail(details.email),
+    subject: TEAM_ACCESS_FOLLOW_UP_SUBJECT,
+    from_name: TEAM_ACCESS_FROM_NAME,
+    source: TEAM_ACCESS_SOURCE,
+  };
+  const company = boundCompany(details.company);
+  if (company !== "") payload.company = company;
+  includeAllowed(payload, "team_size", details.teamSize, TEAM_ACCESS_TEAM_SIZES);
+  includeAllowed(payload, "found_mex", details.foundMex, TEAM_ACCESS_FOUND_MEX);
+  includeAllowed(payload, "install_reason", details.installReason, TEAM_ACCESS_INSTALL_REASONS);
+  includeAllowed(payload, "repo_kind", details.repoKind, TEAM_ACCESS_REPO_KINDS);
+  includeAllowed(payload, "others_use_agents", details.othersUseAgents, TEAM_ACCESS_OTHERS_USE_AGENTS);
+  includeAllowed(payload, "i_need", details.need, TEAM_ACCESS_NEEDS);
+  const missing = boundMissing(details.missing);
+  if (missing !== "") payload.whats_missing = missing;
+  return payload;
+}
+
+export function readTeamAccessState(storage: Pick<Storage, "getItem"> | null = defaultStorage()): TeamAccessLocalState | null {
+  if (storage === null) return null;
+  try {
+    const raw = storage.getItem(TEAM_ACCESS_STORAGE_KEY);
+    if (raw === null || raw === "") return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      typeof parsed === "object"
+      && parsed !== null
+      && "contactSent" in parsed
+      && parsed.contactSent === true
+    ) {
+      return { contactSent: true };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeTeamAccessState(
+  state: TeamAccessLocalState,
+  storage: Pick<Storage, "setItem"> | null = defaultStorage(),
+): void {
+  if (storage === null) return;
+  try {
+    storage.setItem(TEAM_ACCESS_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Private mode or quota must not block the in-memory done state.
+  }
+}
+
+export async function submitTeamAccessPayload(
+  payload: Record<string, string>,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  if (payload.access_key.trim() === "") {
+    return { ok: false, message: TEAM_ACCESS_SUBMIT_ERROR };
+  }
+  try {
+    const response = await fetchImpl(WEB3FORMS_SUBMIT_URL, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    const body: unknown = await response.json().catch(() => null);
+    if (response.ok && isWeb3FormsSuccess(body)) return { ok: true };
+    return { ok: false, message: TEAM_ACCESS_SUBMIT_ERROR };
+  } catch {
+    return { ok: false, message: TEAM_ACCESS_SUBMIT_ERROR };
+  }
+}
+
+function isWeb3FormsSuccess(body: unknown): boolean {
+  return typeof body === "object" && body !== null && "success" in body && body.success === true;
+}
+
+function defaultStorage(): Storage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}

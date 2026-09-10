@@ -8,7 +8,6 @@ import {
   CheckCircle2,
   ChevronDown,
   CircleDashed,
-  ExternalLink,
   GitBranch,
   LoaderCircle,
   Network,
@@ -80,6 +79,7 @@ import {
   activitySubjectRoute,
 } from "../lib/activity-presentation";
 import { graphParseComposition, shortRepositoryHead } from "../lib/health-presentation";
+import { TeamAccessCard } from "./TeamAccessCard";
 import homeStyles from "../styles/home.module.css";
 
 type FocusPanel = Extract<OverviewResponse["focus"], { availability: "available" }>;
@@ -510,47 +510,6 @@ function ActivityRow({ item }: { item: ActivityItem }) {
         ) : <span className={homeStyles.activityContextPlain}>{context.label}</span> : null}
       </ItemContent>
     </Item>
-  );
-}
-
-/** Hosted voluntary feedback; no address or installation ID passes through the Hub. */
-const UPDATES_FORM = "https://tally.so/r/KYjv4k";
-
-/**
- * The card is permanent and carries no dismissal, which is why it has to stay
- * quiet. Anything that cannot be put away has to be worth living with on every
- * visit, so this one states its offer once and never asks twice — no badge, no
- * count, nothing that reads as unresolved work.
- */
-function UpdatesSignupCard() {
-  return (
-    <Card className={homeStyles.updatesCard} role="region" aria-labelledby="overview-updates-heading">
-      <CardHeader className={homeStyles.panelHeader}>
-        <div>
-          <CardTitle><h2 id="overview-updates-heading">Help shape MEX</h2></CardTitle>
-        </div>
-      </CardHeader>
-      <CardContent className={homeStyles.updatesContent}>
-        <p className={homeStyles.updatesBody}>
-          Tell us how you use MEX and what we should improve.
-        </p>
-        <div className={homeStyles.updatesActions}>
-          {/*
-            * The trailing arrow is the only remaining cue that this leaves the
-            * Hub for a new tab, so it stays where the mail glyph did not.
-            */}
-          <Button
-            nativeButton={false}
-            render={<a href={UPDATES_FORM} rel="noopener noreferrer" target="_blank" />}
-            size="sm"
-            variant="outline"
-          >
-            Share feedback
-            <ExternalLink aria-hidden="true" data-icon="inline-end" />
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
   );
 }
 
@@ -1004,7 +963,7 @@ export function HomeOverview() {
         </div>
         <div className={homeStyles.asideColumn}>
           <LatestActivityCard activity={data.activity} onRetry={() => void refresh()} />
-          <UpdatesSignupCard />
+          <TeamAccessCard />
         </div>
         <OperationCard operation={data.operation} />
       </div>
