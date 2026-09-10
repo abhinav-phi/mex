@@ -86,6 +86,11 @@ preview/apply services.
   process. Use a token-bound local lease and recover only a provably dead PID.
 - Bundlers can rewrite a static `node:sqlite` import. Load it through
   `createRequire(import.meta.url)` and smoke-test the packed CLI.
+- Packed setup fixtures that hide agent CLIs must retain directly executable
+  Git. On Windows, expose native `git.exe` in its installation directory;
+  a `git.cmd` wrapper cannot satisfy a shell-free Git spawn. Preflight Git and
+  agent absence with the setup child's exact working directory and environment,
+  using an absolute lookup tool so a missing probe cannot imply agent absence.
 - Terminal SSE events should close the browser connection immediately; do not
   let `EventSource` reconnect to a finished job. Setup population pause is a
   terminal setup-run status: return the prompt on the run snapshot, then close
