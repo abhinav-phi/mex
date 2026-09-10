@@ -17,6 +17,7 @@ const SETUP_UNAVAILABLE = "Finish MEX setup before using this Hub workbench.";
 export interface HubSetupRunnerOptions {
   readonly projectRoot: string;
   readonly now?: () => Date;
+  readonly onReady?: () => void | Promise<void>;
 }
 
 export type HubSetupListener = (run: SetupRun) => void;
@@ -24,6 +25,7 @@ export type HubSetupListener = (run: SetupRun) => void;
 export class HubSetupRunner {
   private readonly projectRoot: string;
   private readonly now: () => Date;
+  private readonly onReady?: () => void | Promise<void>;
   private readonly listeners = new Set<HubSetupListener>();
   private run: SetupRun;
   private controller: AbortController | null = null;
@@ -32,6 +34,7 @@ export class HubSetupRunner {
   constructor(options: HubSetupRunnerOptions) {
     this.projectRoot = options.projectRoot;
     this.now = options.now ?? (() => new Date());
+    this.onReady = options.onReady;
     this.run = idleRun(projectSetupStatus(this.projectRoot), this.now());
   }
 
@@ -153,6 +156,16 @@ export class HubSetupRunner {
       finishedAt: this.now().toISOString(),
     };
     this.emit();
+    if (result.ready) this.notifyReady();
+  }
+
+  private notifyReady(): void {
+    if (!this.onReady) return;
+    void Promise.resolve()
+      .then(() => this.onReady?.())
+      .catch(() => {
+        // Promotion failures stay on the setup listener; the command layer reports them.
+      });
   }
 
   private emit(): void {

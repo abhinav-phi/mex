@@ -29,11 +29,11 @@ Then read this file fully before doing anything else in this session.
 
 **Working:**
 - Incomplete checkouts open a Hub setup wizard from `mex hub` instead of the
-  full dashboard. The wizard runs the same ordered `mex setup` steps through a
-  headless engine, pauses at population with a copyable prompt when no Claude or
-  Codex CLI finishes the scaffold, and prints the same commit commands. MEX
-  still never runs git init, commit, or push. A ready tracked `.mex/config.json`
-  keeps the existing Project Hub unchanged.
+  full dashboard. Setup begins on a welcome screen, then runs the same ordered
+  `mex setup` steps through a headless engine, pauses at population with a
+  copyable prompt when no Claude or Codex CLI finishes the scaffold, and never
+  runs git init, commit, or push. When Graph and Wiki indexes exist, that same
+  Hub process promotes in place and the browser opens the ordinary Project Hub.
 - The MEX repository now dogfoods the ordinary `mex setup` path. Resumed setup
   reuses persisted AI-tool selection even while population is incomplete, and
   existing-codebase prompts merge missing knowledge without replacing authored

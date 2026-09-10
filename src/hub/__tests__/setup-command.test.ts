@@ -36,7 +36,7 @@ vi.mock("../../config.js", () => ({
 }));
 vi.mock("../jobs/index.js", () => ({ HubJobManager: class {
   initialize() {}
-  shutdown = async () => undefined;
+  shutdown = async () => { mocks.order.push("jobs"); };
 } }));
 vi.mock("../jobs/graph.js", () => ({ createGraphJobExecutors: () => ({}) }));
 vi.mock("../jobs/wiki.js", () => ({ createWikiJobExecutors: () => ({}) }));
@@ -58,7 +58,10 @@ beforeEach(() => {
   mocks.stopTelemetry.mockImplementation(async () => { mocks.order.push("telemetry"); });
   mocks.startTelemetry.mockReturnValue(mocks.stopTelemetry);
   mocks.createCapture.mockReturnValue(mocks.events);
-  mocks.createSetup.mockReturnValue({ services: { tag: "setup-services" }, setup: { tag: "setup-runner" } });
+  mocks.createSetup.mockReturnValue({
+    services: { tag: "setup-services" },
+    setup: { tag: "setup-runner", status: () => ({ ready: false }) },
+  });
   mocks.findRoot.mockReturnValue("/Users/private/project");
   mocks.inspect.mockReturnValue({ ready: false, stage: "needs_setup" });
   vi.spyOn(process.stdout, "write").mockReturnValue(true);
@@ -67,19 +70,22 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("Hub setup process", () => {
   it("starts the setup Hub without jobs when the checkout is not ready", async () => {
-    let ready!: (server: { origin: string; close: typeof mocks.closeServer }) => void;
+    let ready!: (server: { origin: string; close: typeof mocks.closeServer; replaceApp: () => void }) => void;
     mocks.startServer.mockReturnValue(new Promise((resolve) => { ready = resolve; }));
     const priorListeners = new Set(process.listeners("SIGTERM"));
     const running = runSetupHubCommand({ projectRoot: "/Users/private/project", openBrowser: false });
     await vi.waitFor(() => expect(mocks.startServer).toHaveBeenCalledOnce());
-    expect(mocks.createSetup).toHaveBeenCalledWith("/Users/private/project");
+    expect(mocks.createSetup).toHaveBeenCalledWith(
+      "/Users/private/project",
+      expect.objectContaining({ onReady: expect.any(Function) }),
+    );
     expect(mocks.createApp).toHaveBeenCalledWith(expect.objectContaining({
-      setup: { tag: "setup-runner" },
+      setup: expect.objectContaining({ tag: "setup-runner" }),
       services: { tag: "setup-services" },
       telemetry: mocks.events,
     }));
     expect(mocks.createApp.mock.calls[0][0].jobs).toBeUndefined();
-    ready({ origin: "http://127.0.0.1:48123", close: mocks.closeServer });
+    ready({ origin: "http://127.0.0.1:48123", close: mocks.closeServer, replaceApp: vi.fn() });
     await vi.waitFor(() => expect(mocks.events).toHaveBeenCalledOnce());
     const stop = process.listeners("SIGTERM").find((listener) => !priorListeners.has(listener));
     if (!stop) throw new Error("Hub did not install its shutdown handler.");
@@ -90,18 +96,58 @@ describe("Hub setup process", () => {
   });
 
   it("opens the setup wizard from launchHub when setup is incomplete", async () => {
-    let ready!: (server: { origin: string; close: typeof mocks.closeServer }) => void;
+    let ready!: (server: { origin: string; close: typeof mocks.closeServer; replaceApp: () => void }) => void;
     mocks.startServer.mockReturnValue(new Promise((resolve) => { ready = resolve; }));
     const priorListeners = new Set(process.listeners("SIGTERM"));
     const running = launchHub({ openBrowser: false });
     await vi.waitFor(() => expect(mocks.startServer).toHaveBeenCalledOnce());
     expect(mocks.findConfig).not.toHaveBeenCalled();
-    expect(mocks.createSetup).toHaveBeenCalledWith("/Users/private/project");
-    ready({ origin: "http://127.0.0.1:48123", close: mocks.closeServer });
+    expect(mocks.createSetup).toHaveBeenCalledWith(
+      "/Users/private/project",
+      expect.objectContaining({ onReady: expect.any(Function) }),
+    );
+    ready({ origin: "http://127.0.0.1:48123", close: mocks.closeServer, replaceApp: vi.fn() });
     await vi.waitFor(() => expect(mocks.events).toHaveBeenCalledOnce());
     const stop = process.listeners("SIGTERM").find((listener) => !priorListeners.has(listener));
     if (!stop) throw new Error("Hub did not install its shutdown handler.");
     stop("SIGTERM");
     await running;
+  });
+
+  it("promotes the running listener to the Project Hub when setup becomes ready", async () => {
+    const replaceApp = vi.fn();
+    let onReady!: () => Promise<void>;
+    mocks.createSetup.mockImplementation((_root, options: { onReady: () => Promise<void> }) => {
+      onReady = options.onReady;
+      return {
+        services: { tag: "setup-services" },
+        setup: { tag: "setup-runner", status: () => ({ ready: false }) },
+      };
+    });
+    mocks.findConfig.mockReturnValue({ projectRoot: "/Users/private/project" });
+    mocks.identity.mockReturnValue({ scaffold_id: "private-scaffold" });
+    mocks.createApp
+      .mockReturnValueOnce({ tag: "setup-app" })
+      .mockReturnValueOnce({ tag: "hub-app" });
+    let ready!: (server: { origin: string; close: typeof mocks.closeServer; replaceApp: typeof replaceApp }) => void;
+    mocks.startServer.mockReturnValue(new Promise((resolve) => { ready = resolve; }));
+    const priorListeners = new Set(process.listeners("SIGTERM"));
+    const running = runSetupHubCommand({ projectRoot: "/Users/private/project", openBrowser: false });
+    await vi.waitFor(() => expect(mocks.startServer).toHaveBeenCalledOnce());
+    ready({ origin: "http://127.0.0.1:48123", close: mocks.closeServer, replaceApp });
+    await vi.waitFor(() => expect(mocks.events).toHaveBeenCalledOnce());
+    await onReady();
+    expect(replaceApp).toHaveBeenCalledWith({ tag: "hub-app" });
+    expect(mocks.createApp).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      jobs: expect.anything(),
+      telemetry: mocks.events,
+    }));
+    expect(mocks.createApp.mock.calls[1]?.[0].setup).toBeUndefined();
+    expect(vi.mocked(process.stdout.write).mock.calls.some((call) => String(call[0]).includes("Project Hub is ready"))).toBe(true);
+    const stop = process.listeners("SIGTERM").find((listener) => !priorListeners.has(listener));
+    if (!stop) throw new Error("Hub did not install its shutdown handler.");
+    stop("SIGTERM");
+    await running;
+    expect(mocks.order).toEqual(["http", "jobs", "telemetry"]);
   });
 });

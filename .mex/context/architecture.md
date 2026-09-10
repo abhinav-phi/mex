@@ -83,7 +83,7 @@ revision: 1
 - **Code Graph (`src/graph/`)** — deterministic extraction, versioned SQLite storage, immutable read sessions, provenance/freshness checks, retrieval, impact, and explicit refresh/rebuild recovery.
 - **Wiki (`src/wiki/`)** — treats repository Markdown as canonical, owns migration/validation/indexing, and exposes bounded query plus repository-adapter services.
 - **Team workflows (`src/team/`)** — canonical Members, Activity, Workstreams, Inbox, and Relay records plus signed preview/apply services and isolated checkout-local state.
-- **Project Hub (`src/hub/`, `packages/hub-contracts`, `packages/hub-web`)** — `launchHub()` opens the loopback server. Incomplete checkouts get a setup-only process that runs the same ordered `mex setup` steps through `runHeadlessSetup()`; a ready tracked scaffold still uses `runHubCommand()` for the private API, repository adapters, durable local jobs, and route-lazy React workbench.
+- **Project Hub (`src/hub/`, `packages/hub-contracts`, `packages/hub-web`)** — `launchHub()` opens the loopback server. Incomplete checkouts get a setup-only process that runs the same ordered `mex setup` steps through `runHeadlessSetup()`. When that checkout becomes ready, the same listener promotes to `runHubCommand()`'s Graph/Wiki/Team jobs and the browser leaves `/setup` for the ordinary dashboard. A later `mex hub` on an already-ready working-tree scaffold still starts the full Hub directly.
 - **Drift and agent workflows (`src/drift/`, `src/sync/`, `src/agent-skills/`)** — check grounded knowledge, prepare bounded repair briefs, and install the governed Inbox/Relay integrations.
 
 <!-- mex:entity

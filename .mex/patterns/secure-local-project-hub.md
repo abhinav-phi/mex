@@ -91,8 +91,10 @@ preview/apply services.
   terminal setup-run status: return the prompt on the run snapshot, then close
   the stream. Hub jobs still persist no prompts.
 - Incomplete checkouts must not boot Graph/Wiki/Team jobs. `launchHub()` serves
-  the setup wizard until indexes exist **and** `.mex/config.json` is tracked at
-  HEAD. Full Hub returns `CAPABILITY_UNAVAILABLE` for `/api/v1/setup`.
+  the setup wizard until Graph and Wiki indexes exist. That same process then
+  replaces the setup app with the full Hub on the existing session and port.
+  Full Hub returns `CAPABILITY_UNAVAILABLE` for `/api/v1/setup`. MEX still
+  never commits; the dashboard does not wait for a git checkpoint.
 - Do not spawn interactive `mex setup` from Hub. Reuse `runHeadlessSetup()` so
   detect → scaffold → tools → skills → identity → scan → graph → population →
   finalize stay one path. Code-repo without git is a 400; the UI shows `git

@@ -44,8 +44,9 @@ export interface RunSetupHubCommandOptions {
 /**
  * Open the Project Hub, or the setup wizard when this checkout is not ready.
  *
- * Full Hub still requires a tracked `.mex/config.json`. Until that commit
- * exists, Hub stays on the setup-only process even after local indexes exist.
+ * A working-tree scaffold with Graph and Wiki indexes is enough to open the
+ * dashboard. The setup process promotes that same listener in place when the
+ * wizard finishes, so the browser session does not wait for a restart or commit.
  */
 export async function launchHub(options: LaunchHubOptions): Promise<void> {
   const projectRoot = findSetupProjectRoot();
@@ -80,29 +81,7 @@ export async function launchHub(options: LaunchHubOptions): Promise<void> {
  */
 export async function runHubCommand(options: RunHubCommandOptions): Promise<void> {
   const captureEvent = createProjectTelemetryCapture(options.projectRoot);
-  // Bind and verify the tracked scaffold identity before the explicit Hub
-  // startup boundary creates or migrates any local state.
-  const team = await createRepositoryTeamWorkflowPort(options.projectRoot);
-  const localState = new TeamLocalState({
-    projectRoot: options.projectRoot,
-    scaffoldId: options.scaffoldId,
-  });
-  const graph = createRepositoryGraphPort(options.projectRoot, { candidateExecution: "process" });
-  const wiki = createRepositoryWikiPort(options.projectRoot, {
-    groundingBridge: graph,
-    ...(options.wikiExclude === undefined ? {} : { exclude: options.wikiExclude }),
-    ...(options.wikiReadOnly === undefined ? {} : { readOnly: options.wikiReadOnly }),
-  });
-  const jobs = new HubJobManager({
-    localState,
-    executors: {
-      ...createGraphJobExecutors(graph),
-      ...createWikiJobExecutors(wiki),
-    },
-    shutdownTimeoutMs: 60_000,
-    telemetry: captureEvent,
-  });
-  jobs.initialize();
+  let jobs: HubJobManager | undefined;
   let server: Awaited<ReturnType<typeof startHubNodeServer>> | undefined;
   let stopTelemetry: (() => Promise<void>) | undefined;
   try {
@@ -112,23 +91,20 @@ export async function runHubCommand(options: RunHubCommandOptions): Promise<void
       bootstrapToken,
       expectedOrigin: () => expectedOrigin,
     });
-    team.initializeIdentityActivitySigner();
-    const services = createLocalHubReadServices({
+    const assets = new HubAssetManifest(resolveHubAssetRoot());
+    // Bind and verify the tracked scaffold identity before the explicit Hub
+    // startup boundary creates or migrates any local state.
+    const composed = await composeProductionHub({
       projectRoot: options.projectRoot,
       scaffoldId: options.scaffoldId,
-      jobs,
-      team,
-      workstreams: team,
-      inbox: team,
-      relays: team,
-      specs: createSpecReadService(wiki),
-      graph,
-      wiki,
+      security,
+      assets,
+      telemetry: captureEvent,
+      ...(options.wikiExclude === undefined ? {} : { wikiExclude: options.wikiExclude }),
+      ...(options.wikiReadOnly === undefined ? {} : { wikiReadOnly: options.wikiReadOnly }),
     });
-    const assets = new HubAssetManifest(resolveHubAssetRoot());
-    const app = createHubApp({ security, services, jobs, assets, telemetry: captureEvent });
-
-    server = await startHubNodeServer({ app, port: options.port });
+    jobs = composed.jobs;
+    server = await startHubNodeServer({ app: composed.app, port: options.port });
     expectedOrigin = server.origin;
     stopTelemetry = startHubTelemetry();
     emitHubTelemetry(captureEvent, "hub.session_started", {});
@@ -145,7 +121,7 @@ export async function runHubCommand(options: RunHubCommandOptions): Promise<void
       await server?.close();
     } finally {
       try {
-        await jobs.shutdown();
+        await jobs?.shutdown();
       } finally {
         await stopTelemetry?.();
       }
@@ -153,20 +129,57 @@ export async function runHubCommand(options: RunHubCommandOptions): Promise<void
   }
 }
 
-/** Setup-only Hub: same session/assets/server, no Team/Graph/Wiki jobs. */
+/** Setup-only Hub: same session/assets/server, no Team/Graph/Wiki jobs until ready. */
 export async function runSetupHubCommand(options: RunSetupHubCommandOptions): Promise<void> {
   const captureEvent = createProjectTelemetryCapture(options.projectRoot);
-  const { services, setup } = createSetupHubServices(options.projectRoot);
   let server: Awaited<ReturnType<typeof startHubNodeServer>> | undefined;
   let stopTelemetry: (() => Promise<void>) | undefined;
+  let jobs: HubJobManager | undefined;
+  let security: HubSessionManager | undefined;
+  let assets: HubAssetManifest | undefined;
+  let promoting = false;
+
+  const promoteToProjectHub = async (): Promise<void> => {
+    const listener = server;
+    const session = security;
+    const manifest = assets;
+    if (promoting || jobs || !listener || !session || !manifest) return;
+    promoting = true;
+    try {
+      const config = findConfig(options.projectRoot);
+      const identity = getScaffoldIdentity(config);
+      const composed = await composeProductionHub({
+        projectRoot: config.projectRoot,
+        scaffoldId: identity.scaffold_id,
+        security: session,
+        assets: manifest,
+        telemetry: captureEvent,
+        ...(config.wiki?.exclude === undefined ? {} : { wikiExclude: config.wiki.exclude }),
+        ...(config.wiki?.readOnly === undefined ? {} : { wikiReadOnly: config.wiki.readOnly }),
+      });
+      jobs = composed.jobs;
+      listener.replaceApp(composed.app);
+      process.stdout.write(`\nProject Hub is ready at ${listener.origin}\n`);
+    } catch (error) {
+      promoting = false;
+      const detail = error instanceof Error ? error.message : String(error);
+      process.stdout.write(
+        `\nProject Hub could not open after setup: ${detail}\nRestart mex hub to open the dashboard.\n`,
+      );
+    }
+  };
+
+  const { services, setup } = createSetupHubServices(options.projectRoot, {
+    onReady: promoteToProjectHub,
+  });
   try {
     const bootstrapToken = createBootstrapToken();
     let expectedOrigin: string | null = null;
-    const security = new HubSessionManager({
+    security = new HubSessionManager({
       bootstrapToken,
       expectedOrigin: () => expectedOrigin,
     });
-    const assets = new HubAssetManifest(resolveHubAssetRoot());
+    assets = new HubAssetManifest(resolveHubAssetRoot());
     const app = createHubApp({
       security,
       services,
@@ -185,18 +198,87 @@ export async function runSetupHubCommand(options: RunSetupHubCommandOptions): Pr
     process.stdout.write(`One-time bootstrap link (valid for 5 minutes):\n${bootstrapUrl}\n`);
     process.stdout.write("Press Ctrl+C to stop.\n\n");
     if (options.openBrowser) openHubBrowser(bootstrapUrl);
+    if (setup.status().ready) await promoteToProjectHub();
     await waitForShutdownSignal();
   } finally {
     try {
       await server?.close();
     } finally {
-      await stopTelemetry?.();
+      try {
+        await jobs?.shutdown();
+      } finally {
+        await stopTelemetry?.();
+      }
     }
   }
 }
 
 export function resolveHubAssetRoot(moduleUrl = import.meta.url): string {
   return join(dirname(fileURLToPath(moduleUrl)), "hub");
+}
+
+interface ComposeProductionHubOptions {
+  readonly projectRoot: string;
+  readonly scaffoldId: string;
+  readonly security: HubSessionManager;
+  readonly assets: HubAssetManifest;
+  readonly telemetry: ReturnType<typeof createProjectTelemetryCapture>;
+  readonly wikiExclude?: readonly string[];
+  readonly wikiReadOnly?: readonly string[];
+}
+
+async function composeProductionHub(
+  options: ComposeProductionHubOptions,
+): Promise<{ app: ReturnType<typeof createHubApp>; jobs: HubJobManager }> {
+  const team = await createRepositoryTeamWorkflowPort(options.projectRoot);
+  const localState = new TeamLocalState({
+    projectRoot: options.projectRoot,
+    scaffoldId: options.scaffoldId,
+  });
+  const graph = createRepositoryGraphPort(options.projectRoot, { candidateExecution: "process" });
+  const wiki = createRepositoryWikiPort(options.projectRoot, {
+    groundingBridge: graph,
+    ...(options.wikiExclude === undefined ? {} : { exclude: options.wikiExclude }),
+    ...(options.wikiReadOnly === undefined ? {} : { readOnly: options.wikiReadOnly }),
+  });
+  const jobs = new HubJobManager({
+    localState,
+    executors: {
+      ...createGraphJobExecutors(graph),
+      ...createWikiJobExecutors(wiki),
+    },
+    shutdownTimeoutMs: 60_000,
+    telemetry: options.telemetry,
+  });
+  jobs.initialize();
+  try {
+    team.initializeIdentityActivitySigner();
+    const services = createLocalHubReadServices({
+      projectRoot: options.projectRoot,
+      scaffoldId: options.scaffoldId,
+      jobs,
+      team,
+      workstreams: team,
+      inbox: team,
+      relays: team,
+      specs: createSpecReadService(wiki),
+      graph,
+      wiki,
+    });
+    return {
+      app: createHubApp({
+        security: options.security,
+        services,
+        jobs,
+        assets: options.assets,
+        telemetry: options.telemetry,
+      }),
+      jobs,
+    };
+  } catch (error) {
+    await jobs.shutdown();
+    throw error;
+  }
 }
 
 function waitForShutdownSignal(): Promise<void> {

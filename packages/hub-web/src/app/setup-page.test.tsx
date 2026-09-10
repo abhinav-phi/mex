@@ -68,11 +68,21 @@ describe("Hub setup wizard", () => {
     expect(screen.queryByRole("heading", { level: 1, name: "Set up MEX" })).toBeNull();
   });
 
-  it("walks detect, tool choice, start, population, and commit commands", async () => {
+  it("walks detect, tool choice, start, population, then opens the Project Hub", async () => {
     const user = userEvent.setup();
+    let currentStatus: SetupStatus = status;
     let run: SetupRun = idleRun;
     const startSetup = vi.fn(async (request: SetupStartRequest) => {
       if (request.confirmPopulation) {
+        currentStatus = {
+          ...currentStatus,
+          hasScaffold: true,
+          populated: true,
+          graphReady: true,
+          wikiReady: true,
+          stage: "ready",
+          ready: true,
+        };
         run = {
           ...run,
           status: "succeeded",
@@ -96,7 +106,7 @@ describe("Hub setup wizard", () => {
       return run;
     });
     const api = Object.assign(createFixtureApi(), {
-      getSetupStatus: async () => status,
+      getSetupStatus: async () => currentStatus,
       getSetupRun: async () => run,
       startSetup,
       subscribeToSetup(onSnapshot: (next: SetupRun) => void) {
@@ -115,9 +125,11 @@ describe("Hub setup wizard", () => {
     });
 
     renderSetup(api);
-    expect(await screen.findByRole("heading", { level: 1, name: "Set up MEX" }, { timeout: 5_000 })).toBeVisible();
-    expect(screen.getByText("Detected")).toBeVisible();
-    expect(screen.getByText("Existing codebase")).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: "Build a Hub for this checkout" }, { timeout: 5_000 })).toBeVisible();
+    expect(screen.getByText(/Setup gives/)).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Set up this project" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Set up MEX" })).toBeVisible();
 
     await user.click(screen.getByRole("checkbox", { name: /Cursor/ }));
     await user.click(screen.getByRole("button", { name: "Start setup" }));
@@ -133,9 +145,55 @@ describe("Hub setup wizard", () => {
       tools: ["cursor"],
       confirmPopulation: true,
     });
-    expect(await screen.findByRole("heading", { level: 2, name: "Review and commit" })).toBeVisible();
-    expect(screen.getByText("git add .mex")).toBeVisible();
-    expect(screen.getByText('git commit -m "chore: initialize MEX"')).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: "Overview" }, { timeout: 5_000 })).toBeVisible();
+    expect(screen.queryByRole("heading", { level: 1, name: "Set up MEX" })).toBeNull();
+    expect(screen.queryByText("Restart")).toBeNull();
+  });
+
+  it("opens the Project Hub when setup is already ready", async () => {
+    const api = Object.assign(createFixtureApi(), {
+      getSetupStatus: async () => ({
+        ...status,
+        hasScaffold: true,
+        populated: true,
+        graphReady: true,
+        wikiReady: true,
+        stage: "ready" as const,
+        ready: true,
+      }),
+    });
+    renderSetup(api);
+    expect(await screen.findByRole("heading", { level: 1, name: "Overview" }, { timeout: 5_000 })).toBeVisible();
+    expect(screen.queryByRole("heading", { level: 1, name: "Set up MEX" })).toBeNull();
+  });
+
+  it("waits to open the Project Hub until Graph workbenches are available", async () => {
+    const fixture = createFixtureApi();
+    const getCapabilities = fixture.getCapabilities.bind(fixture);
+    const unavailable = { availability: "unavailable" as const, reason: "Finish MEX setup before using this Hub workbench." };
+    const api = Object.assign(fixture, {
+      getSetupStatus: async () => ({
+        ...status,
+        hasScaffold: true,
+        populated: true,
+        graphReady: true,
+        wikiReady: true,
+        stage: "ready" as const,
+        ready: true,
+      }),
+      async getCapabilities() {
+        const caps = await getCapabilities();
+        return {
+          ...caps,
+          graph: { read: unavailable, refresh: unavailable, rebuild: unavailable },
+          wiki: { read: unavailable, refresh: unavailable, rebuild: unavailable },
+        };
+      },
+    });
+    renderSetup(api);
+    expect(await screen.findByText("Setup finished. Switching this session to the Project Hub.", undefined, { timeout: 5_000 })).toBeVisible();
+    expect(screen.getByRole("heading", { level: 2, name: "Opening the Project Hub" })).toBeVisible();
+    expect(screen.queryByRole("heading", { level: 1, name: "Overview" })).toBeNull();
   });
 
   it("asks for git init on code-repo setup and does not start without a repository", async () => {
@@ -147,7 +205,9 @@ describe("Hub setup wizard", () => {
       startSetup,
     });
     renderSetup(api);
-    expect(await screen.findByRole("heading", { level: 2, name: "Git repository required" }, { timeout: 5_000 })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: "Build a Hub for this checkout" }, { timeout: 5_000 })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Set up this project" }));
+    expect(await screen.findByRole("heading", { level: 2, name: "Git repository required" })).toBeVisible();
     expect(screen.getAllByText("git init").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Start setup" })).toBeDisabled();
     await user.click(screen.getByRole("radio", { name: /Agent memory/ }));

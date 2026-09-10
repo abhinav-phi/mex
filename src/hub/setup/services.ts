@@ -21,8 +21,18 @@ export interface SetupHubServices {
   readonly setup: HubSetupRunner;
 }
 
-export function createSetupHubServices(projectRoot: string): SetupHubServices {
-  const setup = new HubSetupRunner({ projectRoot });
+export interface CreateSetupHubServicesOptions {
+  readonly onReady?: () => void | Promise<void>;
+}
+
+export function createSetupHubServices(
+  projectRoot: string,
+  options: CreateSetupHubServicesOptions = {},
+): SetupHubServices {
+  const setup = new HubSetupRunner({
+    projectRoot,
+    ...(options.onReady === undefined ? {} : { onReady: options.onReady }),
+  });
   const git = createRepositoryGitPort(projectRoot);
   const now = () => new Date();
 
