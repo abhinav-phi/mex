@@ -516,6 +516,276 @@
   line-height: 1.5;
 }
 
+.populationActivity {
+  padding: 20px;
+  background: var(--background);
+  border: 1px solid var(--primary-border);
+  border-radius: 12px;
+}
+
+.activityHeading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.activityPulse {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  color: var(--primary);
+  background: var(--primary-soft);
+  border-radius: 10px;
+  place-items: center;
+}
+
+.activityPulse svg {
+  width: 18px;
+  height: 18px;
+}
+
+.activityEyebrow {
+  margin: 0 0 5px;
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 550;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.activityHeading h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 550;
+  line-height: 1.4;
+  letter-spacing: -0.02em;
+}
+
+.activityTiming {
+  margin: 14px 0 0;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.8;
+}
+
+.activityTiming > span {
+  padding: 0 4px;
+}
+
+.activityQuiet {
+  padding: 10px 12px;
+  margin: 14px 0 0;
+  color: var(--warning);
+  background: var(--warning-soft);
+  border: 1px solid var(--warning-border);
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.activityWaiting {
+  margin: 16px 0 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.activityList {
+  margin: 16px 0 0;
+  padding: 12px 0 0;
+  border-top: 1px solid var(--border);
+  list-style: none;
+}
+
+.activityList li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: start;
+  padding: 7px 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.activityList [data-current="true"] {
+  color: var(--foreground);
+}
+
+.activityMark {
+  display: grid;
+  height: 18px;
+  place-items: center;
+}
+
+.activityMark svg {
+  width: 13px;
+  height: 13px;
+}
+
+.activityList [data-state="completed"] .activityMark {
+  color: var(--success);
+}
+
+.activityList [data-state="failed"] .activityMark {
+  color: var(--danger);
+}
+
+.activityList time {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.activityHistory {
+  margin-top: 12px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.activityHistory summary {
+  width: fit-content;
+  padding: 4px 0;
+  cursor: pointer;
+}
+
+.activityHistory summary:hover {
+  color: var(--foreground);
+}
+
+.activityHistory summary:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 4px;
+  border-radius: 2px;
+}
+
+.activityHistory .activityList {
+  max-height: 280px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin-top: 8px;
+  padding-right: 8px;
+}
+
+.activityHistory p {
+  margin: 10px 0 0;
+  font-size: 11px;
+}
+
+.activityAnnouncement {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.transcript {
+  --transcript-font: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  min-width: 0;
+  overflow: hidden;
+  color: var(--foreground);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+
+.populationActivity > .transcript {
+  margin-top: 16px;
+}
+
+.transcriptHeader,
+.transcriptFooter {
+  display: flex;
+  min-height: 39px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  color: var(--muted-foreground);
+  background: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.transcriptHeader {
+  border-bottom: 1px solid var(--border);
+}
+
+.transcriptHeader strong {
+  color: var(--foreground);
+  font-family: var(--transcript-font);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.transcriptFooter {
+  border-top: 1px solid var(--border);
+}
+
+.transcriptViewport {
+  height: 320px;
+  padding: 8px 14px 16px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  user-select: text;
+}
+
+.transcriptViewport:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+.transcriptEntry {
+  padding: 12px 0;
+}
+
+.transcriptMarker {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 4px 0;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.transcriptShortened {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+
+.transcriptProse {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.transcriptEarlier {
+  margin: 5px 8px;
+  font-size: 11px;
+}
+
+.transcriptNotice,
+.transcriptEmpty {
+  margin: 0;
+  padding: 12px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
 .steps {
   display: grid;
   gap: 0;
@@ -618,6 +888,257 @@
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.55;
+}
+
+.commitCommands {
+  width: 100%;
+  min-height: 136px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.commitReview {
+  display: grid;
+  gap: 16px;
+}
+
+.commitReviewIntro,
+.commitScope {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.commitReviewIntro h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 550;
+}
+
+.commitReviewIntro p,
+.commitScopeNote {
+  margin: 6px 0 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.commitScope {
+  font-size: 12px;
+}
+
+.commitScope span,
+.commitViewedCount {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.commitFiles {
+  margin-top: 14px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.commitFile + .commitFile {
+  border-top: 1px solid var(--border);
+}
+
+.commitFile summary {
+  padding: 12px;
+  cursor: pointer;
+  background: var(--background);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.commitFile summary:hover {
+  background: var(--muted);
+}
+
+.commitFilePath {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.commitFileStatus {
+  margin-left: 12px;
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+
+.commitFileStatus[data-status="added"] {
+  color: var(--success);
+}
+
+.commitFileStatus[data-status="deleted"] {
+  color: var(--danger);
+}
+
+.commitViewed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 12px;
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+
+.commitViewed svg {
+  width: 11px;
+  height: 11px;
+}
+
+.commitDiffCounts {
+  display: inline-flex;
+  gap: 8px;
+  margin-left: 12px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.commitDiffCounts [data-change="added"] { color: var(--success); }
+.commitDiffCounts [data-change="deleted"] { color: var(--danger); }
+
+.commitDiff {
+  max-height: 420px;
+  margin: 0;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  background: var(--background);
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  line-height: 1.7;
+  tab-size: 4;
+}
+
+.commitDiffTable {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--foreground);
+}
+
+.commitDiffHead {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.commitDiffTable td {
+  padding: 0;
+  vertical-align: top;
+}
+
+.commitDiffTable .commitDiffNumber {
+  width: 1%;
+  min-width: 42px;
+  padding: 0 10px;
+  border-right: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  color: var(--muted-foreground);
+  text-align: right;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.commitDiffTable .commitDiffMarker {
+  width: 1%;
+  min-width: 25px;
+  text-align: center;
+  user-select: none;
+}
+
+.commitDiffTable .commitDiffContent {
+  padding-right: 18px;
+  white-space: pre;
+}
+
+.commitDiffTable [data-diff-kind="addition"] {
+  background: color-mix(in srgb, var(--success) 11%, var(--background));
+}
+
+.commitDiffTable [data-diff-kind="deletion"] {
+  background: color-mix(in srgb, var(--danger) 11%, var(--background));
+}
+
+.commitDiffTable [data-diff-kind="addition"] .commitDiffMarker {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
+}
+
+.commitDiffTable [data-diff-kind="deletion"] .commitDiffMarker {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.commitDiffTable .commitDiffDivider {
+  padding: 7px 14px;
+  border-block: 1px solid var(--border);
+  color: var(--muted-foreground);
+  background: var(--muted);
+  white-space: pre;
+  font-size: 12px;
+}
+
+.commitDiffTable [data-diff-kind="notice"] .commitDiffDivider {
+  padding-block: 4px;
+  background: var(--background);
+  font-style: italic;
+}
+
+.commitRawDiff {
+  margin: 0;
+  padding: 14px;
+  font: inherit;
+  white-space: pre;
+}
+
+.commitDiffNotice {
+  margin: 0;
+  padding: 10px 14px;
+  color: var(--warning);
+  background: var(--warning-soft);
+  font-size: 12px;
+}
+
+.commitMessage {
+  display: grid;
+  gap: 8px;
+  margin: 18px 0;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.commitMessage textarea {
+  min-height: 76px;
+}
+
+.manualCommit {
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.manualCommit > summary {
+  width: fit-content;
+  margin-bottom: 12px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.commitFile summary:focus-visible,
+.commitDiff:focus-visible,
+.manualCommit > summary:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
 }
 
 .commands {

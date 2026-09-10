@@ -22,7 +22,7 @@ export interface SetupHubServices {
 }
 
 export interface CreateSetupHubServicesOptions {
-  readonly onReady?: () => void | Promise<void>;
+  readonly onReady?: (signal: AbortSignal) => void | Promise<void>;
 }
 
 export function createSetupHubServices(
@@ -159,7 +159,7 @@ export function createSetupHubServices(
   return { services, setup };
 }
 
-export function projectSetupStatusPayload(setup: HubSetupRunner): SetupStatus {
+export function projectSetupStatusPayload(setup: HubSetupRunner): Promise<SetupStatus> {
   return setup.status();
 }
 

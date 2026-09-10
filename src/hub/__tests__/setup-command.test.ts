@@ -10,9 +10,12 @@ const mocks = vi.hoisted(() => ({
   createApp: vi.fn(),
   createSetup: vi.fn(),
   inspect: vi.fn(),
+  committedIdentity: vi.fn(),
+  stopSetup: vi.fn(async () => undefined),
   findRoot: vi.fn(),
   findConfig: vi.fn(),
   identity: vi.fn(),
+  createTeam: vi.fn(),
   order: [] as string[],
 }));
 
@@ -29,10 +32,11 @@ vi.mock("../app.js", () => ({ createHubApp: mocks.createApp }));
 vi.mock("../node-server.js", () => ({ startHubNodeServer: mocks.startServer }));
 vi.mock("../setup/services.js", () => ({ createSetupHubServices: mocks.createSetup }));
 vi.mock("../../setup/headless.js", () => ({ inspectSetupStatus: mocks.inspect }));
+vi.mock("../setup/readiness.js", () => ({ hasCommittedHubIdentity: mocks.committedIdentity }));
 vi.mock("../../setup/index.js", () => ({ findSetupProjectRoot: mocks.findRoot }));
 vi.mock("../../config.js", () => ({
   findConfig: mocks.findConfig,
-  getScaffoldIdentity: mocks.identity,
+  readScaffoldId: () => mocks.identity()?.scaffold_id,
 }));
 vi.mock("../jobs/index.js", () => ({ HubJobManager: class {
   initialize() {}
@@ -45,7 +49,7 @@ vi.mock("../../team/local-state/index.js", () => ({ TeamLocalState: class {} }))
 vi.mock("../../graph/application-adapter.js", () => ({ createRepositoryGraphPort: () => ({}) }));
 vi.mock("../../wiki/application-adapter.js", () => ({ createRepositoryWikiPort: () => ({}) }));
 vi.mock("../../team/workflow/repository-team-workflow-port.js", () => ({
-  createRepositoryTeamWorkflowPort: async () => ({ initializeIdentityActivitySigner() {} }),
+  createRepositoryTeamWorkflowPort: mocks.createTeam,
 }));
 vi.mock("../../team/specs/index.js", () => ({ createSpecReadService: () => ({}) }));
 
@@ -54,16 +58,21 @@ import { launchHub, runSetupHubCommand } from "../command.js";
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.order.length = 0;
+  mocks.committedIdentity.mockResolvedValue(false);
+  mocks.createTeam.mockResolvedValue({ initializeIdentityActivitySigner() {} });
+  mocks.findConfig.mockReturnValue({ projectRoot: "/Users/private/project", scaffoldRoot: "/Users/private/project/.mex" });
+  mocks.identity.mockReturnValue({ scaffold_id: "private-scaffold" });
+  mocks.stopSetup.mockImplementation(async () => { mocks.order.push("setup"); });
   mocks.closeServer.mockImplementation(async () => { mocks.order.push("http"); });
   mocks.stopTelemetry.mockImplementation(async () => { mocks.order.push("telemetry"); });
   mocks.startTelemetry.mockReturnValue(mocks.stopTelemetry);
   mocks.createCapture.mockReturnValue(mocks.events);
   mocks.createSetup.mockReturnValue({
     services: { tag: "setup-services" },
-    setup: { tag: "setup-runner", status: () => ({ ready: false }) },
+    setup: { tag: "setup-runner", status: () => ({ ready: false }), shutdown: mocks.stopSetup },
   });
   mocks.findRoot.mockReturnValue("/Users/private/project");
-  mocks.inspect.mockReturnValue({ ready: false, stage: "needs_setup" });
+  mocks.inspect.mockReturnValue({ mode: "code-repo", hasScaffold: false, ready: false, stage: "needs_setup" });
   vi.spyOn(process.stdout, "write").mockReturnValue(true);
 });
 afterEach(() => vi.restoreAllMocks());
@@ -92,7 +101,7 @@ describe("Hub setup process", () => {
     stop("SIGTERM");
     await running;
     expect(mocks.events.mock.calls).toEqual([["hub.session_started", {}]]);
-    expect(mocks.order).toEqual(["http", "telemetry"]);
+    expect(mocks.order).toEqual(["http", "setup", "telemetry"]);
   });
 
   it("opens the setup wizard from launchHub when setup is incomplete", async () => {
@@ -114,14 +123,72 @@ describe("Hub setup process", () => {
     await running;
   });
 
+  it.each([
+    { mode: "agent-memory", hasScaffold: true },
+    { mode: "code-repo", hasScaffold: false },
+  ])("keeps $mode with hasScaffold=$hasScaffold in setup despite committed config", async (state) => {
+    mocks.inspect.mockReturnValue({ ...state, ready: false, stage: "needs_setup" });
+    mocks.committedIdentity.mockResolvedValue(true);
+    mocks.startServer.mockResolvedValue({ origin: "http://127.0.0.1:48123", close: mocks.closeServer, replaceApp: vi.fn() });
+    const priorListeners = new Set(process.listeners("SIGTERM"));
+    const running = launchHub({ openBrowser: false });
+    await vi.waitFor(() => expect(mocks.events).toHaveBeenCalledOnce());
+    expect(mocks.createSetup).toHaveBeenCalledOnce();
+    expect(mocks.findConfig).not.toHaveBeenCalled();
+    stopHub(priorListeners);
+    await running;
+  });
+
+  it("retains the full Hub recovery surfaces when only disposable indexes are missing", async () => {
+    mocks.inspect.mockReturnValue({ mode: "code-repo", hasScaffold: true, ready: false,
+      populated: false, graphReady: false, wikiReady: false, stage: "needs_finalize" });
+    mocks.committedIdentity.mockResolvedValue(true);
+    mocks.startServer.mockResolvedValue({ origin: "http://127.0.0.1:48123", close: mocks.closeServer, replaceApp: vi.fn() });
+    const priorListeners = new Set(process.listeners("SIGTERM"));
+    const running = launchHub({ openBrowser: false });
+    await vi.waitFor(() => expect(mocks.events).toHaveBeenCalledOnce());
+    expect(mocks.createSetup).not.toHaveBeenCalled();
+    expect(mocks.createApp).toHaveBeenCalledWith(expect.objectContaining({ jobs: expect.anything() }));
+    stopHub(priorListeners);
+    await running;
+    expect(mocks.order).toEqual(["http", "jobs", "telemetry"]);
+  });
+
+  it("cleans up pending composition after cancellation without replacing the setup app", async () => {
+    const replaceApp = vi.fn();
+    let onReady!: (signal: AbortSignal) => Promise<void>;
+    mocks.createSetup.mockImplementation((_root, options: { onReady: typeof onReady }) => {
+      onReady = options.onReady;
+      return { services: {}, setup: { shutdown: mocks.stopSetup } };
+    });
+    let finishTeam!: (team: { initializeIdentityActivitySigner(): void }) => void;
+    mocks.createTeam.mockReturnValue(new Promise((resolve) => { finishTeam = resolve; }));
+    mocks.startServer.mockResolvedValue({ origin: "http://127.0.0.1:48123", close: mocks.closeServer, replaceApp });
+    const priorListeners = new Set(process.listeners("SIGTERM"));
+    const running = runSetupHubCommand({ projectRoot: "/Users/private/project", openBrowser: false });
+    await vi.waitFor(() => expect(mocks.events).toHaveBeenCalledOnce());
+    const controller = new AbortController();
+    const promotion = onReady(controller.signal);
+    const failure = expect(promotion).rejects.toThrow("cancelled");
+    await vi.waitFor(() => expect(mocks.createTeam).toHaveBeenCalledOnce());
+    controller.abort();
+    finishTeam({ initializeIdentityActivitySigner() {} });
+    await failure;
+    expect(replaceApp).not.toHaveBeenCalled();
+    expect(mocks.order).toEqual(["jobs"]);
+    stopHub(priorListeners);
+    await running;
+    expect(mocks.order).toEqual(["jobs", "http", "setup", "telemetry"]);
+  });
+
   it("promotes the running listener to the Project Hub when setup becomes ready", async () => {
     const replaceApp = vi.fn();
-    let onReady!: () => Promise<void>;
-    mocks.createSetup.mockImplementation((_root, options: { onReady: () => Promise<void> }) => {
+    let onReady!: (signal: AbortSignal) => Promise<void>;
+    mocks.createSetup.mockImplementation((_root, options: { onReady: (signal: AbortSignal) => Promise<void> }) => {
       onReady = options.onReady;
       return {
         services: { tag: "setup-services" },
-        setup: { tag: "setup-runner", status: () => ({ ready: false }) },
+        setup: { tag: "setup-runner", status: () => ({ ready: false }), shutdown: mocks.stopSetup },
       };
     });
     mocks.findConfig.mockReturnValue({ projectRoot: "/Users/private/project" });
@@ -136,7 +203,7 @@ describe("Hub setup process", () => {
     await vi.waitFor(() => expect(mocks.startServer).toHaveBeenCalledOnce());
     ready({ origin: "http://127.0.0.1:48123", close: mocks.closeServer, replaceApp });
     await vi.waitFor(() => expect(mocks.events).toHaveBeenCalledOnce());
-    await onReady();
+    await onReady(new AbortController().signal);
     expect(replaceApp).toHaveBeenCalledWith({ tag: "hub-app" });
     expect(mocks.createApp).toHaveBeenNthCalledWith(2, expect.objectContaining({
       jobs: expect.anything(),
@@ -148,6 +215,12 @@ describe("Hub setup process", () => {
     if (!stop) throw new Error("Hub did not install its shutdown handler.");
     stop("SIGTERM");
     await running;
-    expect(mocks.order).toEqual(["http", "jobs", "telemetry"]);
+    expect(mocks.order).toEqual(["http", "setup", "jobs", "telemetry"]);
   });
 });
+
+function stopHub(priorListeners: Set<(...args: any[]) => void>): void {
+  const stop = process.listeners("SIGTERM").find((listener) => !priorListeners.has(listener));
+  if (!stop) throw new Error("Hub did not install its shutdown handler.");
+  stop("SIGTERM");
+}

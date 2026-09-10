@@ -147,6 +147,11 @@ export type {
   SetupStage,
   SetupProgress,
   SetupProgressStep,
+  SetupTranscriptEntry,
+  SetupTranscriptBatch,
+  SetupCommitPreview,
+  SetupCommitRequest,
+  SetupCommitResponse,
 } from "@mex/hub-contracts/setup";
 
 export type CapabilityName = "graph" | "wiki" | "jobs" | "activity" | "members" | "workstreams" | "specs" | "inbox" | "relays";

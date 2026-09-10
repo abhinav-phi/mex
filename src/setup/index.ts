@@ -1,21 +1,16 @@
-import { existsSync, readFileSync, mkdirSync, copyFileSync, lstatSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { execSync } from "node:child_process";
 import { stdin, stdout } from "node:process";
 import { globSync } from "glob";
 import chalk from "chalk";
 import {
-  buildFreshPrompt,
-  buildExistingWithBriefPrompt,
-  buildExistingNoBriefPrompt,
-} from "./prompts.js";
-import {
   saveAiTools,
   ensureScaffoldIdentity,
   findConfig,
   loadConfiguredAiTools,
+  hasConfiguredAiTools,
   readScaffoldId,
 } from "../config.js";
 import {
@@ -32,10 +27,25 @@ import {
 import { AI_TOOLS, type AiTool } from "../types.js";
 import { launchSetupPopulation } from "./population.js";
 import {
-  ensureSetupIgnoreProtection,
-  renderSetupIgnoreProtection,
-  verifySetupIgnoreProtection,
-} from "./ignore.js";
+  buildSetupPopulationPrompt,
+  buildSetupGraph,
+  createSetupScaffold,
+  resolveSetupMode,
+  scanSetupCodebase,
+  setupTemplatesDirectory,
+  type ProjectState,
+} from "./phases.js";
+export {
+  AGENT_MEMORY_FILES,
+  SCAFFOLD_FILES,
+  ensureScaffoldFile,
+  normalizeSetupMode,
+  setupTemplatesDirectory,
+  verifyExistingSetupConfig,
+  type ProjectState,
+  type ScaffoldFileAction,
+  type SetupMode,
+} from "./phases.js";
 import { finalizeSetupWiki } from "./wiki-finalize.js";
 import {
   ensureMarkdownAnchor,
@@ -47,70 +57,12 @@ import {
 
 // ── Constants ──
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
 const SOURCE_EXTENSIONS = [
   "*.py", "*.js", "*.ts", "*.tsx", "*.jsx", "*.go", "*.rs", "*.java",
   "*.kt", "*.swift", "*.rb", "*.php", "*.c", "*.cpp", "*.cs", "*.ex",
   "*.exs", "*.zig", "*.lua", "*.dart", "*.scala", "*.clj", "*.erl",
   "*.hs", "*.ml", "*.vue", "*.svelte",
 ];
-
-export const SCAFFOLD_FILES = [
-  "ROUTER.md",
-  "AGENTS.md",
-  "SETUP.md",
-  "SYNC.md",
-  "context/architecture.md",
-  "context/stack.md",
-  "context/conventions.md",
-  "context/decisions.md",
-  "context/setup.md",
-  "patterns/README.md",
-  "patterns/INDEX.md",
-];
-
-export const AGENT_MEMORY_FILES = [
-  ...SCAFFOLD_FILES,
-  "HEARTBEAT.md",
-];
-
-export type ScaffoldFileAction = "copy" | "skip";
-
-export function ensureScaffoldFile(src: string, dest: string, dryRun = false): ScaffoldFileAction {
-  if (existsSync(dest)) return "skip";
-  if (!dryRun) {
-    mkdirSync(dirname(dest), { recursive: true });
-    copyFileSync(src, dest);
-  }
-  return "copy";
-}
-
-/** Refuse to replace malformed or redirected canonical config during setup. */
-export function verifyExistingSetupConfig(mexDir: string): void {
-  const path = resolve(mexDir, "config.json");
-  let stats: ReturnType<typeof lstatSync>;
-  try {
-    stats = lstatSync(path);
-  } catch (error) {
-    if (error instanceof Error
-      && "code" in error
-      && (error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw new Error("Could not inspect existing .mex/config.json. Fix its permissions before rerunning setup.", {
-      cause: error,
-    });
-  }
-  if (stats.isSymbolicLink() || !stats.isFile()) {
-    throw new Error("Existing .mex/config.json must be a regular file. Fix it before rerunning setup.");
-  }
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error();
-  } catch {
-    throw new Error("Existing .mex/config.json is not a valid JSON object. Fix it before rerunning setup.");
-  }
-}
 
 const TOOL_CONFIGS: Record<string, { src: string; dest: string }> = {
   "2": { src: ".tool-configs/.cursorrules", dest: ".cursorrules" },
@@ -254,24 +206,6 @@ function banner() {
 
 // ── Main ──
 
-export type ProjectState = "existing" | "fresh" | "partial";
-
-export type SetupMode = "code-repo" | "agent-memory";
-
-/** Packaged templates directory used by both CLI setup and the Hub wizard. */
-export function setupTemplatesDirectory(): string {
-  const candidates = [
-    resolve(__dirname, "../templates"),
-    resolve(__dirname, "../../templates"),
-  ];
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
-  }
-  throw new Error(
-    `Templates directory not found. Looked in:\n${candidates.map((path) => `  - ${path}`).join("\n")}\nThe mex-agent package may be corrupted — try reinstalling.`,
-  );
-}
-
 /** Exact git commands CLI setup prints after a successful code-repo run. */
 export function setupCommitCheckpointCommands(selectedTools: readonly AiTool[]): string[] {
   const commands = ["git status --short", "git add .mex"];
@@ -291,7 +225,6 @@ export function setupCommitCheckpointCommands(selectedTools: readonly AiTool[]):
 
 export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): Promise<void> {
   const { dryRun = false } = opts;
-  const mode = normalizeSetupMode(opts.mode);
 
   banner();
   console.log();
@@ -304,6 +237,7 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
   const templatesDir = setupTemplatesDirectory();
   const projectRoot = findProjectRoot();
   const mexDir = resolve(projectRoot, ".mex");
+  const mode = resolveSetupMode(mexDir, opts.mode);
 
   if (mode === "code-repo" && !existsSync(resolve(projectRoot, ".git"))) {
     throw new Error("No Git repository found. Run `git init` first, then rerun mex setup.");
@@ -340,34 +274,16 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
   header("Creating .mex/ scaffold...");
   console.log();
 
-  const ignoreProtection = ensureSetupIgnoreProtection({ projectRoot, dryRun });
-  const ignoreMessage = renderSetupIgnoreProtection(ignoreProtection);
-  if (ignoreProtection.changed) ok(ignoreMessage);
-  else info(ignoreMessage);
-  if (mode === "code-repo" && !dryRun) verifySetupIgnoreProtection(projectRoot);
-  verifyExistingSetupConfig(mexDir);
-  console.log();
-
-  const scaffoldFiles = mode === "agent-memory" ? AGENT_MEMORY_FILES : SCAFFOLD_FILES;
-  for (const file of scaffoldFiles) {
-    const agentMemorySrc = resolve(templatesDir, "agent-memory", file);
-    const src = mode === "agent-memory" && existsSync(agentMemorySrc)
-      ? agentMemorySrc
-      : resolve(templatesDir, file);
-    const dest = resolve(mexDir, file);
-
-    const action = ensureScaffoldFile(src, dest, dryRun);
-    if (action === "skip") {
-      info(`Skipped .mex/${file} (already exists)`);
-      continue;
-    }
-
-    if (dryRun) {
-      ok(`(dry run) Would copy .mex/${file}`);
-    } else {
-      ok(`Copied .mex/${file}`);
-    }
-  }
+  createSetupScaffold({
+    projectRoot,
+    mode,
+    dryRun,
+    onIgnore: (message, changed) => changed ? ok(message) : info(message),
+    onFile: (file, action) => {
+      if (action === "skip") info(`Skipped .mex/${file} (already exists)`);
+      else ok(`${dryRun ? "(dry run) Would copy" : "Copied"} .mex/${file}`);
+    },
+  });
   console.log();
 
   // ── Step 3: Tool config selection ──
@@ -379,13 +295,13 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
   // interrupted or the templates gained new required slots. Reuse it instead
   // of making a resumed setup ask the user the same question again.
   const configuredTools = loadConfiguredAiTools(mexDir);
-  if (configuredTools.length > 0) {
+  if (hasConfiguredAiTools(mexDir)) {
     selectedTools = configuredTools;
     // A scaffold orphaned by the old skip lands here, not in the menu
     // branch: it is populated and its aiTools are saved. Link on this path
     // too, or rerunning setup could never repair the installs that need it.
     anchorNotes = ensureToolAnchors(projectRoot, templatesDir, selectedTools, dryRun);
-    info(`Using configured AI tools: ${selectedTools.map((tool) => AI_TOOLS[tool].name).join(", ")}`);
+    info(`Using configured AI tools: ${selectedTools.map((tool) => AI_TOOLS[tool].name).join(", ") || "none"}`);
   } else {
     const rl = createInterface({ input: stdin, output: stdout });
     try {
@@ -437,46 +353,20 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
 
   let scannerBrief: string | null = null;
 
-  if (mode !== "agent-memory" && state !== "fresh") {
-    try {
-      info("Scanning codebase...");
-      const { runScan } = await import("../scanner/index.js");
-      const config = { projectRoot, scaffoldRoot: mexDir, aiTools: [] as AiTool[] };
-      const result = await runScan(config, { jsonOnly: true });
-      scannerBrief = JSON.stringify(result, null, 2);
-      ok("Pre-analysis complete — AI will reason from brief instead of exploring");
-    } catch {
-      warn("Scanner failed — AI will explore the filesystem directly");
-    }
+  if (mode === "code-repo" && state !== "fresh") {
+    info("Scanning codebase...");
+    scannerBrief = await scanSetupCodebase(projectRoot, mexDir);
+    if (scannerBrief) ok("Pre-analysis complete — AI will reason from brief instead of exploring");
+    else warn("Scanner failed — AI will explore the filesystem directly");
   }
 
-  // Fresh installs get the additive code graph by default. A missing runtime,
-  // grammar, or SQLite capability must never make scaffold setup unusable.
   if (mode === "code-repo" && !dryRun) {
-    try {
-      info("Building code graph...");
-      const { rebuildGraph } = await import("../graph/maintenance.js");
-      await rebuildGraph(projectRoot);
-      ok("Code graph ready");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Code graph setup failed: ${message}. Fix the problem and rerun mex setup.`);
-    }
+    info("Building code graph...");
+    await buildSetupGraph(projectRoot);
+    ok("Code graph ready");
   }
 
-  // ── Step 5: Build population prompt ──
-
-  let prompt: string;
-  if (mode === "agent-memory") {
-    const { buildAgentMemoryPrompt } = await import("./prompts.js");
-    prompt = buildAgentMemoryPrompt();
-  } else if (state === "fresh") {
-    prompt = buildFreshPrompt();
-  } else if (scannerBrief) {
-    prompt = buildExistingWithBriefPrompt(scannerBrief);
-  } else {
-    prompt = buildExistingNoBriefPrompt();
-  }
+  const prompt = await buildSetupPopulationPrompt(mode, state, scannerBrief);
 
   // ── Step 6: Run or print ──
 
@@ -538,12 +428,6 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
 
   printAnchorNotes(anchorNotes);
   await promptGlobalInstall();
-}
-
-export function normalizeSetupMode(raw: string | undefined): SetupMode {
-  const mode = raw ?? "code-repo";
-  if (mode === "code-repo" || mode === "agent-memory") return mode;
-  throw new Error(`Unknown setup mode "${mode}". Use code-repo or agent-memory.`);
 }
 
 // ── Step functions ──
@@ -653,7 +537,7 @@ async function selectToolConfig(
   const anchorNotes = ensureToolAnchors(projectRoot, templatesDir, selectedTools, dryRun);
 
   // Persist tool selection
-  if (selectedTools.length > 0 && !dryRun) {
+  if (!dryRun) {
     const mexDir = resolve(projectRoot, ".mex");
     saveAiTools(mexDir, selectedTools);
   }

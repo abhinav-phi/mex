@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BookOpenText,
@@ -9,10 +9,11 @@ import {
   Sparkles,
 } from "lucide-react";
 import { Navigate, useLocation } from "react-router-dom";
-import { HubApiError } from "../api/client";
+import { HubApiError, isSetupCapabilityUnavailable, type HubApi } from "../api/client";
 import { useHubApi } from "../api/context";
 import type {
   SessionResponse,
+  SetupCommitResponse,
   SetupProgressStep,
   SetupRun,
   SetupStartRequest,
@@ -23,6 +24,9 @@ import { Progress, ProgressLabel, ProgressValue } from "../components/primitives
 import { Textarea } from "../components/primitives/textarea";
 import { PageHeader, StatePanel } from "../components/ui";
 import { PageViewObserver } from "../app/PageViewObserver";
+import { SetupPopulationActivity } from "./SetupPopulationActivity";
+import { SetupTranscript } from "./SetupTranscript";
+import { SetupCommitReview } from "./SetupCommitReview";
 import mexMascot from "../../../../mascot/mex-mascot.svg?no-inline";
 import styles from "../styles/setup.module.css";
 
@@ -98,34 +102,76 @@ export function SetupPage() {
     },
     retry: false,
   });
-  const [mode, setMode] = useState<SetupMode>("code-repo");
+  const [modeSelection, setMode] = useState<SetupMode | null>(null);
   const [toolSelection, setToolSelection] = useState<string[] | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [welcomeDismissed, setWelcomeDismissed] = useState(false);
+  const [editingOptions, setEditingOptions] = useState(false);
+  const [stopRequested, setStopRequested] = useState(false);
+  const [committedSetup, setCommittedSetup] = useState<SetupCommitResponse | null>(null);
 
   const status = statusQuery.data;
   const run = runQuery.data;
-  const tools = toolSelection ?? status?.configuredTools ?? [];
+  const persistedRun = run && run.status !== "idle" ? run : null;
+  const mode = modeSelection ?? persistedRun?.mode ?? status?.mode ?? "code-repo";
+  const tools = toolSelection ?? persistedRun?.selectedTools ?? status?.configuredTools ?? [];
+
+  const acceptSnapshot = useCallback((next: SetupRun) => {
+    queryClient.setQueryData(["setup", "run"], next);
+    if (next.status !== "running") {
+      void queryClient.invalidateQueries({ queryKey: ["setup", "status"] });
+      void queryClient.invalidateQueries({ queryKey: ["capabilities"] });
+      if (next.ready) {
+        void queryClient.invalidateQueries({ queryKey: ["home"] });
+        void queryClient.invalidateQueries({ queryKey: ["overview"] });
+      }
+    }
+  }, [queryClient]);
 
   useEffect(() => {
     if (!run || run.status !== "running" || !api.subscribeToSetup) return;
-    const subscription = api.subscribeToSetup((next) => {
-      queryClient.setQueryData(["setup", "run"], next);
+    let recovering = false;
+    const subscription = api.subscribeToSetup(acceptSnapshot, () => {
+      // Promotion can finish before EventSource connects, so the terminal event
+      // may be missed. Reconcile one bounded set of reads per disconnect.
+      if (recovering) return;
+      recovering = true;
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["setup", "status"] }),
+        queryClient.invalidateQueries({ queryKey: ["setup", "run"] }),
+        queryClient.invalidateQueries({ queryKey: ["capabilities"] }),
+      ]).finally(() => { recovering = false; });
     });
     return () => subscription.close();
-  }, [api, queryClient, run?.status]);
+  }, [api, acceptSnapshot, queryClient, run?.status]);
 
   const start = useMutation({
     mutationFn: (request: SetupStartRequest) => {
       if (!api.startSetup) throw new Error("Setup start is unavailable.");
       return api.startSetup(request);
     },
-    onSuccess: async (next) => {
-      queryClient.setQueryData(["setup", "run"], next);
-      await queryClient.invalidateQueries({ queryKey: ["setup", "status"] });
-      if (next.ready) {
-        await queryClient.invalidateQueries({ queryKey: ["capabilities"] });
-      }
+    onSuccess: (next) => {
+      setEditingOptions(false);
+      setStopRequested(false);
+      acceptSnapshot(next);
+    },
+  });
+  const cancel = useMutation({
+    mutationFn: () => {
+      if (!api.cancelSetup) throw new Error("Setup cancellation is unavailable.");
+      return api.cancelSetup();
+    },
+    onSuccess: (next) => {
+      setStopRequested(next.status === "running");
+      acceptSnapshot(next);
+    },
+  });
+  const refresh = useMutation({
+    mutationFn: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["setup", "status"] }),
+        queryClient.invalidateQueries({ queryKey: ["setup", "run"] }),
+      ]);
     },
   });
 
@@ -140,6 +186,9 @@ export function SetupPage() {
 
   if (statusQuery.isPending) {
     return <StatePanel state="loading" title="Inspecting this checkout" detail="Checking whether MEX is already set up." />;
+  }
+  if (statusQuery.isError && isSetupCapabilityUnavailable(statusQuery.error)) {
+    return <StatePanel state="loading" title="Opening the Project Hub" detail="Loading the available workbenches." />;
   }
   if (statusQuery.isError || !status) {
     return (
@@ -156,9 +205,27 @@ export function SetupPage() {
     );
   }
 
+  if (runQuery.isError && !isSetupCapabilityUnavailable(runQuery.error)) {
+    return (
+      <StatePanel
+        state="error"
+        title="Setup progress could not be loaded"
+        detail="Reload the current run before continuing setup."
+        action={<Button type="button" size="sm" variant="outline" onClick={() => void runQuery.refetch()}>Reload progress</Button>}
+      />
+    );
+  }
+  if (runQuery.isPending) {
+    return <StatePanel state="loading" title="Loading setup progress" detail="Checking for a setup run already in progress." />;
+  }
+
   const currentRun = run ?? idleRunFromStatus(status);
+  const recoveryWarning = committedSetup?.recoveryRequired ? committedSetup.run.error ?? committedSetup.message : null;
   const gitBlocked = mode === "code-repo" && !status.hasGit;
-  const view = resolveView(status, currentRun, mode);
+  const resolvedView = committedSetup && currentRun.status !== "running" ? "ready" : resolveView(status, currentRun, mode);
+  const view = editingOptions && ["population", "failed", "cancelled"].includes(resolvedView)
+    ? "configure"
+    : resolvedView;
   const resume = status.hasScaffold
     || status.stage === "needs_finalize"
     || currentRun.status !== "idle";
@@ -184,61 +251,125 @@ export function SetupPage() {
           </div>
         </div>
         <div className={styles.body}>
-          {view === "git" ? <GitRequiredNotice onCopy={copy} copied={copied} /> : null}
-          {view === "failed" ? (
+          {view === "git" ? (
+            <GitRequiredNotice onCopy={copy} copied={copied} refreshing={refresh.isPending} onRefresh={() => refresh.mutate()} />
+          ) : null}
+          {(currentRun.status === "failed" || recoveryWarning) && view !== "progress" ? (
             <p className={styles.notice} data-tone="danger" role="alert">
-              <strong>Setup did not finish</strong>
-              {currentRun.error ?? currentRun.message}
+              <strong>{recoveryWarning ? "Setup committed; Git needs attention" : committedSetup ? "Setup is committed; the Hub did not open" : "Setup did not finish"}</strong>
+              {recoveryWarning ?? currentRun.error ?? currentRun.message}
             </p>
           ) : null}
-          {view === "configure" || view === "git" || view === "failed" ? (
+          {currentRun.status === "cancelled" ? (
+            <p className={styles.notice} data-tone="warning" role="status">
+              <strong>Setup cancelled</strong>
+              {currentRun.message}
+            </p>
+          ) : null}
+          {view !== "progress" && currentRun.transcriptId && api.subscribeToSetupTranscript ? (
+            <SetupTranscript runId={currentRun.transcriptId} api={api} />
+          ) : null}
+          {view === "configure" || view === "git" || view === "cancelled" || (view === "failed" && !currentRun.prompt) ? (
             <ConfigureForm
               mode={mode}
               tools={tools}
               status={status}
               gitBlocked={gitBlocked}
               pending={start.isPending}
-              startLabel={status.stage === "needs_finalize" ? "Finish setup" : "Start setup"}
+              startLabel={status.stage === "needs_finalize" ? "Finish setup" : currentRun.status === "cancelled" ? "Resume setup" : currentRun.status === "failed" ? "Retry setup" : "Start setup"}
               showWelcomeBack={!resume}
               onBack={() => setWelcomeDismissed(false)}
               onMode={setMode}
               onToggleTool={(id) => setToolSelection((current) => {
-                const selected = current ?? status.configuredTools;
+                const selected = current ?? tools;
                 return selected.includes(id) ? selected.filter((tool) => tool !== id) : [...selected, id];
               })}
               onStart={() => start.mutate({
                 mode,
                 tools: tools as SetupStartRequest["tools"],
-                ...(status.stage === "needs_finalize" ? { confirmPopulation: true } : {}),
+                ...(currentRun.populated || ["needs_finalize", "needs_commit", "ready"].includes(status.stage)
+                  ? { confirmPopulation: true }
+                  : {}),
               })}
             />
           ) : null}
           {view === "progress" ? (
-            <ProgressPanel run={currentRun} mode={mode} tools={tools} />
+            <>
+              <ProgressPanel run={currentRun} mode={mode} tools={tools} api={api} />
+              {api.cancelSetup ? (
+                <div className={styles.footer}>
+                  <p>You can leave this tab; setup continues while the local Hub is running. Stop it here when needed.</p>
+                  <Button type="button" size="sm" variant="outline" disabled={cancel.isPending || stopRequested} onClick={() => cancel.mutate()}>
+                    {cancel.isPending || stopRequested ? "Stopping…" : "Cancel setup"}
+                  </Button>
+                </div>
+              ) : null}
+            </>
           ) : null}
-          {view === "population" ? (
+          {view === "population" || (view === "failed" && currentRun.prompt) ? (
             <PopulationPanel
               run={currentRun}
               copied={copied}
               pending={start.isPending}
               onCopy={copy}
+              onConfigure={() => setEditingOptions(true)}
               onContinue={() => start.mutate({
                 mode,
-                tools: (currentRun.selectedTools.length > 0 ? currentRun.selectedTools : tools) as SetupStartRequest["tools"],
+                tools: tools as SetupStartRequest["tools"],
                 confirmPopulation: true,
               })}
               onRetry={() => start.mutate({
                 mode,
-                tools: (currentRun.selectedTools.length > 0 ? currentRun.selectedTools : tools) as SetupStartRequest["tools"],
+                tools: tools as SetupStartRequest["tools"],
               })}
             />
           ) : null}
-          {view === "done" ? (
-            <StatePanel
-              state="loading"
-              title="Opening the Project Hub"
-              detail="Setup finished. Switching this session to the Project Hub."
+          {view === "commit" && api.previewSetupCommit && api.commitSetup ? <>
+            <SetupCommitReview
+              api={api}
+              onCommitted={(response) => {
+                setCommittedSetup(response);
+                acceptSnapshot(response.run);
+                void queryClient.invalidateQueries({ queryKey: ["session"] });
+              }}
+              onReviewInvalid={() => {
+                void queryClient.invalidateQueries({ queryKey: ["setup", "status"] });
+                void queryClient.invalidateQueries({ queryKey: ["setup", "run"] });
+                void queryClient.invalidateQueries({ queryKey: ["capabilities"] });
+              }}
+              opening={start.isPending}
+              onOpenHub={() => start.mutate({ mode, tools: tools as SetupStartRequest["tools"], confirmPopulation: true })}
             />
+            <details className={styles.manualCommit}>
+              <summary>Commit manually</summary>
+              <CommitPanel
+                commands={status.commitCommands.length > 0 ? status.commitCommands : currentRun.commitCommands}
+                committed={false} copied={copied} pending={start.isPending} onCopy={copy}
+                onContinue={() => start.mutate({ mode, tools: tools as SetupStartRequest["tools"], confirmPopulation: true })}
+              />
+            </details>
+          </> : view === "commit" || view === "ready" ? (
+            <CommitPanel
+              commands={status.commitCommands.length > 0 ? status.commitCommands : currentRun.commitCommands}
+              committed={view === "ready"}
+              copied={copied}
+              pending={start.isPending}
+              retry={view === "ready" && currentRun.status === "failed"}
+              recovery={Boolean(recoveryWarning)}
+              onCopy={copy}
+              onContinue={() => start.mutate({ mode, tools: tools as SetupStartRequest["tools"], confirmPopulation: true })}
+            />
+          ) : null}
+          {view === "complete" ? (
+            <p className={styles.notice} role="status">
+              <strong>Agent memory is ready</strong>
+              Your .mex/ memory and selected tool instructions are ready to use. You can close this tab and continue with your agent.
+            </p>
+          ) : null}
+          {cancel.isError ? (
+            <p className={styles.notice} data-tone="danger" role="alert">
+              {cancel.error instanceof HubApiError ? cancel.error.problem.detail : "Setup could not be stopped. Try again."}
+            </p>
           ) : null}
           {start.isError ? (
             <p className={styles.notice} data-tone="danger" role="alert">
@@ -272,7 +403,7 @@ function WelcomeScreen({
             <Button size="lg" type="button" onClick={onContinue}>
               Set up this project
             </Button>
-            <p className={styles.heroNote}>MEX never runs git init, commit, or push.</p>
+            <p className={styles.heroNote}>Setup changes stay local. Commit when ready; MEX never pushes.</p>
           </div>
         </div>
         <div className={styles.motion} aria-hidden="true">
@@ -409,7 +540,7 @@ function ConfigureForm({
         </div>
       </fieldset>
       <div className={styles.footer}>
-        <p>MEX never runs git init, commit, or push. After setup, commit the canonical files yourself.</p>
+        <p>MEX can commit the reviewed setup files when you ask. Nothing is pushed.</p>
         <div className={styles.actions}>
           {showWelcomeBack ? (
             <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={onBack}>
@@ -428,9 +559,13 @@ function ConfigureForm({
 function GitRequiredNotice({
   copied,
   onCopy,
+  refreshing,
+  onRefresh,
 }: {
   copied: string | null;
   onCopy: (value: string) => Promise<void>;
+  refreshing: boolean;
+  onRefresh: () => void;
 }) {
   return (
     <div className={styles.notice} data-tone="warning">
@@ -443,11 +578,14 @@ function GitRequiredNotice({
           {copied === "git init" ? "Copied" : "Copy"}
         </Button>
       </div>
+      <Button type="button" size="sm" variant="outline" disabled={refreshing} onClick={onRefresh}>
+        {refreshing ? "Checking…" : "Check repository again"}
+      </Button>
     </div>
   );
 }
 
-function ProgressPanel({ run, mode, tools }: { run: SetupRun; mode: SetupMode; tools: string[] }) {
+function ProgressPanel({ run, mode, tools, api }: { run: SetupRun; mode: SetupMode; tools: string[]; api: HubApi }) {
   const steps = visibleSteps(mode, tools);
   const current = run.progress?.step ?? "detect";
   const currentIndex = Math.max(0, steps.indexOf(current));
@@ -456,7 +594,9 @@ function ProgressPanel({ run, mode, tools }: { run: SetupRun; mode: SetupMode; t
     : Math.round(((currentIndex + (run.status === "running" ? 0.35 : 1)) / steps.length) * 100);
   return (
     <>
-      <div className={styles.currentStep}>
+      {current === "population" ? <SetupPopulationActivity run={run}>
+        {run.transcriptId && api.subscribeToSetupTranscript ? <SetupTranscript runId={run.transcriptId} api={api} /> : undefined}
+      </SetupPopulationActivity> : <div className={styles.currentStep}>
         <strong>
           <LoaderCircle className={styles.spin} aria-hidden="true" />
           {run.progress?.label ?? "Running setup"}
@@ -466,7 +606,10 @@ function ProgressPanel({ run, mode, tools }: { run: SetupRun; mode: SetupMode; t
           <ProgressLabel>Setup progress</ProgressLabel>
           <ProgressValue />
         </Progress>
-      </div>
+      </div>}
+      {current !== "population" && run.populationActivity && run.transcriptId && api.subscribeToSetupTranscript ? (
+        <SetupTranscript runId={run.transcriptId} api={api} />
+      ) : null}
       <ol className={styles.steps}>
         {steps.map((step, index) => {
           const orderIndex = STEP_ORDER.indexOf(step);
@@ -502,6 +645,7 @@ function PopulationPanel({
   onCopy,
   onContinue,
   onRetry,
+  onConfigure,
 }: {
   run: SetupRun;
   copied: string | null;
@@ -509,15 +653,16 @@ function PopulationPanel({
   onCopy: (value: string) => Promise<void>;
   onContinue: () => void;
   onRetry: () => void;
+  onConfigure: () => void;
 }) {
   return (
     <>
       <p className={styles.notice} data-tone="warning">
         <strong>Populate the scaffold</strong>
         {run.message}
-        {run.populationTool
-          ? ` Headless ${run.populationTool === "claude" ? "Claude Code" : "Codex"} ${run.populationCompleted ? "exited." : "was launched."}`
-          : " Paste this prompt into your selected agent if no CLI is available."}
+        {run.status === "failed"
+          ? " You can retry the background agent or use the prompt below."
+          : " Use the prompt below with your agent, then continue once the scaffold is populated."}
       </p>
       {run.prompt ? (
         <div className={styles.promptFrame}>
@@ -532,9 +677,10 @@ function PopulationPanel({
         </div>
       ) : null}
       <div className={styles.footer}>
-        <p>After the agent finishes, continue to capture grounding and Wiki. Placeholders must be gone.</p>
+        <p>{run.mode === "agent-memory" ? "After the agent finishes, continue to check your memory scaffold." : "After the agent finishes, continue to capture grounding and Wiki."} Placeholders must be gone.</p>
         <div className={styles.actions}>
-          <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={onRetry}>Retry population</Button>
+          <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={onConfigure}>Change AI tools</Button>
+          <Button type="button" size="sm" variant="outline" disabled={pending} onClick={onRetry}>Retry population</Button>
           <Button type="button" size="sm" disabled={pending} onClick={onContinue}>
             {pending ? "Continuing…" : "I've populated the scaffold"}
           </Button>
@@ -544,24 +690,71 @@ function PopulationPanel({
   );
 }
 
+function CommitPanel({ commands, committed, copied, pending, retry = false, recovery = false, onCopy, onContinue }: {
+  commands: string[];
+  committed: boolean;
+  copied: string | null;
+  pending: boolean;
+  retry?: boolean;
+  recovery?: boolean;
+  onCopy: (value: string) => Promise<void>;
+  onContinue: () => void;
+}) {
+  const commandText = commands.join("\n");
+  return (
+    <>
+      <p className={styles.notice} data-tone={committed ? undefined : "warning"}>
+        <strong>{committed ? "Ready to open the Hub" : "Review and commit the setup files"}</strong>
+        {committed
+          ? recovery ? "Your setup commit is saved. Resolve the Git issue above, then check again." : retry ? "Your setup is committed. Retry opening the Project Hub." : "This checkout meets the setup requirements. Open the Project Hub to continue."
+          : "Graph and Wiki are built. Review the generated files and commit the MEX project identity before opening the Hub. Run these commands from this project folder."}
+      </p>
+      {!committed && commandText ? (
+        <div className={styles.promptFrame}>
+          <div className={styles.promptHeader}>
+            <span>Commit checkpoint</span>
+            <Button type="button" size="xs" variant="outline" onClick={() => void onCopy(commandText)}>
+              {copied === commandText ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+              {copied === commandText ? "Copied" : "Copy commands"}
+            </Button>
+          </div>
+          <Textarea className={styles.commitCommands} readOnly value={commandText} aria-label="Commit commands" />
+        </div>
+      ) : null}
+      <div className={styles.footer}>
+        <p>{committed ? "Your existing browser session will continue in the Hub." : "Review and commit these files locally. Share them when you’re ready to push."}</p>
+        <Button type="button" size="sm" disabled={pending} onClick={onContinue}>
+          {pending ? "Checking…" : recovery ? "Check recovery and open Hub" : retry ? "Retry opening Hub" : committed ? "Open Project Hub" : "Check commit and open Hub"}
+        </Button>
+      </div>
+    </>
+  );
+}
+
 function resolveView(
   status: SetupStatus,
   run: SetupRun,
   mode: SetupMode,
-): "git" | "configure" | "progress" | "population" | "done" | "failed" {
-  if (status.ready || run.ready) return "done";
+): "git" | "configure" | "progress" | "population" | "commit" | "ready" | "complete" | "failed" | "cancelled" {
   if (run.status === "running") return "progress";
+  if (run.status === "failed") return status.ready || run.ready ? "ready" : "failed";
+  if (run.status === "cancelled") return "cancelled";
+  if (mode === "agent-memory" && (status.stage === "complete" || run.stage === "complete")) return "complete";
+  if (status.ready || run.ready) return "ready";
+  if (status.stage === "needs_commit" || run.stage === "needs_commit") return "commit";
   if (run.status === "paused" || (run.prompt && !run.populated)) return "population";
-  if (run.status === "failed") return "failed";
   if (!status.hasGit && mode === "code-repo") return "git";
   return "configure";
 }
 
 function headingFor(view: ReturnType<typeof resolveView>, status: SetupStatus): string {
-  if (view === "done") return "Opening the Project Hub";
+  if (view === "ready") return "Setup is ready";
+  if (view === "commit") return "One last checkpoint";
+  if (view === "complete") return "Agent memory setup complete";
   if (view === "progress") return "Running setup";
   if (view === "population") return "Populate scaffold";
   if (view === "failed") return "Setup stopped";
+  if (view === "cancelled") return "Resume setup";
   if (view === "git") return "Git repository required";
   if (status.stage === "needs_finalize") return "Finish Graph and Wiki";
   if (status.hasScaffold) return "Continue setup";
@@ -579,6 +772,7 @@ function visibleSteps(mode: SetupMode, tools: string[]): SetupProgressStep[] {
 function idleRunFromStatus(status: SetupStatus): SetupRun {
   return {
     status: "idle",
+    mode: status.mode,
     stage: status.stage,
     populated: status.populated,
     ready: status.ready,
@@ -586,7 +780,7 @@ function idleRunFromStatus(status: SetupStatus): SetupRun {
     prompt: null,
     populationTool: null,
     populationCompleted: false,
-    commitCommands: [],
+    commitCommands: status.commitCommands,
     anchorNotes: [],
     message: status.ready ? "MEX setup is complete for this checkout." : "MEX is not set up in this checkout yet.",
     progress: null,

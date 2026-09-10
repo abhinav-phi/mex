@@ -13,7 +13,8 @@ import { createRepositoryGraphPort } from "../graph/application-adapter.js";
 import { createRepositoryWikiPort } from "../wiki/application-adapter.js";
 import { createRepositoryTeamWorkflowPort } from "../team/workflow/repository-team-workflow-port.js";
 import { createSpecReadService } from "../team/specs/index.js";
-import { findConfig, getScaffoldIdentity } from "../config.js";
+import { findConfig, readScaffoldId } from "../config.js";
+import { hasCommittedHubIdentity } from "./setup/readiness.js";
 import { inspectSetupStatus } from "../setup/headless.js";
 import { findSetupProjectRoot } from "../setup/index.js";
 import { createProjectTelemetryCapture, startHubTelemetry } from "../telemetry/index.js";
@@ -44,29 +45,26 @@ export interface RunSetupHubCommandOptions {
 /**
  * Open the Project Hub, or the setup wizard when this checkout is not ready.
  *
- * A working-tree scaffold with Graph and Wiki indexes is enough to open the
- * dashboard. The setup process promotes that same listener in place when the
- * wizard finishes, so the browser session does not wait for a restart or commit.
+ * Preserve the existing Hub's recovery surfaces when disposable indexes are
+ * missing. A new checkout first completes setup and its canonical commit
+ * checkpoint; the same listener can then become the full Hub.
  */
 export async function launchHub(options: LaunchHubOptions): Promise<void> {
   const projectRoot = findSetupProjectRoot();
   const status = inspectSetupStatus(projectRoot);
-  if (status.ready) {
-    try {
-      const config = findConfig(projectRoot);
-      const identity = getScaffoldIdentity(config);
-      await runHubCommand({
-        projectRoot: config.projectRoot,
-        scaffoldId: identity.scaffold_id,
-        port: options.port,
-        openBrowser: options.openBrowser,
-        ...(config.wiki?.exclude === undefined ? {} : { wikiExclude: config.wiki.exclude }),
-        ...(config.wiki?.readOnly === undefined ? {} : { wikiReadOnly: config.wiki.readOnly }),
-      });
-      return;
-    } catch {
-      // Untracked or incomplete identity: keep serving the setup wizard.
-    }
+  if (status.mode === "code-repo" && status.hasScaffold && await hasCommittedHubIdentity(projectRoot)) {
+    const config = findConfig(projectRoot);
+    const scaffoldId = readScaffoldId(config.scaffoldRoot);
+    if (!scaffoldId) throw new Error("The committed MEX project identity could not be read.");
+    await runHubCommand({
+      projectRoot: config.projectRoot,
+      scaffoldId,
+      port: options.port,
+      openBrowser: options.openBrowser,
+      ...(config.wiki?.exclude === undefined ? {} : { wikiExclude: config.wiki.exclude }),
+      ...(config.wiki?.readOnly === undefined ? {} : { wikiReadOnly: config.wiki.readOnly }),
+    });
+    return;
   }
   await runSetupHubCommand({
     projectRoot,
@@ -138,34 +136,46 @@ export async function runSetupHubCommand(options: RunSetupHubCommandOptions): Pr
   let security: HubSessionManager | undefined;
   let assets: HubAssetManifest | undefined;
   let promoting = false;
+  let closing = false;
 
-  const promoteToProjectHub = async (): Promise<void> => {
+  const promoteToProjectHub = async (signal: AbortSignal): Promise<void> => {
+    if (signal.aborted) throw new Error("Setup was cancelled.");
     const listener = server;
     const session = security;
     const manifest = assets;
-    if (promoting || jobs || !listener || !session || !manifest) return;
+    if (jobs) return;
+    if (closing || promoting || !listener || !session || !manifest) {
+      throw new Error("The Hub cannot open while its listener is stopping.");
+    }
     promoting = true;
     try {
       const config = findConfig(options.projectRoot);
-      const identity = getScaffoldIdentity(config);
+      const scaffoldId = readScaffoldId(config.scaffoldRoot);
+      if (!scaffoldId) throw new Error("The MEX project identity could not be read.");
       const composed = await composeProductionHub({
         projectRoot: config.projectRoot,
-        scaffoldId: identity.scaffold_id,
+        scaffoldId,
         security: session,
         assets: manifest,
         telemetry: captureEvent,
         ...(config.wiki?.exclude === undefined ? {} : { wikiExclude: config.wiki.exclude }),
         ...(config.wiki?.readOnly === undefined ? {} : { wikiReadOnly: config.wiki.readOnly }),
       });
+      if (closing || signal.aborted) {
+        await composed.jobs.shutdown();
+        throw new Error(signal.aborted ? "Setup was cancelled." : "The Hub listener is stopping.");
+      }
       jobs = composed.jobs;
       listener.replaceApp(composed.app);
       process.stdout.write(`\nProject Hub is ready at ${listener.origin}\n`);
     } catch (error) {
-      promoting = false;
       const detail = error instanceof Error ? error.message : String(error);
       process.stdout.write(
-        `\nProject Hub could not open after setup: ${detail}\nRestart mex hub to open the dashboard.\n`,
+        `\nProject Hub could not open after setup: ${detail}\n`,
       );
+      throw error;
+    } finally {
+      promoting = false;
     }
   };
 
@@ -198,16 +208,20 @@ export async function runSetupHubCommand(options: RunSetupHubCommandOptions): Pr
     process.stdout.write(`One-time bootstrap link (valid for 5 minutes):\n${bootstrapUrl}\n`);
     process.stdout.write("Press Ctrl+C to stop.\n\n");
     if (options.openBrowser) openHubBrowser(bootstrapUrl);
-    if (setup.status().ready) await promoteToProjectHub();
     await waitForShutdownSignal();
   } finally {
+    closing = true;
     try {
       await server?.close();
     } finally {
       try {
-        await jobs?.shutdown();
+        await setup.shutdown();
       } finally {
-        await stopTelemetry?.();
+        try {
+          await jobs?.shutdown();
+        } finally {
+          await stopTelemetry?.();
+        }
       }
     }
   }

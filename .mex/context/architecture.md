@@ -28,7 +28,7 @@ mex:
   id: mx_01M1M0CJ5C5XQV0HM5VM787WQS
   type: architecture
   status: promoted
-  revision: 6
+  revision: 10
   title: architecture
   relations:
     - type: related_to
@@ -83,7 +83,7 @@ revision: 1
 - **Code Graph (`src/graph/`)** — deterministic extraction, versioned SQLite storage, immutable read sessions, provenance/freshness checks, retrieval, impact, and explicit refresh/rebuild recovery.
 - **Wiki (`src/wiki/`)** — treats repository Markdown as canonical, owns migration/validation/indexing, and exposes bounded query plus repository-adapter services.
 - **Team workflows (`src/team/`)** — canonical Members, Activity, Workstreams, Inbox, and Relay records plus signed preview/apply services and isolated checkout-local state.
-- **Project Hub (`src/hub/`, `packages/hub-contracts`, `packages/hub-web`)** — `launchHub()` opens the loopback server. Incomplete checkouts get a setup-only process that runs the same ordered `mex setup` steps through `runHeadlessSetup()`. When that checkout becomes ready, the same listener promotes to `runHubCommand()`'s Graph/Wiki/Team jobs and the browser leaves `/setup` for the ordinary dashboard. A later `mex hub` on an already-ready working-tree scaffold still starts the full Hub directly.
+- **Project Hub (`src/hub/`, `packages/hub-contracts`, `packages/hub-web`)** — `launchHub()` opens the loopback server. Incomplete checkouts get a setup-only process that shares the CLI setup phases through `runHeadlessSetup()`. Claude Code and Codex run as owned background children. Their structured streams supply activity timing and a separate read-only transcript of assistant messages with compact fixed tool labels; command details and tool results are dropped before transcript retention. Cursor-based SSE replays a bounded process-memory history without copying it into run snapshots. After code setup finishes and the committed scaffold identity passes the existing Team authority check, an explicit action promotes the same listener and session into the full Hub. Existing committed code projects retain Health recovery for missing disposable indexes; Agent memory keeps its separate completion path.
 - **Drift and agent workflows (`src/drift/`, `src/sync/`, `src/agent-skills/`)** — check grounded knowledge, prepare bounded repair briefs, and install the governed Inbox/Relay integrations.
 
 <!-- mex:entity
@@ -94,7 +94,7 @@ revision: 1
 -->
 ## External Dependencies
 
-- **Git** — repository identity, revisions, sharing, and bounded read-only observations; product code never stages, commits, pushes, or pulls.
+- **Git** — repository identity, revisions, sharing, and bounded read-only observations. The setup-only Hub also offers an explicit, revision-bound diff review and local commit of scoped setup files, preserving unrelated staged work. Ordinary reads do not stage or commit; product code never pushes or pulls.
 - Claude Code or Codex may be launched for setup population; interactive sync
   can use Claude Code, Codex, or OpenCode, and prompt-only fallback works with
   any file-reading agent.

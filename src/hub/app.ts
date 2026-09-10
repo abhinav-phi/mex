@@ -139,10 +139,20 @@ import { OverviewResponseSchema } from "@mex/hub-contracts/overview";
 import {
   SetupRunSchema,
   SetupStartRequestSchema,
+  SetupCancelRequestSchema,
   SetupStatusSchema,
+  SetupTranscriptBatchSchema,
+  SetupCommitPreviewRequestSchema,
+  SetupCommitPreviewSchema,
+  SetupCommitRequestSchema,
+  SetupCommitResponseSchema,
   type SetupRun,
   type SetupStartRequest,
   type SetupStatus,
+  type SetupTranscriptBatch,
+  type SetupCommitPreview,
+  type SetupCommitRequest,
+  type SetupCommitResponse,
 } from "@mex/hub-contracts/setup";
 import { Hono, type Context } from "hono";
 import { getCookie, generateCookie } from "hono/cookie";
@@ -199,10 +209,15 @@ export interface HubJobService {
 
 /** Process-local setup wizard seam. Present only while Hub is in setup mode. */
 export interface HubSetupService {
-  status(): SetupStatus;
+  status(): SetupStatus | Promise<SetupStatus>;
   snapshot(): SetupRun;
   start(request: SetupStartRequest): SetupRun;
+  cancel(): SetupRun;
   subscribe(listener: (run: SetupRun) => void): () => void;
+  readTranscript?(runId: string, after: number): SetupTranscriptBatch;
+  subscribeTranscript?(listener: () => void): () => void;
+  previewCommit?(): Promise<SetupCommitPreview>;
+  commitSetup?(request: SetupCommitRequest): Promise<SetupCommitResponse>;
 }
 
 export interface HubReadServices {
@@ -780,7 +795,7 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
 
   app.get("/api/v1/setup", async (context) => {
     readStrictQuery(context.req.raw, []);
-    return resourceResponse(SetupStatusSchema, requireSetup(options.setup).status());
+    return resourceResponse(SetupStatusSchema, await requireSetup(options.setup).status());
   });
 
   app.get("/api/v1/setup/run", async (context) => {
@@ -794,6 +809,28 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     const request = parseInput(SetupStartRequestSchema, await readBoundedJson(context.req.raw));
     return telemetry.action("setup.start", "direct", async () =>
       resourceResponse(SetupRunSchema, setup.start(request), 202));
+  });
+
+  app.post("/api/v1/setup/cancel", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    parseInput(SetupCancelRequestSchema, await readBoundedJson(context.req.raw));
+    return resourceResponse(SetupRunSchema, requireSetup(options.setup).cancel(), 202);
+  });
+
+  app.post("/api/v1/setup/commit/preview", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    parseInput(SetupCommitPreviewRequestSchema, await readBoundedJson(context.req.raw));
+    const setup = requireSetup(options.setup);
+    if (!setup.previewCommit) throw unavailable("Setup commit review is unavailable in this build.");
+    return resourceResponse(SetupCommitPreviewSchema, await setup.previewCommit());
+  });
+
+  app.post("/api/v1/setup/commit", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    const request = parseInput(SetupCommitRequestSchema, await readBoundedJson(context.req.raw));
+    const setup = requireSetup(options.setup);
+    if (!setup.commitSetup) throw unavailable("Setup commits are unavailable in this build.");
+    return resourceResponse(SetupCommitResponseSchema, await setup.commitSetup(request));
   });
 
   app.get("/api/v1/setup/events", async (context) => {
@@ -816,6 +853,33 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
         now,
         release,
       );
+    } catch (error) {
+      release();
+      throw error;
+    }
+  });
+
+  app.get("/api/v1/setup/transcript/events", (context) => {
+    if (context.req.method === "HEAD") {
+      throw new HubHttpError(405, "INVALID_REQUEST", "Method not allowed", "Setup transcript streams require GET.");
+    }
+    const query = readStrictQuery(context.req.raw, ["run"]);
+    const runId = parseInput(SetupTranscriptBatchSchema.shape.runId, query.run);
+    const header = context.req.header("Last-Event-ID") ?? "0";
+    if (!/^(0|[1-9][0-9]{0,15})$/u.test(header) || !Number.isSafeInteger(Number(header))) {
+      throw invalidRequest("The setup transcript cursor is invalid.");
+    }
+    const after = Number(header);
+    const setup = requireSetup(options.setup);
+    if (!setup.readTranscript || !setup.subscribeTranscript) {
+      throw unavailable("Session output is unavailable in this Hub process.");
+    }
+    // Validate session ownership before sending SSE headers or reserving a slot.
+    setup.readTranscript(runId, after);
+    const release = subscribers.reserve("setup-transcript");
+    try {
+      return createSetupTranscriptStream(context, setup, runId, after,
+        context.get("session").expiresAt, now, release);
     } catch (error) {
       release();
       throw error;
@@ -932,7 +996,7 @@ function requireSetup(setup: HubSetupService | undefined): HubSetupService {
   return setup;
 }
 
-const TERMINAL_SETUP_STATUSES = new Set(["succeeded", "failed", "paused", "idle"]);
+const TERMINAL_SETUP_STATUSES = new Set(["succeeded", "failed", "paused", "idle", "cancelled"]);
 
 function createSetupEventStream(
   context: Context<HubEnvironment>,
@@ -1003,6 +1067,74 @@ function parseJobId(value: string): string {
   const parsed = HubJobSnapshotSchema.shape.id.safeParse(value);
   if (!parsed.success) throw invalidRequest("The Hub job ID is invalid.");
   return parsed.data;
+}
+
+function createSetupTranscriptStream(
+  context: Context<HubEnvironment>,
+  setup: HubSetupService,
+  runId: string,
+  after: number,
+  sessionExpiresAt: string,
+  now: () => number,
+  releaseSubscriber: () => void,
+): Response {
+  const deadline = Date.parse(sessionExpiresAt);
+  return streamSSE(context, async (stream) => {
+    let cursor = after;
+    let dirty = true;
+    let initial = true;
+    let notify: (() => void) | null = null;
+    let unsubscribe: () => void = () => undefined;
+    const wake = () => {
+      dirty = true;
+      notify?.();
+      notify = null;
+    };
+    stream.onAbort(wake);
+    // Expiry also interrupts a blocked write when a client stops reading.
+    const expiryTimer = setTimeout(() => stream.abort(), Math.max(0, deadline - now()));
+    expiryTimer.unref();
+    try {
+      if (now() >= deadline) return;
+      unsubscribe = setup.subscribeTranscript!(wake);
+      while (!stream.aborted && !context.req.raw.signal.aborted && now() < deadline) {
+        if (setup.snapshot().transcriptId !== runId) break;
+        if (dirty) {
+          dirty = false;
+          const batch = SetupTranscriptBatchSchema.parse(setup.readTranscript!(runId, cursor));
+          const data = JSON.stringify(batch);
+          if (Buffer.byteLength(data, "utf8") > HUB_LIMITS.maxJsonResponseBytes) {
+            throw new Error("The setup transcript exceeded its safe serialized size.");
+          }
+          if (initial || batch.entries.length > 0 || batch.done || batch.truncated) {
+            if (now() >= deadline) break;
+            await stream.writeSSE({ event: "transcript", id: String(batch.cursor), data });
+            cursor = batch.cursor;
+            initial = false;
+          }
+          if (batch.done) break;
+          if (batch.entries.length > 0) {
+            // Drain one bounded page at a time. A slow subscriber holds no
+            // backlog; eviction is reported if its cursor falls behind.
+            dirty = true;
+            continue;
+          }
+        }
+        const outcome = await waitForEventOrHeartbeat(context.req.raw.signal, deadline, now,
+          () => new Promise<void>((resolve) => {
+            notify = resolve;
+            if (dirty) { notify(); notify = null; }
+          }));
+        if (outcome === "expired" || outcome === "aborted") break;
+        if (outcome === "heartbeat") await stream.write(": heartbeat\n\n");
+      }
+    } finally {
+      clearTimeout(expiryTimer);
+      notify = null;
+      unsubscribe();
+      releaseSubscriber();
+    }
+  });
 }
 
 function createJobEventStream(

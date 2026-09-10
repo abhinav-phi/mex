@@ -1,6 +1,6 @@
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { HubApiError, isSetupCapabilityUnavailable, type HubApi } from "../api/client";
 import { HubApiProvider, useCapabilities, useHubApi, useSession } from "../api/context";
 import { StatePanel } from "../components/ui";
@@ -31,29 +31,12 @@ function SessionBoundary() {
   const session = useSession();
   const capabilities = useCapabilities();
   const api = useHubApi();
-  const queryClient = useQueryClient();
   const setupStatus = useQuery({
     queryKey: ["setup", "status"],
     queryFn: () => api.getSetupStatus!(),
     retry: false,
     enabled: session.isSuccess && typeof api.getSetupStatus === "function",
   });
-  const setupReady = setupStatus.isSuccess && setupStatus.data.ready;
-  const graphAvailable = capabilities.data?.graph.read.availability === "available";
-
-  useEffect(() => {
-    if (!setupReady || graphAvailable) return;
-    const refresh = () => {
-      void queryClient.invalidateQueries({ queryKey: ["setup", "status"] });
-      void queryClient.invalidateQueries({ queryKey: ["capabilities"] });
-      void queryClient.invalidateQueries({ queryKey: ["home"] });
-      void queryClient.invalidateQueries({ queryKey: ["overview"] });
-    };
-    refresh();
-    const poll = window.setInterval(refresh, 400);
-    return () => window.clearInterval(poll);
-  }, [setupReady, graphAvailable, queryClient]);
-
   if (session.isPending) {
     return <div className={styles.fullPageState}><StatePanel state="loading" title="Opening Project Hub" detail="Verifying this process-local session." /></div>;
   }
@@ -87,48 +70,15 @@ function SessionBoundary() {
     );
   }
 
-  if (setupStatus.isSuccess && !setupStatus.data.ready) {
+  // A successful setup response means this process still owns the wizard.
+  // Readiness can change after an external commit; only an explicit setup run
+  // promotes the listener, after which this endpoint becomes unavailable.
+  if (setupStatus.isSuccess) {
     return (
       <Suspense fallback={<div className={styles.fullPageState}><StatePanel state="loading" title="Opening setup" detail="Loading the MEX setup wizard." /></div>}>
         <SetupLayout session={session.data} />
       </Suspense>
     );
-  }
-
-  if (setupReady) {
-    if (capabilities.isError) {
-      return (
-        <div className={styles.fullPageState}>
-          <StatePanel
-            state="error"
-            title="Project capabilities could not be loaded"
-            detail="The Hub could not safely verify which local workbenches are available. Try the check again before continuing."
-            action={(
-              <Button
-                size="sm"
-                type="button"
-                variant="outline"
-                onClick={() => void capabilities.refetch()}
-              >
-                Try again
-              </Button>
-            )}
-          />
-        </div>
-      );
-    }
-    if (!graphAvailable || !capabilities.data) {
-      return (
-        <div className={styles.fullPageState}>
-          <StatePanel
-            state="loading"
-            title="Opening the Project Hub"
-            detail="Setup finished. Switching this session to the Project Hub."
-          />
-        </div>
-      );
-    }
-    return <HubLayout capabilities={capabilities.data} session={session.data} />;
   }
 
   if (capabilities.isPending) {

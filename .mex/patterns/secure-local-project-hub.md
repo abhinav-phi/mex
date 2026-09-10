@@ -11,12 +11,12 @@ edges:
     condition: "when persisting a Hub job or migrating team.db"
   - target: "context/architecture.md"
     condition: "when wiring a real Graph or Wiki adapter"
-last_updated: 2026-09-10
+last_updated: 2026-09-11
 mex:
   id: mx_01M1M0CJQ2BSV71G1C7TXZD9RH
   type: pattern
   status: promoted
-  revision: 4
+  revision: 10
   title: secure-local-project-hub
   grounds_to:
     - node: function:188820af31f0d74c6518f6926f559877
@@ -90,15 +90,81 @@ preview/apply services.
   let `EventSource` reconnect to a finished job. Setup population pause is a
   terminal setup-run status: return the prompt on the run snapshot, then close
   the stream. Hub jobs still persist no prompts.
-- Incomplete checkouts must not boot Graph/Wiki/Team jobs. `launchHub()` serves
-  the setup wizard until Graph and Wiki indexes exist. That same process then
-  replaces the setup app with the full Hub on the existing session and port.
-  Full Hub returns `CAPABILITY_UNAVAILABLE` for `/api/v1/setup`. MEX still
-  never commits; the dashboard does not wait for a git checkpoint.
+- New code checkouts stay in setup until population and finalization finish and
+  the existing Team authority check accepts the committed scaffold identity.
+  Show the Git checkpoint explicitly, with a bounded setup-file diff and a
+  separate user-requested local commit action. Preview and apply are authenticated
+  POSTs; bind reviewed files, HEAD, branch, and index to one expiring process-local
+  revision and revalidate before committing. Scope the candidate to canonical
+  setup files and selected agent assets; exclude generated databases, local state,
+  and unrelated project files. Preserve unrelated staged entries. Never push.
+  Render complete unified diffs as numbered context/addition/deletion rows with
+  explicit change markers and counts. Hide only recognized Git bookkeeping;
+  preserve file-mode and missing-newline information. Verify hunk counts before
+  formatting, mount source rows only for expanded files, and bound formatted
+  rows per file and across the review. Keep the exact raw diff available when
+  parsing, truncation or rendering limits prevent a complete formatted view.
+  Build the exact reviewed tree with an alternate index, create its commit object
+  with the reviewed parent and configured identity/signing, then publish through
+  a prepared Git ref transaction with the expected old HEAD. Revalidate the
+  symbolic branch while Git holds its ref locks; install only the reviewed index
+  entries alongside the preserved unrelated entries. Review authorization expires
+  after five minutes; cap it at 200 text files, 256 KiB per file, 32,768 diff
+  characters per file and 131,072 diff characters in total. Bound review/apply
+  operations to 60/120 seconds. Active commit/reference hooks, custom content
+  filters, detached HEAD and incomplete reviews retain the manual Git option.
+  Return the saved commit receipt even if subsequent Hub promotion fails, so
+  retries cannot duplicate a successful commit. If index installation cannot be rolled back
+  safely, retain its recovery file and require manual recovery before retrying
+  promotion. Promotion replaces
+  the app on the existing session and port, and its failure must fail the run.
+  Existing committed projects still open Hub with missing disposable indexes
+  so Health can offer repair. Agent-memory mode remains separate, even in Git.
+  Full Hub returns `CAPABILITY_UNAVAILABLE` for `/api/v1/setup`.
 - Do not spawn interactive `mex setup` from Hub. Reuse `runHeadlessSetup()` so
   detect → scaffold → tools → skills → identity → scan → graph → population →
   finalize stay one path. Code-repo without git is a 400; the UI shows `git
   init` and never runs it.
+- Browser population owns an asynchronous headless CLI process, a private
+  prompt, a bounded deadline, and cancellation of its process tree. Graph
+  construction uses an isolated worker. Shutdown waits for setup to settle;
+  cancellation during promotion closes newly composed jobs before app swap.
+  Keep command construction shared with the terminal adapter and expose only
+  fixed, safe failure categories, never raw child diagnostics.
+- Claude stream-json and Codex JSONL activity remain a closed vocabulary for
+  timing and completion. The explicitly requested setup console has a separate
+  projection of visible assistant prose plus fixed, compact tool labels such
+  as "Ran a command" and "Read a file". Drop tool arguments, command text, paths,
+  and results before transcript retention and delivery; keep prose as the main
+  content. Exclude provider user/system message blocks, reasoning, session
+  identifiers, usage metadata, and raw diagnostic envelopes. Render prose literally
+  with terminal controls removed and recognizable credentials masked; masking
+  is best effort, not a guarantee that arbitrary output contains no secrets.
+  No transcript content enters telemetry, durable jobs, or canonical knowledge.
+- Keep transcript retention process-local and bounded by both UTF-8 text bytes
+  (1 MiB) and entry count (2,048), with bounded ingress and 4,096-character
+  entries. Send at most 32 entries per cursor page through an authenticated SSE
+  endpoint; report lost history on eviction, validate the run identity, honor
+  Last-Event-ID, and expire even backpressured streams. Subscriber notifications
+  carry no output backlog. Never put the transcript into repeated run snapshots.
+  Browser retention is independently bounded, with a limited text/row window,
+  literal selectable text, stable scrollback, and explicit Follow latest.
+- Cap individual provider records, tool correlation, and SSE cadence; discard
+  malformed/oversized records and require recognized terminal success. Claude
+  partial/final text, Codex cumulative assistant text, and tool lifecycle
+  reports require deduplication.
+  Cancellation drops pending text flushes and prevents late writes to another
+  run. Activity timestamps advance only from real startup/provider reports;
+  browser clocks show elapsed/quiet time without API polling or invented percent
+  completion. Output-format flags do not require another AI session or change
+  the installed CLI's existing authentication configuration.
+- Persist setup mode and explicit empty tool choices. Terminal snapshots
+  invalidate setup readiness and Hub capabilities; recover stream disconnects
+  because promotion can finish before the browser connects to SSE. A confirmed
+  completed setup can retry promotion without repeating AI or Graph work.
+- Keep SetupPage and its contract lazy. Release guards track its exact `/setup`
+  redirect separately from operational routes and enforce a separate setup
+  asset allowance without relaxing existing Home or workbench budgets.
 - A paginated source can hit its corpus safety bound independently of having a
   next page. Expose these as separate signals; never turn an incomplete scan
   into an exact total or silently mix revision-bound pages.

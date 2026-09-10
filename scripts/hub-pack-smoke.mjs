@@ -1200,6 +1200,7 @@ function runInteractiveAgentSetup(cli, project, workRoot) {
   mkdirSync(emptyPath, { recursive: true });
   installGitOnlyPath(emptyPath);
 
+  // This fixture exercises the code Hub after setup, so persist code-repo intent.
   // Keep the packed smoke independent from developer-machine agent installs.
   // The CLI itself is launched through an absolute Node path. PATH contains
   // only Git, which setup needs for ignore verification, so agent discovery
@@ -1211,7 +1212,7 @@ function runInteractiveAgentSetup(cli, project, workRoot) {
   env.PATH = emptyPath;
 
   return new Promise((resolveOutput, reject) => {
-    const setup = spawn(process.execPath, [cli, "setup", "--mode", "agent-memory"], {
+    const setup = spawn(process.execPath, [cli, "setup", "--mode", "code-repo"], {
       cwd: project,
       env,
       stdio: ["pipe", "pipe", "pipe"],
@@ -1320,7 +1321,8 @@ function verifyPackedSetupOutput(output) {
 function verifySetupConfig(project) {
   const config = JSON.parse(readFileSync(join(project, ".mex", "config.json"), "utf8"));
   if (
-    JSON.stringify(config.aiTools) !== JSON.stringify(["claude", "codex"])
+    config.setupMode !== "code-repo"
+    || JSON.stringify(config.aiTools) !== JSON.stringify(["claude", "codex"])
     || config.scaffold_id !== "11111111-1111-4111-8111-111111111111"
     || config.scaffold_name !== "packed-hub-smoke"
     || JSON.stringify(config.wiki) !== JSON.stringify({
@@ -1328,7 +1330,7 @@ function verifySetupConfig(project) {
       readOnly: ["context/read-only/**"],
     })
   ) {
-    throw new Error("The packed interactive setup did not persist both clients without changing existing config.");
+    throw new Error("The packed interactive setup did not persist code-repo intent and both clients while preserving existing config.");
   }
 }
 

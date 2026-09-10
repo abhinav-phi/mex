@@ -4,32 +4,31 @@ import { isCliAvailable } from "../cli-tools.js";
 import {
   ensureScaffoldIdentity,
   loadConfiguredAiTools,
+  loadConfiguredSetupMode,
   readScaffoldId,
   saveAiTools,
 } from "../config.js";
 import { AI_TOOLS, type AiTool } from "../types.js";
-import { launchHeadlessSetupPopulation } from "./headless-population.js";
+import { launchHeadlessSetupPopulation, type HeadlessPopulationActivity, type HeadlessPopulationTranscript } from "./headless-population.js";
 import {
-  AGENT_MEMORY_FILES,
-  SCAFFOLD_FILES,
   detectProjectState,
-  ensureScaffoldFile,
   ensureToolAnchors,
   finalizeCodeRepoSetup,
   installSetupAgentAssets,
   isScaffoldPopulated,
-  normalizeSetupMode,
   setupCommitCheckpointCommands,
   setupTemplatesDirectory,
-  verifyExistingSetupConfig,
   type ProjectState,
   type SetupMode,
 } from "./index.js";
 import {
-  ensureSetupIgnoreProtection,
-  renderSetupIgnoreProtection,
-  verifySetupIgnoreProtection,
-} from "./ignore.js";
+  buildSetupGraph,
+  buildSetupPopulationPrompt,
+  createSetupScaffold,
+  resolveSetupMode,
+  scanSetupCodebase,
+  throwIfSetupAborted,
+} from "./phases.js";
 
 export const SETUP_PROGRESS_STEPS = [
   "detect",
@@ -60,6 +59,7 @@ export interface SetupToolStatus {
 }
 
 export interface SetupStatus {
+  readonly mode: SetupMode;
   readonly projectRoot: string;
   readonly projectName: string;
   readonly hasGit: boolean;
@@ -81,6 +81,8 @@ export interface HeadlessSetupOptions {
   readonly confirmPopulation?: boolean;
   readonly signal?: AbortSignal;
   readonly onProgress?: (update: HeadlessSetupProgress) => void;
+  readonly onPopulationActivity?: (activity: HeadlessPopulationActivity) => void;
+  readonly onPopulationTranscript?: (entry: HeadlessPopulationTranscript) => void;
 }
 
 export interface HeadlessSetupProgress {
@@ -90,6 +92,7 @@ export interface HeadlessSetupProgress {
 }
 
 export interface HeadlessSetupResult {
+  readonly mode: SetupMode;
   readonly stage: SetupStage;
   readonly populated: boolean;
   readonly ready: boolean;
@@ -119,6 +122,7 @@ const EMPTY_REVISION_REASON = "Setup has not finished in this checkout.";
 export function inspectSetupStatus(projectRoot: string): SetupStatus {
   const root = resolve(projectRoot);
   const mexDir = resolve(root, ".mex");
+  const mode = loadConfiguredSetupMode(mexDir);
   const hasGit = existsSync(resolve(root, ".git"));
   const hasScaffold = existsSync(resolve(mexDir, "ROUTER.md"));
   const populated = isScaffoldPopulated(mexDir);
@@ -128,8 +132,9 @@ export function inspectSetupStatus(projectRoot: string): SetupStatus {
     ? loadConfiguredAiTools(mexDir)
     : [];
   const state = detectProjectState(root, mexDir);
-  const stage = resolveSetupStage({ hasGit, hasScaffold, populated, graphReady, wikiReady });
+  const stage = resolveSetupStage({ mode, hasGit, hasScaffold, populated, graphReady, wikiReady });
   return {
+    mode,
     projectRoot: root,
     projectName: basename(root),
     hasGit,
@@ -165,8 +170,8 @@ export async function runHeadlessSetup(
   options: HeadlessSetupOptions,
 ): Promise<HeadlessSetupResult> {
   const projectRoot = resolve(options.projectRoot);
-  const mode = normalizeSetupMode(typeof options.mode === "string" ? options.mode : options.mode);
   const mexDir = resolve(projectRoot, ".mex");
+  const mode = resolveSetupMode(mexDir, options.mode);
   const templatesDir = setupTemplatesDirectory();
   const report = (step: SetupProgressStep, detail?: string) => {
     options.onProgress?.({
@@ -176,7 +181,7 @@ export async function runHeadlessSetup(
     });
   };
 
-  throwIfAborted(options.signal);
+  throwIfSetupAborted(options.signal);
 
   if (mode === "code-repo" && !existsSync(resolve(projectRoot, ".git"))) {
     throw new Error("No Git repository found. Run `git init` first, then rerun setup.");
@@ -187,28 +192,13 @@ export async function runHeadlessSetup(
   report("detect", describeDetectedState(mode, state));
 
   report("scaffold");
-  const ignoreProtection = ensureSetupIgnoreProtection({ projectRoot, dryRun: false });
-  renderSetupIgnoreProtection(ignoreProtection);
-  if (mode === "code-repo") verifySetupIgnoreProtection(projectRoot);
-  verifyExistingSetupConfig(mexDir);
-
-  const scaffoldFiles = mode === "agent-memory" ? AGENT_MEMORY_FILES : SCAFFOLD_FILES;
-  for (const file of scaffoldFiles) {
-    throwIfAborted(options.signal);
-    const agentMemorySrc = resolve(templatesDir, "agent-memory", file);
-    const src = mode === "agent-memory" && existsSync(agentMemorySrc)
-      ? agentMemorySrc
-      : resolve(templatesDir, file);
-    ensureScaffoldFile(src, resolve(mexDir, file), false);
-  }
+  createSetupScaffold({ projectRoot, mode, signal: options.signal });
 
   report("tools");
   const requestedTools = uniqueTools(options.tools ?? loadConfiguredAiTools(mexDir));
   const selectedTools = requestedTools;
   const anchorNotes = ensureToolAnchors(projectRoot, templatesDir, selectedTools, false);
-  if (selectedTools.length > 0) {
-    saveAiTools(mexDir, selectedTools);
-  }
+  saveAiTools(mexDir, selectedTools);
 
   const selectedAgentClients = selectedTools.filter((tool) => tool === "claude" || tool === "codex");
   if (selectedAgentClients.length > 0) {
@@ -233,46 +223,35 @@ export async function runHeadlessSetup(
   let scannerBrief: string | null = null;
   if (mode !== "agent-memory" && state !== "fresh") {
     report("scan");
-    try {
-      const { runScan } = await import("../scanner/index.js");
-      const result = await runScan(
-        { projectRoot, scaffoldRoot: mexDir, aiTools: [] },
-        { jsonOnly: true },
-      );
-      scannerBrief = JSON.stringify(result, null, 2);
-    } catch {
-      scannerBrief = null;
-    }
+    scannerBrief = await scanSetupCodebase(projectRoot, mexDir);
   }
 
   if (mode === "code-repo") {
     report("graph");
-    throwIfAborted(options.signal);
-    try {
-      const { rebuildGraph } = await import("../graph/maintenance.js");
-      await rebuildGraph(projectRoot);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Code graph setup failed: ${message}. Fix the problem and rerun setup.`);
-    }
+    await buildSetupGraph(projectRoot, { background: true, signal: options.signal });
   }
 
-  const prompt = await buildPopulationPrompt(mode, state, scannerBrief);
+  const prompt = await buildSetupPopulationPrompt(mode, state, scannerBrief);
   report("population");
 
   let populationFinished = scaffoldPopulatedAtStart;
   let populationTool: "claude" | "codex" | null = null;
   let populationCompleted = false;
 
-  if (!populationFinished) {
-    throwIfAborted(options.signal);
-    const launched = launchHeadlessSetupPopulation({
+  if (!populationFinished && options.confirmPopulation !== true) {
+    throwIfSetupAborted(options.signal);
+    const launched = await launchHeadlessSetupPopulation({
       selectedTools,
       prompt,
       projectRoot,
+      signal: options.signal,
+      allowNonGit: mode === "agent-memory",
+      onActivity: options.onPopulationActivity,
+      onTranscript: options.onPopulationTranscript,
     });
     populationTool = launched.tool;
     populationCompleted = launched.completed;
+    throwIfSetupAborted(options.signal);
     if (launched.completed) {
       populationFinished = isScaffoldPopulated(mexDir);
     }
@@ -284,6 +263,7 @@ export async function runHeadlessSetup(
 
   if (!populationFinished || !isScaffoldPopulated(mexDir)) {
     return {
+      mode,
       stage: "needs_population",
       populated: false,
       ready: false,
@@ -291,22 +271,26 @@ export async function runHeadlessSetup(
       prompt,
       populationTool,
       populationCompleted,
-      commitCommands: setupCommitCheckpointCommands(selectedTools),
+      commitCommands: mode === "code-repo" ? setupCommitCheckpointCommands(selectedTools) : [],
       anchorNotes,
       message: populationCompleted
         ? "The agent exited successfully, but required scaffold placeholders remain."
-        : "Setup paused at population. After the agent finishes, continue setup to finalize Graph and Wiki readiness.",
+        : options.confirmPopulation === true
+          ? "Required scaffold placeholders remain. Finish the manual population prompt, then check again."
+          : "Setup is waiting for population. Complete the prompt in your AI tool, then continue setup.",
     };
   }
 
   if (mode === "code-repo") {
     report("finalize");
-    throwIfAborted(options.signal);
+    throwIfSetupAborted(options.signal);
     await finalizeCodeRepoSetup(projectRoot, mexDir);
+    throwIfSetupAborted(options.signal);
   }
 
   const status = inspectSetupStatus(projectRoot);
   return {
+    mode,
     stage: status.stage,
     populated: true,
     ready: status.ready,
@@ -314,7 +298,7 @@ export async function runHeadlessSetup(
     prompt: null,
     populationTool,
     populationCompleted: populationFinished,
-    commitCommands: setupCommitCheckpointCommands(selectedTools),
+    commitCommands: mode === "code-repo" ? setupCommitCheckpointCommands(selectedTools) : [],
     anchorNotes,
     message: mode === "code-repo"
       ? "Graph and Wiki are ready. Review and commit the canonical MEX setup."
@@ -323,18 +307,18 @@ export async function runHeadlessSetup(
 }
 
 function resolveSetupStage(input: {
+  mode: SetupMode;
   hasGit: boolean;
   hasScaffold: boolean;
   populated: boolean;
   graphReady: boolean;
   wikiReady: boolean;
 }): SetupStage {
-  if (input.populated && input.graphReady && input.wikiReady) return "ready";
-  if (input.populated && !input.hasGit) return "ready";
-  if (!input.hasGit) return "needs_git";
+  if (input.mode === "code-repo" && !input.hasGit) return "needs_git";
   if (!input.hasScaffold) return "needs_setup";
   if (!input.populated) return "needs_population";
-  return "needs_finalize";
+  if (input.mode === "agent-memory") return "ready";
+  return input.graphReady && input.wikiReady ? "ready" : "needs_finalize";
 }
 
 function describeDetectedState(mode: SetupMode, state: ProjectState): string {
@@ -346,27 +330,4 @@ function describeDetectedState(mode: SetupMode, state: ProjectState): string {
 
 function uniqueTools(tools: readonly AiTool[]): AiTool[] {
   return [...new Set(tools)];
-}
-
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted) throw new Error("Setup was cancelled.");
-}
-
-async function buildPopulationPrompt(
-  mode: SetupMode,
-  state: ProjectState,
-  scannerBrief: string | null,
-): Promise<string> {
-  if (mode === "agent-memory") {
-    const { buildAgentMemoryPrompt } = await import("./prompts.js");
-    return buildAgentMemoryPrompt();
-  }
-  const {
-    buildFreshPrompt,
-    buildExistingWithBriefPrompt,
-    buildExistingNoBriefPrompt,
-  } = await import("./prompts.js");
-  if (state === "fresh") return buildFreshPrompt();
-  if (scannerBrief) return buildExistingWithBriefPrompt(scannerBrief);
-  return buildExistingNoBriefPrompt();
 }

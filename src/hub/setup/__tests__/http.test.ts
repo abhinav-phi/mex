@@ -109,6 +109,37 @@ describe("Hub setup HTTP", () => {
     });
     expect(response.status).toBe(405);
   });
+
+  it("protects cancellation with origin, CSRF, and strict input checks", async () => {
+    const { services, setup } = createSetupHubServices(fixture());
+    const cancel = vi.spyOn(setup, "cancel");
+    const app = appWith({ services, setup });
+    const { cookie, csrfToken } = await authenticatedSession(app);
+    const headers = {
+      host: HOST, origin: ORIGIN, cookie,
+      "content-type": "application/json", "x-mex-csrf": csrfToken,
+    };
+    const missingCsrf = { ...headers };
+    delete (missingCsrf as Partial<typeof headers>)["x-mex-csrf"];
+    for (const request of [
+      { headers: missingCsrf, body: "{}", suffix: "", status: 403 },
+      { headers: { ...headers, origin: "https://example.test" }, body: "{}", suffix: "", status: 403 },
+      { headers, body: '{"pid":123}', suffix: "", status: 400 },
+      { headers, body: "{}", suffix: "?force=true", status: 400 },
+    ]) {
+      const response = await app.request(`${ORIGIN}/api/v1/setup/cancel${request.suffix}`, {
+        method: "POST", headers: request.headers, body: request.body,
+      });
+      expect(response.status).toBe(request.status);
+    }
+    expect(cancel).not.toHaveBeenCalled();
+    const response = await app.request(`${ORIGIN}/api/v1/setup/cancel`, {
+      method: "POST", headers, body: "{}",
+    });
+    expect(response.status).toBe(202);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(await response.json()).toMatchObject({ status: "idle" });
+  });
 });
 
 function fixture(): string {

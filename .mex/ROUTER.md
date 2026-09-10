@@ -16,7 +16,7 @@ edges:
     condition: when starting a task — check the pattern index for a matching pattern file
   - target: patterns/release-readme-visuals.md
     condition: when refreshing the release README, badges, community links, or architecture illustrations
-last_updated: 2026-09-10
+last_updated: 2026-09-11
 ---
 
 # Session Bootstrap
@@ -31,9 +31,20 @@ Then read this file fully before doing anything else in this session.
 - Incomplete checkouts open a Hub setup wizard from `mex hub` instead of the
   full dashboard. Setup begins on a welcome screen, then runs the same ordered
   `mex setup` steps through a headless engine, pauses at population with a
-  copyable prompt when no Claude or Codex CLI finishes the scaffold, and never
-  runs git init, commit, or push. When Graph and Wiki indexes exist, that same
-  Hub process promotes in place and the browser opens the ordinary Project Hub.
+  copyable prompt when no selected CLI is available. Claude/Codex population
+  runs as a cancellable background process; failures surface safe diagnostics.
+  Both tools stream their visible assistant messages and compact fixed tool
+  activity labels to a read-only view with bounded scrollback, elapsed time,
+  and honest quiet periods. Commands, arguments, paths, and tool results are
+  omitted from the tool stream. History stays in process memory and reconnects
+  through cursor pages.
+  Mode and empty tool choices survive refresh. New code projects show a bounded
+  setup-file diff with numbered, highlighted additions/removals and an explicit
+  local commit action before in-place Hub promotion; the commit preserves
+  unrelated staged work and never pushes.
+  Unsupported Git configurations retain the manual checkpoint. Setup never
+  runs git init, while Agent-memory completes without Graph or Wiki. Existing
+  committed code projects retain Hub Health recovery for missing local indexes.
 - The MEX repository now dogfoods the ordinary `mex setup` path. Resumed setup
   reuses persisted AI-tool selection even while population is incomplete, and
   existing-codebase prompts merge missing knowledge without replacing authored

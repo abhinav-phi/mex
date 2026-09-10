@@ -45,6 +45,10 @@ import type {
   SetupRun,
   SetupStartRequest,
   SetupStatus,
+  SetupTranscriptBatch,
+  SetupCommitPreview,
+  SetupCommitRequest,
+  SetupCommitResponse,
 } from "@mex/hub-contracts/setup";
 import type {
   AgentLoggingPolicy,
@@ -224,7 +228,11 @@ export interface HubApi {
   getSetupStatus?(): Promise<SetupStatus>;
   getSetupRun?(): Promise<SetupRun>;
   startSetup?(request: SetupStartRequest): Promise<SetupRun>;
-  subscribeToSetup?(onSnapshot: (run: SetupRun) => void): JobSubscription;
+  cancelSetup?(): Promise<SetupRun>;
+  subscribeToSetup?(onSnapshot: (run: SetupRun) => void, onDisconnect?: () => void): JobSubscription;
+  subscribeToSetupTranscript?(runId: string, onBatch: (batch: SetupTranscriptBatch) => void, onDisconnect?: () => void): JobSubscription;
+  previewSetupCommit?(): Promise<SetupCommitPreview>;
+  commitSetup?(request: SetupCommitRequest): Promise<SetupCommitResponse>;
 }
 
 function fallbackProblem(status: number, detail?: string): ProblemDetails {
@@ -763,11 +771,40 @@ export class HttpHubApi implements HubApi {
     );
   }
 
-  subscribeToSetup(onSnapshot: (run: SetupRun) => void): JobSubscription {
+  cancelSetup(): Promise<SetupRun> {
+    return this.#requestWhenOk(
+      "/setup/cancel",
+      async () => (await loadSetupContract()).SetupRunSchema,
+      { method: "POST", body: "{}" },
+      true,
+    );
+  }
+
+  previewSetupCommit(): Promise<SetupCommitPreview> {
+    return this.#requestWhenOk(
+      "/setup/commit/preview",
+      async () => (await loadSetupContract()).SetupCommitPreviewSchema,
+      { method: "POST", body: "{}" },
+      true,
+    );
+  }
+
+  commitSetup(request: SetupCommitRequest): Promise<SetupCommitResponse> {
+    return this.#requestWhenOk(
+      "/setup/commit",
+      async () => (await loadSetupContract()).SetupCommitResponseSchema,
+      { method: "POST", body: JSON.stringify(request) },
+      true,
+    );
+  }
+
+  subscribeToSetup(onSnapshot: (run: SetupRun) => void, onDisconnect?: () => void): JobSubscription {
     const source = new EventSource(`${API_ROOT}/setup/events`, { withCredentials: true });
     const contract = loadSetupContract();
+    let closed = false;
     const receive = (event: MessageEvent<string>) => {
       void contract.then(({ SetupRunSchema }) => {
+        if (closed) return;
         try {
           const parsed = SetupRunSchema.safeParse(JSON.parse(event.data));
           if (parsed.success) {
@@ -776,9 +813,11 @@ export class HttpHubApi implements HubApi {
               event.type === "terminal"
               || parsed.data.status === "succeeded"
               || parsed.data.status === "failed"
+              || parsed.data.status === "cancelled"
               || parsed.data.status === "paused"
               || parsed.data.status === "idle"
             ) {
+              closed = true;
               source.close();
             }
           }
@@ -790,7 +829,46 @@ export class HttpHubApi implements HubApi {
     source.addEventListener("snapshot", receive as EventListener);
     source.addEventListener("terminal", receive as EventListener);
     source.onmessage = receive;
-    return { close: () => source.close() };
+    source.onerror = () => {
+      // Promotion can remove the endpoint before the first SSE connection.
+      // The view coalesces refreshes; retry errors must also recover a promotion
+      // that happened after an earlier refresh still reported a running job.
+      if (closed) return;
+      onDisconnect?.();
+    };
+    return { close: () => { closed = true; source.close(); } };
+  }
+
+  subscribeToSetupTranscript(runId: string, onBatch: (batch: SetupTranscriptBatch) => void, onDisconnect?: () => void): JobSubscription {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(runId)) {
+      throw new Error("Invalid setup session identifier.");
+    }
+    let closed = false;
+    let cursor = 0;
+    let source: EventSource | undefined;
+    // Open only once the lazy validator is ready; no event queue can grow while
+    // that module loads. Native reconnects retain this EventSource's event ID.
+    void loadSetupContract().then(({ SetupTranscriptBatchSchema }) => {
+      if (closed) return;
+      source = new EventSource(`${API_ROOT}/setup/transcript/events?run=${encodeURIComponent(runId)}`, { withCredentials: true });
+      source.addEventListener("transcript", ((event: MessageEvent<string>) => {
+        if (closed || typeof event.data !== "string" || event.data.length > 1_048_576) return;
+        try {
+          const parsed = SetupTranscriptBatchSchema.safeParse(JSON.parse(event.data));
+          if (!parsed.success || parsed.data.runId !== runId || parsed.data.cursor < cursor) return;
+          const batch = parsed.data;
+          if (batch.entries.some((entry, index) => entry.id > batch.cursor || (index > 0 && entry.id <= batch.entries[index - 1]!.id))) return;
+          const entries = batch.entries.filter((entry) => entry.id > cursor);
+          cursor = batch.cursor;
+          onBatch({ ...batch, entries });
+          if (batch.done) { closed = true; source?.close(); }
+        } catch {
+          // Malformed transcript data cannot replace the retained session.
+        }
+      }) as EventListener);
+      source.onerror = () => { if (!closed) onDisconnect?.(); };
+    }).catch(() => { if (!closed) onDisconnect?.(); });
+    return { close: () => { if (!closed) source?.close(); closed = true; } };
   }
 }
 
