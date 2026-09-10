@@ -99,6 +99,10 @@ preview/apply services.
   optional follow-up) from the browser to `https://api.web3forms.com`. CSP
   `connect-src` names that host only; Hub must not proxy repo, path, graph, or
   machine data, and page load must not initiate that request.
+- Keep optional Home dialogs and their styles behind an explicit open-on-demand
+  import; even shared dialog controls can exceed Home's frozen asset budget.
+  Bound external submissions across both the request and response-body read,
+  abort on expiry, and release the form for retry or dismissal after failure.
 
 - New read surfaces need successful-job cache invalidation as well as their
   initial query. Context's graph, selected record, and compact code queries all

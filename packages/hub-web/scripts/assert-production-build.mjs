@@ -55,6 +55,19 @@ if (!homeEntry || workbenchEntries.some((entry) => entry !== homeEntry && entry.
   throw new Error("The production Hub Home workbench is not isolated in its own lazy chunk.");
 }
 const homeChunks = staticImportClosure(homeEntry.key);
+const teamAccessDialogKey = Object.keys(manifest).find((candidate) => (
+  candidate === "src/pages/TeamAccessDialog.tsx"
+  || manifest[candidate].src === "src/pages/TeamAccessDialog.tsx"
+));
+if (
+  !teamAccessDialogKey
+  || !manifest[teamAccessDialogKey].isDynamicEntry
+  || !(manifest[homeEntry.key].dynamicImports ?? []).includes(teamAccessDialogKey)
+  || homeChunks.has(teamAccessDialogKey)
+  || initialChunks.has(teamAccessDialogKey)
+) {
+  throw new Error("The team-access dialog is not isolated behind its explicit open-on-demand boundary.");
+}
 for (const entry of workbenchEntries) {
   if (entry !== homeEntry && homeChunks.has(entry.key)) {
     throw new Error(`The production Hub Home workbench eagerly imports ${entry.source}.`);

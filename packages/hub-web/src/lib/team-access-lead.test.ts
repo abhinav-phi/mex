@@ -16,6 +16,7 @@ import {
 } from "./team-access-lead";
 
 afterEach(() => {
+  vi.useRealTimers();
   __setWeb3FormsAccessKeyForTests(null);
   window.localStorage.removeItem(TEAM_ACCESS_STORAGE_KEY);
 });
@@ -162,6 +163,81 @@ describe("team-access Web3Forms submit", () => {
     );
     expect(result).toEqual({ ok: false, message: TEAM_ACCESS_SUBMIT_ERROR });
   });
+
+  it("aborts and settles after fifteen seconds when the request stalls", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn((_url: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>(() => {}));
+    const settled = vi.fn();
+    const result = submitTeamAccessPayload(
+      { access_key: "public-test-key", name: "Ada", email: "ada@example.com" },
+      fetchImpl,
+    ).then(settled);
+    const signal = fetchImpl.mock.calls[0]?.[1]?.signal;
+
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(settled).not.toHaveBeenCalled();
+    expect(signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await result;
+
+    expect(settled).toHaveBeenCalledExactlyOnceWith({ ok: false, message: TEAM_ACCESS_SUBMIT_ERROR });
+    expect(signal?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["rejects", "ignores"] as const)(
+    "bounds a stalled response body when its reader %s the abort",
+    async (abortBehavior) => {
+      vi.useFakeTimers();
+      const bodyAborted = vi.fn();
+      const readBody = vi.fn();
+      const fetchImpl = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => {
+        readBody.mockImplementation(() => new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            bodyAborted();
+            if (abortBehavior === "rejects") reject(new DOMException("Aborted", "AbortError"));
+          }, { once: true });
+        }));
+        return Promise.resolve({ ok: true, json: readBody } as unknown as Response);
+      });
+      const result = submitTeamAccessPayload(
+        { access_key: "public-test-key", name: "Ada", email: "ada@example.com" },
+        fetchImpl,
+      );
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(readBody).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      await expect(result).resolves.toEqual({ ok: false, message: TEAM_ACCESS_SUBMIT_ERROR });
+      expect(bodyAborted).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it.each(["success", "rejection"] as const)(
+    "clears the deadline after early %s without later aborting the request",
+    async (outcome) => {
+      vi.useFakeTimers();
+      const fetchImpl = vi.fn((_url: RequestInfo | URL, _init?: RequestInit) => (
+        outcome === "success"
+          ? Promise.resolve({ ok: true, json: async () => ({ success: true }) } as Response)
+          : Promise.reject(new Error("Network unavailable"))
+      ));
+      const result = await submitTeamAccessPayload(
+        { access_key: "public-test-key", name: "Ada", email: "ada@example.com" },
+        fetchImpl,
+      );
+      const signal = fetchImpl.mock.calls[0]?.[1]?.signal;
+
+      expect(result).toEqual(outcome === "success"
+        ? { ok: true }
+        : { ok: false, message: TEAM_ACCESS_SUBMIT_ERROR });
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(signal?.aborted).toBe(false);
+    },
+  );
 
   it("does not call the network when the public access key is missing", async () => {
     const fetchImpl = vi.fn();

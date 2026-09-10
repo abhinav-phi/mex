@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -25,12 +25,82 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   __setWeb3FormsAccessKeyForTests(null);
   window.localStorage.removeItem(TEAM_ACCESS_STORAGE_KEY);
   vi.unstubAllGlobals();
 });
 
 describe("TeamAccessCard", () => {
+  it("preserves unsent contact details when the lazy dialog is reopened", async () => {
+    const user = userEvent.setup();
+    render(<TeamAccessCard />);
+    await user.click(screen.getByRole("button", { name: "Request access" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Name"), "Ada Lovelace");
+    await user.type(within(dialog).getByLabelText("Email"), "ada@example.com");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Request access" })).toHaveFocus());
+    await user.click(screen.getByRole("button", { name: "Request access" }));
+    const reopened = await screen.findByRole("dialog");
+    expect(within(reopened).getByLabelText("Name")).toHaveValue("Ada Lovelace");
+    expect(within(reopened).getByLabelText("Email")).toHaveValue("ada@example.com");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("unlocks a stalled contact request and lets the user close and retry", async () => {
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise<Response>(() => {}));
+    const user = userEvent.setup();
+    render(<TeamAccessCard />);
+    await user.click(screen.getByRole("button", { name: "Request access" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Name"), "Ada Lovelace");
+    await user.type(within(dialog).getByLabelText("Email"), "ada@example.com");
+    vi.useFakeTimers();
+    fireEvent.submit(within(dialog).getByRole("button", { name: "Request access" }).closest("form")!);
+    expect(within(dialog).getByRole("button", { name: "Sending…" })).toBeDisabled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    vi.useRealTimers();
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not send your request. Try again.");
+    expect(vi.mocked(fetch).mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+    expect(within(dialog).getByLabelText("Email")).toBeEnabled();
+    expect(window.localStorage.getItem(TEAM_ACCESS_STORAGE_KEY)).toBeNull();
+    await user.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Request access" }));
+    const reopened = await screen.findByRole("dialog");
+    expect(within(reopened).getByLabelText("Email")).toHaveValue("ada@example.com");
+    await user.click(within(reopened).getByRole("button", { name: "Request access" }));
+    expect(await screen.findByRole("heading", { name: "You’re on the list" })).toBeVisible();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("allows skipping a stalled optional submission after its deadline", async () => {
+    const user = userEvent.setup();
+    render(<TeamAccessCard />);
+    await user.click(screen.getByRole("button", { name: "Request access" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Name"), "Ada Lovelace");
+    await user.type(within(dialog).getByLabelText("Email"), "ada@example.com");
+    await user.click(within(dialog).getByRole("button", { name: "Request access" }));
+    await screen.findByRole("heading", { name: "You’re on the list" });
+    await user.type(within(dialog).getByLabelText("Company"), "Analytical Engines");
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise<Response>(() => {}));
+    vi.useFakeTimers();
+    fireEvent.submit(within(dialog).getByRole("button", { name: "Continue" }).closest("form")!);
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    vi.useRealTimers();
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not send your request. Try again.");
+    expect(within(dialog).getByLabelText("Company")).toHaveValue("Analytical Engines");
+    await user.click(within(dialog).getByRole("button", { name: "Skip" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByText("You’re on the list. Keep using this Hub with your team.")).toBeVisible();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("opens an in-Hub contact step with only name and email", async () => {
     const user = userEvent.setup();
     render(<TeamAccessCard />);

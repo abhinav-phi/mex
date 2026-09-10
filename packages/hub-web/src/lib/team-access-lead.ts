@@ -9,7 +9,12 @@
 export const WEB3FORMS_ACCESS_KEY = "20549db8-9c62-4da9-920a-f70a08c8ee44";
 
 export const WEB3FORMS_SUBMIT_URL = "https://api.web3forms.com/submit";
-export const TEAM_ACCESS_STORAGE_KEY = "mex.hub.team-access.v1";
+export {
+  TEAM_ACCESS_STORAGE_KEY,
+  readTeamAccessState,
+  writeTeamAccessState,
+  type TeamAccessLocalState,
+} from "./team-access-state";
 export const TEAM_ACCESS_SUBJECT = "mex Hub team access";
 export const TEAM_ACCESS_FOLLOW_UP_SUBJECT = "mex Hub team access follow-up";
 export const TEAM_ACCESS_FROM_NAME = "mex Hub";
@@ -39,14 +44,11 @@ export interface TeamAccessFollowUp extends TeamAccessContact {
   missing: string;
 }
 
-export interface TeamAccessLocalState {
-  contactSent: true;
-}
-
 const NAME_MAX = 200;
 const EMAIL_MAX = 320;
 const COMPANY_MAX = 200;
 const MISSING_MAX = 240;
+const SUBMIT_TIMEOUT_MS = 15_000;
 
 let accessKeyOverride: string | null = null;
 
@@ -132,38 +134,6 @@ export function buildTeamAccessFollowUpPayload(details: TeamAccessFollowUp, acce
   return payload;
 }
 
-export function readTeamAccessState(storage: Pick<Storage, "getItem"> | null = defaultStorage()): TeamAccessLocalState | null {
-  if (storage === null) return null;
-  try {
-    const raw = storage.getItem(TEAM_ACCESS_STORAGE_KEY);
-    if (raw === null || raw === "") return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (
-      typeof parsed === "object"
-      && parsed !== null
-      && "contactSent" in parsed
-      && parsed.contactSent === true
-    ) {
-      return { contactSent: true };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-export function writeTeamAccessState(
-  state: TeamAccessLocalState,
-  storage: Pick<Storage, "setItem"> | null = defaultStorage(),
-): void {
-  if (storage === null) return;
-  try {
-    storage.setItem(TEAM_ACCESS_STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    // Private mode or quota must not block the in-memory done state.
-  }
-}
-
 export async function submitTeamAccessPayload(
   payload: Record<string, string>,
   fetchImpl: typeof fetch = fetch,
@@ -171,31 +141,41 @@ export async function submitTeamAccessPayload(
   if (payload.access_key.trim() === "") {
     return { ok: false, message: TEAM_ACCESS_SUBMIT_ERROR };
   }
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    const response = await fetchImpl(WEB3FORMS_SUBMIT_URL, {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
+    const expired = new Promise<false>((resolve) => {
+      timeout = setTimeout(() => {
+        controller.abort();
+        resolve(false);
+      }, SUBMIT_TIMEOUT_MS);
     });
-    const body: unknown = await response.json().catch(() => null);
-    if (response.ok && isWeb3FormsSuccess(body)) return { ok: true };
+    // Race the complete read so a stalled response body cannot lock the dialog.
+    const accepted = await Promise.race([
+      (async () => {
+        const response = await fetchImpl(WEB3FORMS_SUBMIT_URL, {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+        const body: unknown = await response.json().catch(() => null);
+        return response.ok && isWeb3FormsSuccess(body);
+      })(),
+      expired,
+    ]);
+    if (accepted) return { ok: true };
     return { ok: false, message: TEAM_ACCESS_SUBMIT_ERROR };
   } catch {
     return { ok: false, message: TEAM_ACCESS_SUBMIT_ERROR };
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
   }
 }
 
 function isWeb3FormsSuccess(body: unknown): boolean {
   return typeof body === "object" && body !== null && "success" in body && body.success === true;
-}
-
-function defaultStorage(): Storage | null {
-  try {
-    return window.localStorage;
-  } catch {
-    return null;
-  }
 }
