@@ -229,16 +229,26 @@ function pickBest(
   ref: UnresolvedRefRecord,
   importedFiles: Set<string> | undefined,
 ): GraphNode | null {
+  const receiver = ref.receiver ?? ref.referenceName.split(".").slice(0, -1).join(".");
+  // C# receivers require type binding that the syntax-only extractor cannot
+  // prove. A same-named lexical method is evidence only for unqualified/this
+  // calls, never for another object, a base instance, or a qualified type.
+  if (ref.language === "csharp"
+    && (ref.referenceKind === "calls" || ref.referenceKind === "function_ref")
+    && receiver.trim() !== "" && receiver.trim() !== "this") return null;
+
   const sameFile = candidates.filter((n) => n.filePath === fromNode.filePath);
   if (sameFile.length > 0) {
     // `this`/`super` and unqualified names may bind only inside the lexical
     // container. Never pick the first same-named method in the file.
-    const receiver = ref.receiver ?? ref.referenceName.split(".").slice(0, -1).join(".");
-    const lexical = sameFile.filter((node) =>
-      node.containerId === fromNode.containerId
-      || node.containerId === fromNode.id
-      || (receiver === "this" && node.containerId === fromNode.containerId),
-    );
+    const lexical = sameFile.filter((node) => {
+      // `this.M()` names a member, never a local function named M in the
+      // calling method. Nested/local functions have no proven type receiver.
+      if (ref.language === "csharp" && receiver === "this") {
+        return node.kind === "method" && node.containerId === fromNode.containerId;
+      }
+      return node.containerId === fromNode.containerId || node.containerId === fromNode.id;
+    });
     if (lexical.length === 1) return lexical[0]!;
     if (lexical.length > 1) return null;
     const moduleLevel = sameFile.filter((node) => !node.containerId);

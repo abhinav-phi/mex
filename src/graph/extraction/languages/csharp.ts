@@ -87,7 +87,11 @@ class CSharpWalker {
     });
 
     this.scopeStack.push(fileId);
-    for (const child of root.namedChildren) this.visit(child);
+    for (const child of root.namedChildren) {
+      this.visit(child);
+      // extractNamespace owns all later siblings of a file-scoped namespace.
+      if (child.type === "file_scoped_namespace_declaration") break;
+    }
     this.scopeStack.pop();
 
     return { nodes: this.nodes, edges: this.edges };
@@ -219,7 +223,8 @@ class CSharpWalker {
     this.scopeStack.push(id);
     for (const member of body.namedChildren) {
       if (member.type !== "enum_member_declaration") continue;
-      const memberName = getNodeText(member, this.source).split(/[\s=]/)[0]!.trim();
+      const memberNameNode = getChildByField(member, "name");
+      const memberName = memberNameNode ? getNodeText(memberNameNode, this.source) : "";
       this.createNode("enum_member", memberName, member);
     }
     this.scopeStack.pop();
@@ -242,12 +247,7 @@ class CSharpWalker {
   }
 
   private extractMethod(node: TSNode, isLocalFunction: boolean): void {
-    // constructor_declaration/destructor_declaration both carry a `name` field
-    // in tree-sitter-c-sharp@0.23.5 (verified in node-types.json), so this
-    // reads their identifier directly. The enclosing-type fallback is
-    // defensive only, for a grammar revision where that field is absent.
-    const nameNode = getChildByField(node, "name");
-    const name = nameNode ? getNodeText(nameNode, this.source) : enclosingTypeName(node, this.source);
+    const name = methodNameOf(node, this.source);
     if (!name) return;
 
     const modifiers = modifiersOf(node, this.source);
@@ -274,7 +274,10 @@ class CSharpWalker {
 
   private extractProperty(node: TSNode): void {
     const nameNode = getChildByField(node, "name");
-    const name = nameNode ? getNodeText(nameNode, this.source) : "";
+    // Indexers expose a `this` token and bracketed parameters, but no name field.
+    const name = node.type === "indexer_declaration"
+      ? "this"
+      : nameNode ? getNodeText(nameNode, this.source) : "";
     if (!name) return;
     const modifiers = modifiersOf(node, this.source);
     const type = getChildByField(node, "type");
@@ -283,10 +286,14 @@ class CSharpWalker {
       isExported: modifiers.includes("public"),
       isStatic: modifiers.includes("static"),
       returnType: type ? getNodeText(type, this.source) : undefined,
+      signature: signatureOf(node, this.source),
     });
     if (!id) return;
 
     this.extractAttributes(node, id);
+    this.scopeStack.push(id);
+    this.extractParameters(node);
+    this.scopeStack.pop();
     const value = getChildByField(node, "value");
     if (value) this.walkBody(value, id);
     // Accessor bodies (get/set with expression bodies) can contain calls too.
@@ -323,7 +330,12 @@ class CSharpWalker {
         isStatic: modifiers.includes("static") || isConst,
         returnType: type ? getNodeText(type, this.source) : undefined,
       });
-      if (id) this.extractAttributes(node, id);
+      if (id) {
+        this.extractAttributes(node, id);
+        // The initializer is an unnamed-field child of this declarator in
+        // 0.23.5. Walking only this declarator preserves each field's ownership.
+        this.walkBody(declarator, id);
+      }
     }
   }
 
@@ -361,7 +373,7 @@ class CSharpWalker {
         || child.type === "qualified_name" || child.type === "primary_constructor_base_type",
     );
     entries.forEach((entry, index) => {
-      const kind = isInterface || index > 0 ? "implements" : "extends";
+      const kind = !isInterface && index > 0 ? "implements" : "extends";
       this.addRef(fromId, getNodeText(entry, this.source), kind, entry);
     });
   }
@@ -378,7 +390,7 @@ class CSharpWalker {
     }
   }
 
-  /** Caller must have the owning method pushed as the current scope. */
+  /** Caller must have the owning method or indexer pushed as the current scope. */
   private extractParameters(node: TSNode): void {
     const params = getChildByField(node, "parameters");
     if (!params) return;
@@ -419,13 +431,17 @@ class CSharpWalker {
 
   private extractCall(node: TSNode, ownerId: string): void {
     const fn = getChildByField(node, "function");
-    let calleeName = "";
-    if (fn) {
-      if (fn.type === "member_access_expression") {
-        const nameNode = getChildByField(fn, "name");
-        calleeName = nameNode ? getNodeText(nameNode, this.source) : "";
-      } else {
-        calleeName = getNodeText(fn, this.source);
+    // Retain the receiver so resolution can distinguish this.M() from other.M().
+    let calleeName = fn ? getNodeText(fn, this.source) : "";
+    if (fn?.type === "member_access_expression") {
+      const name = getChildByField(fn, "name");
+      // `this` and `base` are unnamed tokens without an expression field in
+      // 0.23.5. Read the member parts to omit comments/spacing around the dot,
+      // while preserving calls, casts, and other receiver expressions intact.
+      const receiver = getChildByField(fn, "expression")
+        ?? fn.children.find((child) => child.type === "this" || child.type === "base");
+      if (receiver && name) {
+        calleeName = `${getNodeText(receiver, this.source)}.${getNodeText(name, this.source)}`;
       }
     }
     if (calleeName) this.addRef(ownerId, calleeName, "calls", node);
@@ -477,6 +493,29 @@ function signatureOf(node: TSNode, source: string): string | undefined {
   const params = getChildByField(node, "parameters");
   if (!params) return undefined;
   return getNodeText(params, source);
+}
+
+function methodNameOf(node: TSNode, source: string): string {
+  if (node.type === "operator_declaration") {
+    // `operator` is a field on the punctuation/keyword token, including >>>.
+    const operator = getChildByField(node, "operator");
+    if (!operator) return "";
+    const checked = node.children.some((child) => child.type === "checked");
+    return `operator ${checked ? "checked " : ""}${getNodeText(operator, source)}`;
+  }
+  if (node.type === "conversion_operator_declaration") {
+    const conversion = node.children.find((child) => child.type === "implicit" || child.type === "explicit");
+    const type = getChildByField(node, "type");
+    if (!conversion || !type) return "";
+    const checked = node.children.some((child) => child.type === "checked");
+    return `${getNodeText(conversion, source)} operator ${checked ? "checked " : ""}${getNodeText(type, source)}`;
+  }
+
+  const nameNode = getChildByField(node, "name");
+  const name = nameNode ? getNodeText(nameNode, source)
+    : node.type === "constructor_declaration" || node.type === "destructor_declaration"
+      ? enclosingTypeName(node, source) : "";
+  return name && node.type === "destructor_declaration" ? `~${name}` : name;
 }
 
 /** Constructors/destructors: fall back to the nearest enclosing type's name. */

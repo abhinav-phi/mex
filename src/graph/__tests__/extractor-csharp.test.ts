@@ -21,6 +21,12 @@ describe("C# extractor", () => {
     result.nodes.find((n) => n.kind === kind && n.name === name);
   const hasEdge = (kind: string, targetName: string) =>
     result.edges.some((e) => e.kind === kind && e.targetName === targetName);
+  const extractSource = (source: string) => {
+    const extracted = extractFile("regressions.cs", source, "csharp")!;
+    expect(extracted).not.toBeNull();
+    expect(extracted.health.status).toBe("ok");
+    return extracted;
+  };
 
   it("emits a file node and stamps the language", () => {
     expect(result.language).toBe("csharp");
@@ -105,9 +111,9 @@ describe("C# extractor", () => {
 
   it("emits calls and instantiates references", () => {
     expect(hasEdge("instantiates", "User")).toBe(true);
-    expect(hasEdge("calls", "Log")).toBe(true);
-    expect(hasEdge("calls", "Greet")).toBe(true);
-    expect(hasEdge("calls", "WriteLine")).toBe(true);
+    expect(hasEdge("calls", "Logger.Log")).toBe(true);
+    expect(hasEdge("calls", "user.Greet")).toBe(true);
+    expect(hasEdge("calls", "Console.WriteLine")).toBe(true);
   });
 
   it("nests methods under their class via contains edges", () => {
@@ -120,5 +126,169 @@ describe("C# extractor", () => {
         (e) => e.kind === "contains" && e.source === userClass.id && e.target === greet.id,
       ),
     ).toBe(true);
+  });
+
+  it("visits declarations and references in a file-scoped namespace exactly once", () => {
+    const extracted = extractSource(`
+using System;
+namespace Demo;
+class Worker {
+    void Start() { var worker = new Worker(); Work(); }
+    void Work() {}
+}
+class Other {}
+`);
+    expect(extracted.nodes.map((entry) => entry.qualifiedName)).toEqual([
+      "regressions.cs", "Demo", "Demo.Worker", "Demo.Worker.Start", "Demo.Worker.Work", "Demo.Other",
+    ]);
+    const worker = extracted.nodes.find((entry) => entry.qualifiedName === "Demo.Worker")!;
+    const namespace = extracted.nodes.find((entry) => entry.kind === "namespace")!;
+    const start = extracted.nodes.find((entry) => entry.qualifiedName === "Demo.Worker.Start")!;
+    expect(extracted.edges.filter((edge) => edge.kind === "contains" && edge.target === worker.id))
+      .toEqual([{ source: namespace.id, target: worker.id, kind: "contains" }]);
+    expect(extracted.edges.filter((edge) => edge.kind === "calls"))
+      .toEqual([expect.objectContaining({ source: start.id, targetName: "Work" })]);
+    expect(extracted.edges.filter((edge) => edge.kind === "instantiates"))
+      .toEqual([expect.objectContaining({ source: start.id, targetName: "Worker" })]);
+    expect(extracted.edges.filter((edge) => edge.kind === "imports"))
+      .toEqual([expect.objectContaining({ targetName: "System" })]);
+  });
+
+  it("keeps operators, conversions, constructors, and destructors distinct across reordering", () => {
+    const members = [
+      "public Sample() {}",
+      "~Sample() {}",
+      "public static Sample operator +(Sample left, Sample right) => left;",
+      "public static Sample operator -(Sample left, Sample right) => left;",
+      "public static Sample operator checked +(Sample left, Sample right) => left;",
+      "public static implicit operator int(Sample value) => 0;",
+      'public static implicit operator string(Sample value) => "";',
+      "public static explicit operator Sample(int value) => new Sample();",
+    ];
+    const first = extractSource(`class Sample {\n${members.join("\n")}\n}`);
+    const reordered = extractSource(`\n// Declarations moved without changing their identity.\nclass Sample {\n${[...members].reverse().join("\n")}\n}`);
+    const methods = first.nodes.filter((entry) => entry.kind === "method");
+    expect(methods.map((entry) => entry.name).sort()).toEqual([
+      "Sample", "~Sample", "operator +", "operator -", "operator checked +",
+      "implicit operator int", "implicit operator string", "explicit operator Sample",
+    ].sort());
+    expect(new Set(methods.map((entry) => entry.id)).size).toBe(members.length);
+    expect(new Set(methods.map((entry) => entry.identityKey)).size).toBe(members.length);
+    for (const method of methods) {
+      const moved = reordered.nodes.find((entry) => entry.kind === "method" && entry.name === method.name)!;
+      expect(moved).toMatchObject({
+        id: method.id,
+        identityKey: method.identityKey,
+        qualifiedName: method.qualifiedName,
+        signature: method.signature,
+      });
+    }
+  });
+
+  it("attributes field initializer calls and constructions to each declared field", () => {
+    const extracted = extractSource(`
+class Resource {}
+class Owner {
+    int first = Initialize(), second = Initialize();
+    Resource resource = new Resource();
+    static int Initialize() => 1;
+}
+`);
+    const names = new Map(extracted.nodes.map((entry) => [entry.id, entry.qualifiedName]));
+    const references = extracted.edges
+      .filter((edge) => edge.kind === "calls" || edge.kind === "instantiates")
+      .map((edge) => ({ owner: names.get(edge.source), kind: edge.kind, target: edge.targetName }));
+    expect(references).toEqual([
+      { owner: "Owner.first", kind: "calls", target: "Initialize" },
+      { owner: "Owner.second", kind: "calls", target: "Initialize" },
+      { owner: "Owner.resource", kind: "instantiates", target: "Resource" },
+    ]);
+  });
+
+  it("extracts overloaded indexers with their signatures, parameters, and accessor calls", () => {
+    const extracted = extractSource(`
+class Bag {
+    public int this[int index] => GetByIndex(index);
+    public int this[string key] {
+        get { return GetByKey(key); }
+        set { SetByKey(key, value); }
+    }
+    int GetByIndex(int index) => 0;
+    int GetByKey(string key) => 0;
+    void SetByKey(string key, int value) {}
+}
+`);
+    const indexers = extracted.nodes.filter((entry) => entry.kind === "property" && entry.name === "this");
+    expect(indexers).toHaveLength(2);
+    expect(new Set(indexers.map((entry) => entry.id)).size).toBe(2);
+    expect(indexers.map((entry) => entry.signature)).toEqual(["[int index]", "[string key]"]);
+    for (const [position, parameterName, parameterType, calls] of [
+      [0, "index", "int", ["GetByIndex"]],
+      [1, "key", "string", ["GetByKey", "SetByKey"]],
+    ] as const) {
+      const indexer = indexers[position]!;
+      expect(indexer).toMatchObject({ qualifiedName: "Bag.this", returnType: "int" });
+      const parameter = extracted.nodes.find((entry) =>
+        entry.kind === "parameter" && entry.qualifiedName === `Bag.this.${parameterName}`,
+      )!;
+      expect(parameter).toMatchObject({ name: parameterName, returnType: parameterType });
+      expect(extracted.edges).toContainEqual({ source: indexer.id, target: parameter.id, kind: "contains" });
+      expect(extracted.edges.filter((edge) => edge.kind === "calls" && edge.source === indexer.id)
+        .map((edge) => edge.targetName)).toEqual(calls);
+    }
+  });
+
+  it("uses enum member identifiers when attributes precede the member", () => {
+    const extracted = extractSource(`
+enum State {
+    [System.Obsolete("legacy value")] Deprecated = 1,
+    [System.Obsolete] Secondary,
+    Active,
+}
+`);
+    const members = extracted.nodes.filter((entry) => entry.kind === "enum_member");
+    expect(members.map((entry) => entry.name)).toEqual(["Deprecated", "Secondary", "Active"]);
+    expect(members.map((entry) => entry.qualifiedName)).toEqual([
+      "State.Deprecated", "State.Secondary", "State.Active",
+    ]);
+  });
+
+  it("represents every inherited interface as extends", () => {
+    const extracted = extractSource(`
+interface ILeft {}
+interface IRight {}
+interface ICombined : ILeft, IRight {}
+`);
+    const combined = extracted.nodes.find((entry) => entry.name === "ICombined")!;
+    expect(extracted.edges.filter((edge) => edge.source === combined.id)
+      .map((edge) => ({ kind: edge.kind, target: edge.targetName }))).toEqual([
+      { kind: "extends", target: "ILeft" },
+      { kind: "extends", target: "IRight" },
+    ]);
+  });
+
+  it("preserves the full receiver expression on calls", () => {
+    const extracted = extractSource(`
+class Base { protected void Run() {} }
+class Other { public void Run() {} }
+static class Helpers { public static void Run() {} }
+class Caller : Base {
+    void Start(Other other) {
+        other.Run();
+        this.Run();
+        base.Run();
+        Helpers.Run();
+        GetOther().Run();
+        Run();
+    }
+    Other GetOther() => new Other();
+    new void Run() {}
+}
+`);
+    const start = extracted.nodes.find((entry) => entry.qualifiedName === "Caller.Start")!;
+    expect(extracted.edges.filter((edge) => edge.kind === "calls" && edge.source === start.id)
+      .map((edge) => edge.targetName)).toEqual([
+      "other.Run", "this.Run", "base.Run", "Helpers.Run", "GetOther().Run", "GetOther", "Run",
+    ]);
   });
 });

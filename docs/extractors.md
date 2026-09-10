@@ -75,6 +75,9 @@ The build copies every vendored `.wasm` file into `dist/wasm/`. A new grammar mu
 - Emit resolved `contains` edges when both endpoints are known in the file.
 - Leave cross-file targets unresolved with `targetName` and optional candidates.
 - Include signatures, documentation, visibility, export state, and type information when the grammar exposes them reliably.
+- Preserve call receivers in `targetName`; a same-named method in lexical scope does not prove the target of `other.Method()`. Test unresolved persistence as well as extraction.
+- Use grammar name/operator/type fields for declaration names. Include operator tokens, conversion target types, and indexer signatures so reordering does not swap identities.
+- Verify traversal ownership: file-scoped namespace siblings must be visited once, and field initializers/indexer bodies must retain their declaring symbol as the reference source.
 - Prefer stable semantic assertions over exact node/edge counts that make fixtures hard to extend.
 
 Use [`src/graph/__tests__/extractor.test.ts`](../src/graph/__tests__/extractor.test.ts) and its `sample.ts` fixture as the test pattern. Cover at least:
