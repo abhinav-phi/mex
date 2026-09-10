@@ -42,6 +42,11 @@ import {
 } from "@mex/hub-contracts";
 import { createFixtureApi } from "virtual:mex-hub-fixture-api";
 import type {
+  SetupRun,
+  SetupStartRequest,
+  SetupStatus,
+} from "@mex/hub-contracts/setup";
+import type {
   AgentLoggingPolicy,
   AgentLoggingUpdateRequest,
   ActivityRequest,
@@ -123,6 +128,11 @@ export class HubApiError extends Error {
     this.name = "HubApiError";
     this.problem = problem;
   }
+}
+
+export function isSetupCapabilityUnavailable(error: unknown): boolean {
+  return error instanceof HubApiError
+    && (error.problem.code === "CAPABILITY_UNAVAILABLE" || error.problem.code === "NOT_FOUND");
 }
 
 export interface JobSubscription {
@@ -211,6 +221,10 @@ export interface HubApi {
   startJob(request: StartJobRequest): Promise<JobSummary>;
   cancelJob(id: string): Promise<JobSummary>;
   subscribeToJob(id: string, onSnapshot: (job: JobSummary) => void): JobSubscription;
+  getSetupStatus?(): Promise<SetupStatus>;
+  getSetupRun?(): Promise<SetupRun>;
+  startSetup?(request: SetupStartRequest): Promise<SetupRun>;
+  subscribeToSetup?(onSnapshot: (run: SetupRun) => void): JobSubscription;
 }
 
 function fallbackProblem(status: number, detail?: string): ProblemDetails {
@@ -226,20 +240,24 @@ function fallbackProblem(status: number, detail?: string): ProblemDetails {
   };
 }
 
-async function parseBody<T>(response: Response, schema: Parser<T>): Promise<T> {
+async function readJsonBody(response: Response): Promise<unknown> {
   const contentType = response.headers.get("content-type") ?? "";
-  let body: unknown;
   try {
-    body = contentType.includes("json") ? await response.json() : undefined;
+    return contentType.includes("json") ? await response.json() : undefined;
   } catch {
-    body = undefined;
+    return undefined;
   }
+}
 
-  if (!response.ok) {
-    const problem = HubProblemDetailsSchema.safeParse(body);
-    throw new HubApiError(problem.success ? problem.data : fallbackProblem(response.status));
-  }
+function throwIfHttpProblem(response: Response, body: unknown): void {
+  if (response.ok) return;
+  const problem = HubProblemDetailsSchema.safeParse(body);
+  throw new HubApiError(problem.success ? problem.data : fallbackProblem(response.status));
+}
 
+async function parseBody<T>(response: Response, schema: Parser<T>): Promise<T> {
+  const body = await readJsonBody(response);
+  throwIfHttpProblem(response, body);
   const parsed = schema.safeParse(body);
   if (!parsed.success) {
     throw new HubApiError(fallbackProblem(500));
@@ -305,6 +323,7 @@ function assertSafeInboxProposalId(value: string): string {
 
 const loadRelayClient = () => import("./relay-client");
 const loadOverviewContract = () => import("@mex/hub-contracts/overview");
+const loadSetupContract = () => import("@mex/hub-contracts/setup");
 
 export function readBootstrapToken(hash = window.location.hash): string | null {
   if (!hash || hash === "#") return null;
@@ -346,26 +365,43 @@ export class HttpHubApi implements HubApi {
       throw new HubApiError(fallbackProblem(400, detail));
     },
   };
-  async #request<T>(
-    path: string,
-    schema: Parser<T>,
-    init: RequestInit = {},
-    mutation = false,
-  ): Promise<T> {
+  async #send(path: string, init: RequestInit = {}, mutation = false): Promise<Response> {
     const headers = new Headers(init.headers);
     headers.set("Accept", "application/json, application/problem+json");
     if (mutation) {
       headers.set("Content-Type", "application/json");
       if (this.#csrfToken) headers.set("X-MEX-CSRF", this.#csrfToken);
     }
-
-    const response = await fetch(`${API_ROOT}${path}`, {
+    return fetch(`${API_ROOT}${path}`, {
       ...init,
       headers,
       credentials: "same-origin",
       redirect: "error",
     });
-    return parseBody(response, schema);
+  }
+
+  async #request<T>(
+    path: string,
+    schema: Parser<T>,
+    init: RequestInit = {},
+    mutation = false,
+  ): Promise<T> {
+    return parseBody(await this.#send(path, init, mutation), schema);
+  }
+
+  async #requestWhenOk<T>(
+    path: string,
+    loadSchema: () => Promise<Parser<T>>,
+    init: RequestInit = {},
+    mutation = false,
+  ): Promise<T> {
+    const response = await this.#send(path, init, mutation);
+    const body = await readJsonBody(response);
+    throwIfHttpProblem(response, body);
+    const schema = await loadSchema();
+    const parsed = schema.safeParse(body);
+    if (!parsed.success) throw new HubApiError(fallbackProblem(500));
+    return parsed.data;
   }
 
   bootstrap(token: string): Promise<BootstrapResponse> {
@@ -705,6 +741,53 @@ export class HttpHubApi implements HubApi {
     };
     source.addEventListener("snapshot", receive as EventListener);
     source.addEventListener("progress", receive as EventListener);
+    source.addEventListener("terminal", receive as EventListener);
+    source.onmessage = receive;
+    return { close: () => source.close() };
+  }
+
+  getSetupStatus(): Promise<SetupStatus> {
+    return this.#requestWhenOk("/setup", async () => (await loadSetupContract()).SetupStatusSchema);
+  }
+
+  getSetupRun(): Promise<SetupRun> {
+    return this.#requestWhenOk("/setup/run", async () => (await loadSetupContract()).SetupRunSchema);
+  }
+
+  startSetup(request: SetupStartRequest): Promise<SetupRun> {
+    return this.#requestWhenOk(
+      "/setup",
+      async () => (await loadSetupContract()).SetupRunSchema,
+      { method: "POST", body: JSON.stringify(request) },
+      true,
+    );
+  }
+
+  subscribeToSetup(onSnapshot: (run: SetupRun) => void): JobSubscription {
+    const source = new EventSource(`${API_ROOT}/setup/events`, { withCredentials: true });
+    const contract = loadSetupContract();
+    const receive = (event: MessageEvent<string>) => {
+      void contract.then(({ SetupRunSchema }) => {
+        try {
+          const parsed = SetupRunSchema.safeParse(JSON.parse(event.data));
+          if (parsed.success) {
+            onSnapshot(parsed.data);
+            if (
+              event.type === "terminal"
+              || parsed.data.status === "succeeded"
+              || parsed.data.status === "failed"
+              || parsed.data.status === "paused"
+              || parsed.data.status === "idle"
+            ) {
+              source.close();
+            }
+          }
+        } catch {
+          // A malformed event cannot poison the current setup snapshot.
+        }
+      });
+    };
+    source.addEventListener("snapshot", receive as EventListener);
     source.addEventListener("terminal", receive as EventListener);
     source.onmessage = receive;
     return { close: () => source.close() };

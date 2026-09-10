@@ -23,7 +23,7 @@ edges:
 # Broad overview: keep this empty unless a claim depends on a few specific symbols.
 # Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh:64:<hex>" }
 grounds_to: []
-last_updated: 2026-09-09
+last_updated: 2026-09-10
 mex:
   id: mx_01M1M0CJ5C5XQV0HM5VM787WQS
   type: architecture
@@ -83,7 +83,7 @@ revision: 1
 - **Code Graph (`src/graph/`)** — deterministic extraction, versioned SQLite storage, immutable read sessions, provenance/freshness checks, retrieval, impact, and explicit refresh/rebuild recovery.
 - **Wiki (`src/wiki/`)** — treats repository Markdown as canonical, owns migration/validation/indexing, and exposes bounded query plus repository-adapter services.
 - **Team workflows (`src/team/`)** — canonical Members, Activity, Workstreams, Inbox, and Relay records plus signed preview/apply services and isolated checkout-local state.
-- **Project Hub (`src/hub/`, `packages/hub-contracts`, `packages/hub-web`)** — `runHubCommand()` composes the loopback server, private API contracts, repository adapters, durable local jobs, and route-lazy React workbench.
+- **Project Hub (`src/hub/`, `packages/hub-contracts`, `packages/hub-web`)** — `launchHub()` opens the loopback server. Incomplete checkouts get a setup-only process that runs the same ordered `mex setup` steps through `runHeadlessSetup()`; a ready tracked scaffold still uses `runHubCommand()` for the private API, repository adapters, durable local jobs, and route-lazy React workbench.
 - **Drift and agent workflows (`src/drift/`, `src/sync/`, `src/agent-skills/`)** — check grounded knowledge, prepare bounded repair briefs, and install the governed Inbox/Relay integrations.
 
 <!-- mex:entity

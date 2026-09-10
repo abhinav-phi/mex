@@ -49,7 +49,6 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const TEMPLATES_DIR = resolve(__dirname, "../templates");
 
 const SOURCE_EXTENSIONS = [
   "*.py", "*.js", "*.ts", "*.tsx", "*.jsx", "*.go", "*.rs", "*.java",
@@ -58,7 +57,7 @@ const SOURCE_EXTENSIONS = [
   "*.hs", "*.ml", "*.vue", "*.svelte",
 ];
 
-const SCAFFOLD_FILES = [
+export const SCAFFOLD_FILES = [
   "ROUTER.md",
   "AGENTS.md",
   "SETUP.md",
@@ -72,7 +71,7 @@ const SCAFFOLD_FILES = [
   "patterns/INDEX.md",
 ];
 
-const AGENT_MEMORY_FILES = [
+export const AGENT_MEMORY_FILES = [
   ...SCAFFOLD_FILES,
   "HEARTBEAT.md",
 ];
@@ -219,14 +218,18 @@ const info = (msg: string) => console.log(`${chalk.blue("→")} ${msg}`);
 const warn = (msg: string) => console.log(`${chalk.yellow("!")} ${msg}`);
 const header = (msg: string) => console.log(`\n${chalk.bold(msg)}`);
 
-function findProjectRoot(): string {
-  let current = resolve(process.cwd());
+export function findSetupProjectRoot(startDir: string = process.cwd()): string {
+  let current = resolve(startDir);
   while (true) {
     if (existsSync(resolve(current, ".git"))) return current;
     const parent = dirname(current);
-    if (parent === current) return process.cwd();
+    if (parent === current) return resolve(startDir);
     current = parent;
   }
+}
+
+function findProjectRoot(): string {
+  return findSetupProjectRoot();
 }
 
 function banner() {
@@ -253,11 +256,42 @@ function banner() {
 
 export type ProjectState = "existing" | "fresh" | "partial";
 
-type SetupMode = "code-repo" | "agent-memory";
+export type SetupMode = "code-repo" | "agent-memory";
+
+/** Packaged templates directory used by both CLI setup and the Hub wizard. */
+export function setupTemplatesDirectory(): string {
+  const candidates = [
+    resolve(__dirname, "../templates"),
+    resolve(__dirname, "../../templates"),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  throw new Error(
+    `Templates directory not found. Looked in:\n${candidates.map((path) => `  - ${path}`).join("\n")}\nThe mex-agent package may be corrupted — try reinstalling.`,
+  );
+}
+
+/** Exact git commands CLI setup prints after a successful code-repo run. */
+export function setupCommitCheckpointCommands(selectedTools: readonly AiTool[]): string[] {
+  const commands = ["git status --short", "git add .mex"];
+  if (selectedTools.includes("claude")) {
+    commands.push("git add CLAUDE.md .claude/skills/mex-inbox .claude/skills/mex-relay");
+  }
+  if (selectedTools.includes("codex")) {
+    commands.push("git add AGENTS.md .agents/skills/mex-inbox .agents/skills/mex-relay");
+  }
+  if (selectedTools.includes("cursor")) commands.push("git add .cursorrules");
+  if (selectedTools.includes("windsurf")) commands.push("git add .windsurfrules");
+  if (selectedTools.includes("copilot")) commands.push("git add .github/copilot-instructions.md");
+  if (selectedTools.includes("opencode")) commands.push("git add .opencode/opencode.json");
+  commands.push('git commit -m "chore: initialize MEX"');
+  return commands;
+}
 
 export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): Promise<void> {
   const { dryRun = false } = opts;
-  const mode = normalizeMode(opts.mode);
+  const mode = normalizeSetupMode(opts.mode);
 
   banner();
   console.log();
@@ -267,13 +301,7 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
     console.log();
   }
 
-  // Verify templates directory exists (sanity check for npm package integrity)
-  if (!existsSync(TEMPLATES_DIR)) {
-    throw new Error(
-      `Templates directory not found at ${TEMPLATES_DIR}. The mex-agent package may be corrupted — try reinstalling.`
-    );
-  }
-
+  const templatesDir = setupTemplatesDirectory();
   const projectRoot = findProjectRoot();
   const mexDir = resolve(projectRoot, ".mex");
 
@@ -322,10 +350,10 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
 
   const scaffoldFiles = mode === "agent-memory" ? AGENT_MEMORY_FILES : SCAFFOLD_FILES;
   for (const file of scaffoldFiles) {
-    const agentMemorySrc = resolve(TEMPLATES_DIR, "agent-memory", file);
+    const agentMemorySrc = resolve(templatesDir, "agent-memory", file);
     const src = mode === "agent-memory" && existsSync(agentMemorySrc)
       ? agentMemorySrc
-      : resolve(TEMPLATES_DIR, file);
+      : resolve(templatesDir, file);
     const dest = resolve(mexDir, file);
 
     const action = ensureScaffoldFile(src, dest, dryRun);
@@ -356,12 +384,12 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
     // A scaffold orphaned by the old skip lands here, not in the menu
     // branch: it is populated and its aiTools are saved. Link on this path
     // too, or rerunning setup could never repair the installs that need it.
-    anchorNotes = ensureToolAnchors(projectRoot, TEMPLATES_DIR, selectedTools, dryRun);
+    anchorNotes = ensureToolAnchors(projectRoot, templatesDir, selectedTools, dryRun);
     info(`Using configured AI tools: ${selectedTools.map((tool) => AI_TOOLS[tool].name).join(", ")}`);
   } else {
     const rl = createInterface({ input: stdin, output: stdout });
     try {
-      const selection = await selectToolConfig(rl, projectRoot, dryRun);
+      const selection = await selectToolConfig(rl, projectRoot, templatesDir, dryRun);
       selectedTools = selection.tools;
       anchorNotes = selection.anchorNotes;
     } finally {
@@ -512,7 +540,7 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
   await promptGlobalInstall();
 }
 
-function normalizeMode(raw: string | undefined): SetupMode {
+export function normalizeSetupMode(raw: string | undefined): SetupMode {
   const mode = raw ?? "code-repo";
   if (mode === "code-repo" || mode === "agent-memory") return mode;
   throw new Error(`Unknown setup mode "${mode}". Use code-repo or agent-memory.`);
@@ -573,6 +601,7 @@ const TOOL_CHOICE_MAP: Record<string, AiTool> = {
 async function selectToolConfig(
   rl: ReturnType<typeof createInterface>,
   projectRoot: string,
+  templatesDir: string,
   dryRun: boolean,
 ): Promise<{ tools: AiTool[]; anchorNotes: string[] }> {
   header("Which AI tool do you use?");
@@ -621,7 +650,7 @@ async function selectToolConfig(
       break;
   }
 
-  const anchorNotes = ensureToolAnchors(projectRoot, TEMPLATES_DIR, selectedTools, dryRun);
+  const anchorNotes = ensureToolAnchors(projectRoot, templatesDir, selectedTools, dryRun);
 
   // Persist tool selection
   if (selectedTools.length > 0 && !dryRun) {
@@ -717,7 +746,7 @@ async function confirmPopulationFinished(mexDir: string): Promise<boolean> {
   }
 }
 
-async function finalizeCodeRepoSetup(projectRoot: string, mexDir: string): Promise<void> {
+export async function finalizeCodeRepoSetup(projectRoot: string, mexDir: string): Promise<void> {
   info("Capturing grounding baselines...");
   try {
     const result = await captureGroundingBaselines(
@@ -780,19 +809,9 @@ function printCommitCheckpoint(selectedTools: readonly AiTool[]): void {
   header("Commit the canonical MEX setup before opening Hub");
   console.log();
   info("Review the scoped files, then commit them. MEX will not stage or commit automatically.");
-  console.log("    git status --short");
-  console.log("    git add .mex");
-  if (selectedTools.includes("claude")) {
-    console.log("    git add CLAUDE.md .claude/skills/mex-inbox .claude/skills/mex-relay");
+  for (const command of setupCommitCheckpointCommands(selectedTools)) {
+    console.log(`    ${command}`);
   }
-  if (selectedTools.includes("codex")) {
-    console.log("    git add AGENTS.md .agents/skills/mex-inbox .agents/skills/mex-relay");
-  }
-  if (selectedTools.includes("cursor")) console.log("    git add .cursorrules");
-  if (selectedTools.includes("windsurf")) console.log("    git add .windsurfrules");
-  if (selectedTools.includes("copilot")) console.log("    git add .github/copilot-instructions.md");
-  if (selectedTools.includes("opencode")) console.log("    git add .opencode/opencode.json");
-  console.log('    git commit -m "chore: initialize MEX"');
   console.log();
   info("After that commit, start Hub with `mex hub` (or `npx mex-agent hub`).");
 }

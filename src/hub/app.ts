@@ -136,6 +136,14 @@ import {
   type WikiGroundedCodeResponse,
 } from "@mex/hub-contracts";
 import { OverviewResponseSchema } from "@mex/hub-contracts/overview";
+import {
+  SetupRunSchema,
+  SetupStartRequestSchema,
+  SetupStatusSchema,
+  type SetupRun,
+  type SetupStartRequest,
+  type SetupStatus,
+} from "@mex/hub-contracts/setup";
 import { Hono, type Context } from "hono";
 import { getCookie, generateCookie } from "hono/cookie";
 import { streamSSE } from "hono/streaming";
@@ -187,6 +195,14 @@ export interface HubJobService {
   start(request: { kind: HubJobKind }): Promise<HubJobSnapshot> | HubJobSnapshot;
   cancel(id: string): Promise<HubJobSnapshot> | HubJobSnapshot;
   subscribe(id: string, listener: (event: HubJobEvent) => void): () => void;
+}
+
+/** Process-local setup wizard seam. Present only while Hub is in setup mode. */
+export interface HubSetupService {
+  status(): SetupStatus;
+  snapshot(): SetupRun;
+  start(request: SetupStartRequest): SetupRun;
+  subscribe(listener: (run: SetupRun) => void): () => void;
 }
 
 export interface HubReadServices {
@@ -281,6 +297,7 @@ export interface CreateHubAppOptions {
   readonly security: HubSessionManager;
   readonly services: HubReadServices;
   readonly jobs?: HubJobService;
+  readonly setup?: HubSetupService;
   readonly assets?: HubAssetManifest;
   readonly requestId?: () => string;
   readonly now?: () => number;
@@ -761,6 +778,50 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     await options.services.health(),
   ));
 
+  app.get("/api/v1/setup", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    return resourceResponse(SetupStatusSchema, requireSetup(options.setup).status());
+  });
+
+  app.get("/api/v1/setup/run", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    return resourceResponse(SetupRunSchema, requireSetup(options.setup).snapshot());
+  });
+
+  app.post("/api/v1/setup", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    const setup = requireSetup(options.setup);
+    const request = parseInput(SetupStartRequestSchema, await readBoundedJson(context.req.raw));
+    return telemetry.action("setup.start", "direct", async () =>
+      resourceResponse(SetupRunSchema, setup.start(request), 202));
+  });
+
+  app.get("/api/v1/setup/events", async (context) => {
+    if (context.req.method === "HEAD") {
+      throw new HubHttpError(
+        405,
+        "INVALID_REQUEST",
+        "Method not allowed",
+        "Hub setup event streams require GET.",
+      );
+    }
+    readStrictQuery(context.req.raw, []);
+    const setup = requireSetup(options.setup);
+    const release = subscribers.reserve("setup");
+    try {
+      return createSetupEventStream(
+        context,
+        setup,
+        context.get("session").expiresAt,
+        now,
+        release,
+      );
+    } catch (error) {
+      release();
+      throw error;
+    }
+  });
+
   app.get("/api/v1/jobs", async (context) => {
     const jobs = requireJobs(options.jobs);
     const request = parseInput(
@@ -862,6 +923,80 @@ function requireJobs(jobs: HubJobService | undefined): HubJobService {
     throw unavailable("No executable graph or Wiki job capability is registered.");
   }
   return jobs;
+}
+
+function requireSetup(setup: HubSetupService | undefined): HubSetupService {
+  if (setup === undefined) {
+    throw unavailable("Setup is not available in this Hub process.");
+  }
+  return setup;
+}
+
+const TERMINAL_SETUP_STATUSES = new Set(["succeeded", "failed", "paused", "idle"]);
+
+function createSetupEventStream(
+  context: Context<HubEnvironment>,
+  setup: HubSetupService,
+  sessionExpiresAt: string,
+  now: () => number,
+  releaseSubscriber: () => void,
+): Response {
+  const sessionDeadline = Date.parse(sessionExpiresAt);
+  return streamSSE(context, async (stream) => {
+    const queue: SetupRun[] = [];
+    let notify: (() => void) | null = null;
+    const enqueue = (run: SetupRun) => {
+      if (queue.length >= MAX_PENDING_SSE_EVENTS) queue.shift();
+      queue.push(run);
+      notify?.();
+      notify = null;
+    };
+    let unsubscribe: () => void = () => undefined;
+    try {
+      if (now() >= sessionDeadline) return;
+      unsubscribe = setup.subscribe(enqueue);
+      while (!context.req.raw.signal.aborted && now() < sessionDeadline) {
+        const event = queue.shift();
+        if (event !== undefined) {
+          if (now() >= sessionDeadline) break;
+          const parsed = SetupRunSchema.safeParse(event);
+          if (!parsed.success) {
+            throw new Error("The Hub setup runner emitted an invalid event.");
+          }
+          const terminal = TERMINAL_SETUP_STATUSES.has(parsed.data.status);
+          const eventData = JSON.stringify(parsed.data);
+          if (Buffer.byteLength(eventData, "utf8") > HUB_LIMITS.maxJsonResponseBytes) {
+            throw new Error("The Hub setup event exceeded its safe serialized size.");
+          }
+          await stream.writeSSE({
+            event: terminal ? "terminal" : "snapshot",
+            data: eventData,
+          });
+          if (terminal) break;
+          continue;
+        }
+
+        const outcome = await waitForEventOrHeartbeat(
+          context.req.raw.signal,
+          sessionDeadline,
+          now,
+          () => new Promise<void>((resolve) => {
+            notify = resolve;
+            if (queue.length > 0) {
+              notify();
+              notify = null;
+            }
+          }),
+        );
+        if (outcome === "expired" || outcome === "aborted") break;
+        if (outcome === "heartbeat") await stream.write(": heartbeat\n\n");
+      }
+    } finally {
+      notify = null;
+      unsubscribe();
+      releaseSubscriber();
+    }
+  });
 }
 
 function parseJobId(value: string): string {

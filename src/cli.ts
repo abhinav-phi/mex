@@ -202,10 +202,8 @@ program
   .option("--no-open", "Do not open the browser automatically")
   .action(async (opts: { port?: number; open: boolean }) => {
     try {
-      const config = loadConfig();
-      const identity = getScaffoldIdentity(config);
-      const { runHubCommand } = await import("./hub/command.js");
-      await runHubCommand(createHubRunOptions(config, identity.scaffold_id, opts));
+      const { launchHub } = await import("./hub/command.js");
+      await launchHub({ port: opts.port, openBrowser: opts.open });
     } catch (err) {
       console.error((err as Error).message);
       process.exitCode = 1;

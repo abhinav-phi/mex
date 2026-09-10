@@ -11,7 +11,7 @@ edges:
     condition: "when persisting a Hub job or migrating team.db"
   - target: "context/architecture.md"
     condition: "when wiring a real Graph or Wiki adapter"
-last_updated: 2026-09-08
+last_updated: 2026-09-10
 mex:
   id: mx_01M1M0CJQ2BSV71G1C7TXZD9RH
   type: pattern
@@ -87,7 +87,16 @@ preview/apply services.
 - Bundlers can rewrite a static `node:sqlite` import. Load it through
   `createRequire(import.meta.url)` and smoke-test the packed CLI.
 - Terminal SSE events should close the browser connection immediately; do not
-  let `EventSource` reconnect to a finished job.
+  let `EventSource` reconnect to a finished job. Setup population pause is a
+  terminal setup-run status: return the prompt on the run snapshot, then close
+  the stream. Hub jobs still persist no prompts.
+- Incomplete checkouts must not boot Graph/Wiki/Team jobs. `launchHub()` serves
+  the setup wizard until indexes exist **and** `.mex/config.json` is tracked at
+  HEAD. Full Hub returns `CAPABILITY_UNAVAILABLE` for `/api/v1/setup`.
+- Do not spawn interactive `mex setup` from Hub. Reuse `runHeadlessSetup()` so
+  detect → scaffold → tools → skills → identity → scan → graph → population →
+  finalize stay one path. Code-repo without git is a 400; the UI shows `git
+  init` and never runs it.
 - A paginated source can hit its corpus safety bound independently of having a
   next page. Expose these as separate signals; never turn an incomplete scan
   into an exact total or silently mix revision-bound pages.
