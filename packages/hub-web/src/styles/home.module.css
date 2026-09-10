@@ -80,19 +80,24 @@
 }
 
 /*
- * The only card here that asks for something rather than reporting something,
- * so it is drawn quieter than the panels above it: no fill of its own, a
- * dimmer border, and body copy at secondary weight. It should read as a note at
- * the foot of the column, never as a status the reader has to resolve.
+ * Team invite in the right rail. It sits with the other Overview cards instead
+ * of reading as a footnote that this Hub is not for teams yet.
  */
 .updatesCard {
-  background: transparent;
-  border-color: color-mix(in oklch, var(--border) 70%, transparent);
+  background: var(--card);
 }
 
 .updatesContent {
   display: grid;
   gap: 12px;
+}
+
+.updatesLead {
+  margin: 0;
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 520;
+  line-height: 1.45;
 }
 
 .updatesBody {
