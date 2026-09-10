@@ -185,6 +185,39 @@ class Other {}
     }
   });
 
+  it("keeps static and instance constructor identities and body references attached after reordering", () => {
+    const members = [
+      "static Sample() { InitializeType(); }",
+      "public Sample() { InitializeInstance(); }",
+    ];
+    const sources = [members, [...members].reverse()].map((constructors) => extractSource(`
+class Sample {
+    ${constructors.join("\n    ")}
+    static void InitializeType() {}
+    void InitializeInstance() {}
+}
+`));
+    for (const [isStatic, name, targetName] of [
+      [true, "static Sample", "InitializeType"],
+      [false, "Sample", "InitializeInstance"],
+    ] as const) {
+      const constructors = sources.map((extracted) => {
+        const matches = extracted.nodes.filter((entry) => entry.kind === "method" && entry.name === name);
+        expect(matches).toHaveLength(1);
+        const constructor = matches[0]!;
+        expect(constructor).toMatchObject({ isStatic, signature: "()", qualifiedName: `Sample.${name}` });
+        expect(extracted.edges.filter((edge) => edge.source === constructor.id && edge.kind === "calls"))
+          .toEqual([expect.objectContaining({ targetName })]);
+        return constructor;
+      });
+      expect(constructors[1]).toMatchObject({
+        id: constructors[0]!.id,
+        identityKey: constructors[0]!.identityKey,
+        isStatic,
+      });
+    }
+  });
+
   it("attributes field initializer calls and constructions to each declared field", () => {
     const extracted = extractSource(`
 class Resource {}

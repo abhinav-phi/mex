@@ -37,12 +37,18 @@ prove that declarations, ownership, or references are correct.
 - C# file-scoped namespace declarations own later root siblings; walking them
   again creates duplicate symbols outside the namespace.
 - Operators need their tokens, conversions their target types, and destructors
-  their `~` prefix. Indexers have no name field and need bracketed signatures.
+  their `~` prefix. Static constructors use `static C` so reordering them with
+  instance constructors cannot swap identities. Indexers have no name field and
+  need bracketed signatures.
 - Walk each field declarator's initializer under that field's ownership.
 - Enum attributes precede identifiers; use the grammar name field.
 - Interface bases are `extends`. The class base-list split remains heuristic.
 - C# `this.M()` cannot bind to a local function named `M`. Unproven object,
-  `base`, and type receivers remain unresolved until semantic binding exists.
+  `base`, namespace, and alias qualifiers remain unresolved until semantic
+  binding exists, including on inheritance and construction references.
+- Keep the caller among C# call candidates: deleting it from an overload set
+  can turn a recursive call into a confident edge to the wrong overload. Only
+  an unambiguous lexical recursive target can produce a self edge.
 
 ## Verify
 

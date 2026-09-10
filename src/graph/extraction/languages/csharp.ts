@@ -515,7 +515,14 @@ function methodNameOf(node: TSNode, source: string): string {
   const name = nameNode ? getNodeText(nameNode, source)
     : node.type === "constructor_declaration" || node.type === "destructor_declaration"
       ? enclosingTypeName(node, source) : "";
-  return name && node.type === "destructor_declaration" ? `~${name}` : name;
+  if (!name) return "";
+  if (node.type === "destructor_declaration") return `~${name}`;
+  // Static initializers and parameterless instance constructors can coexist;
+  // both expose the same name and parameter list in the grammar.
+  if (node.type === "constructor_declaration" && modifiersOf(node, source).includes("static")) {
+    return `static ${name}`;
+  }
+  return name;
 }
 
 /** Constructors/destructors: fall back to the nearest enclosing type's name. */

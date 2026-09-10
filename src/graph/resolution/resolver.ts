@@ -177,10 +177,14 @@ export function resolveReferences(
     if (!candidates || candidates.length === 0) continue;
 
     const allowedKinds = TARGET_KINDS[ref.referenceKind] ?? [];
-    const filtered =
-      allowedKinds.length === 0
-        ? candidates.filter((n) => n.id !== ref.fromNodeId)
-        : candidates.filter((n) => allowedKinds.includes(n.kind) && n.id !== ref.fromNodeId);
+    // A recursive C# call is still a candidate for itself. Removing it can
+    // turn an unresolved overload set into a false, confident sibling edge.
+    const allowSelf = ref.language === "csharp"
+      && (ref.referenceKind === "calls" || ref.referenceKind === "function_ref");
+    const filtered = candidates.filter((node) =>
+      (allowedKinds.length === 0 || allowedKinds.includes(node.kind))
+      && (allowSelf || node.id !== ref.fromNodeId),
+    );
     if (filtered.length === 0) continue;
 
     const provenFiles = new Set([
@@ -230,12 +234,15 @@ function pickBest(
   importedFiles: Set<string> | undefined,
 ): GraphNode | null {
   const receiver = ref.receiver ?? ref.referenceName.split(".").slice(0, -1).join(".");
-  // C# receivers require type binding that the syntax-only extractor cannot
-  // prove. A same-named lexical method is evidence only for unqualified/this
-  // calls, never for another object, a base instance, or a qualified type.
-  if (ref.language === "csharp"
-    && (ref.referenceKind === "calls" || ref.referenceKind === "function_ref")
-    && receiver.trim() !== "" && receiver.trim() !== "this") return null;
+  // A C# qualifier may name an object, namespace, type, or alias. Syntax alone
+  // cannot bind it to a same-named lexical symbol, including in heritage and
+  // construction references. Only `this` calls have a proven lexical receiver.
+  if (ref.language === "csharp") {
+    const isThisCall = receiver.trim() === "this"
+      && (ref.referenceKind === "calls" || ref.referenceKind === "function_ref");
+    const isQualified = receiver.trim() !== "" || ref.referenceName.includes("::");
+    if (isQualified && !isThisCall) return null;
+  }
 
   const sameFile = candidates.filter((n) => n.filePath === fromNode.filePath);
   if (sameFile.length > 0) {
