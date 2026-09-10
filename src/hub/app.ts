@@ -1339,7 +1339,7 @@ function serveAsset(context: Context, assets: HubAssetManifest | undefined): Res
 function applySecurityHeaders(response: Response, requestId: string, apiResponse: boolean): void {
   response.headers.set(
     "content-security-policy",
-    "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; "
+    "default-src 'self'; base-uri 'none'; connect-src 'self' https://api.web3forms.com; font-src 'self'; "
       + "form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; "
       + "object-src 'none'; script-src 'self'; style-src 'self'",
   );

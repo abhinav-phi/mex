@@ -2433,6 +2433,7 @@ test.describe("built production Hub", () => {
     });
     const productionOrigin = new URL(bootstrapUrl).origin;
     const crossOriginRequests: string[] = [];
+    const teamAccessDialogRequests: string[] = [];
     const idleApiRequests: string[] = [];
     const relayDraftRequests: string[] = [];
     const relayWorkstreamRequests: string[] = [];
@@ -2440,6 +2441,7 @@ test.describe("built production Hub", () => {
     page.on("request", (request) => {
       const url = new URL(request.url());
       if (url.origin !== productionOrigin) crossOriginRequests.push(request.url());
+      if (/\/TeamAccessDialog-[^/]+\.js$/u.test(url.pathname)) teamAccessDialogRequests.push(request.url());
       if (url.origin === productionOrigin && url.pathname === "/api/v1/relays/drafts") {
         relayDraftRequests.push(request.url());
       }
@@ -2453,6 +2455,21 @@ test.describe("built production Hub", () => {
     const response = await page.goto(bootstrapUrl);
     await expect(page.locator('[data-overview-workbench="ready"]')).toBeVisible();
     await expect.poll(() => page.url()).not.toContain("#token=");
+    expect(teamAccessDialogRequests).toEqual([]);
+    const requestAccess = page.getByRole("button", { name: "Request access", exact: true });
+    await requestAccess.click();
+    const teamAccessDialog = page.getByRole("dialog", { name: "Request access", exact: true });
+    await expect(teamAccessDialog).toBeVisible();
+    await expect(teamAccessDialog.getByRole("textbox", { name: "Name", exact: true })).toBeFocused();
+    expect(teamAccessDialogRequests).toHaveLength(1);
+    for (const width of [1024, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      await expectAccessible(page);
+      await expectNoHorizontalOverflow(page, width);
+    }
+    await page.keyboard.press("Escape");
+    await expect(teamAccessDialog).toBeHidden();
+    await expect(requestAccess).toBeFocused();
     await expect(page.getByRole("link", { name: "Context", exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Code", exact: true })).toBeVisible();
     await expect(page.getByText("Three knowledge pages lost grounding")).toHaveCount(0);

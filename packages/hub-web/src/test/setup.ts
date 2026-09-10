@@ -4,6 +4,11 @@ import { afterEach } from "vitest";
 
 afterEach(() => {
   cleanup();
+  window.localStorage.removeItem("mex.hub.team-access.v1");
+});
+
+afterEach(() => {
+  cleanup();
 });
 
 // jsdom's Request rejects React Router 7 navigation AbortSignals as the wrong realm.
