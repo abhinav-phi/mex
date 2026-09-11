@@ -1,12 +1,12 @@
-import { generateNodeId } from "../../extraction/node-id.js";
+import { canonicalNodeIdentity, generateNodeId } from "../../extraction/node-id.js";
 import type { GraphNode, Language } from "../../types.js";
 import type { FrameworkExtractionResult, FrameworkResolver, ResolvedRef, UnresolvedRef } from "../types.js";
 
-// Basic parsing for NestJS decorators without a full AST walk.
-// It assumes standard formatting and single controller per file for simplicity,
-// or sequentially processes them if multiple exist.
-
-const DECORATOR_REGEX = /@(Controller|Get|Post|Put|Patch|Delete|Options|Head|All)\s*\(\s*(?:(["'`])(.*?)\2)?\s*\)/g;
+const CONTROLLER_DECORATOR = /^@Controller\b/;
+const HTTP_DECORATOR = /^@(Get|Post|Put|Patch|Delete|Options|Head|All)\b/;
+const CLASS_DECLARATION = /^(?:export\s+)?(?:abstract\s+)?(?:declare\s+)?class\s+([A-Za-z_$][\w$]*)/;
+const STRING_LITERAL_ARG = /^(["'`])([^"'\\]*)\1/;
+const OBJECT_PATH_ARG = /(?:^|[,{]\s*)path\s*:\s*(["'])([^"'\\]*)\1/;
 
 export const nestjsResolver: FrameworkResolver = {
   name: "nestjs",
@@ -26,127 +26,124 @@ export const nestjsResolver: FrameworkResolver = {
   },
   claimsReference: (name) => /^[A-Za-z_$][\w$]*$/.test(name),
   extract(filePath, content): FrameworkExtractionResult {
+    const language = languageFor(filePath);
+    if (!language) return { nodes: [], references: [] };
+
     const nodes: GraphNode[] = [];
     const references: UnresolvedRef[] = [];
-    const language = languageFor(filePath);
-    if (!language) return { nodes, references };
 
-    let currentControllerPath = "";
-    
-    for (const match of content.matchAll(DECORATOR_REGEX)) {
-      const type = match[1]!;
-      const pathArg = match[3] ?? "";
-      
-      if (type === "Controller") {
-        currentControllerPath = pathArg;
+    // Comments are blanked (with spaces, so offsets and line numbers survive)
+    // before scanning: a commented-out `// @Get('legacy')` or a handler left
+    // inside a block comment is not a route, and reading raw text invented
+    // phantom routes pointing at real handlers (#102 review).
+    const blanked = blankComments(content);
+    const lines = blanked.split("\n");
+
+    // Controller state binds to the NEXT class declaration, so two controllers
+    // in one file each keep their own prefix and neither leaks into the other.
+    let pendingController: { prefix: string; skip: boolean } | null = null;
+    let activeController: { prefix: string; skip: boolean } | null = null;
+    let currentClass: string | null = null;
+    const occurrences = new Map<string, number>();
+
+    let lineStart = 0;
+    for (const line of lines) {
+      const trimmed = line.trim();
+
+      if (CONTROLLER_DECORATOR.test(trimmed)) {
+        pendingController = parseControllerArgs(trimmed);
+        lineStart += line.length + 1;
         continue;
       }
 
-      // It's an HTTP method
-      const httpMethod = type.toUpperCase();
-      
-      // Normalize route path: GET /controllerPath/methodPath
-      let fullPath = currentControllerPath;
-      if (fullPath && !fullPath.startsWith("/")) fullPath = "/" + fullPath;
-      
-      let subPath = pathArg;
-      if (subPath && !subPath.startsWith("/")) subPath = "/" + subPath;
-      if (subPath === "/") subPath = "";
-      
-      fullPath += subPath;
-      if (!fullPath) fullPath = "/";
-      else if (fullPath.length > 1 && fullPath.endsWith("/")) fullPath = fullPath.slice(0, -1);
-      
-      const routeName = `${httpMethod} ${fullPath}`;
-      
-      // Forward scan to find the handler method name
-      // Skip whitespace, comments, and other decorators until we find an identifier followed by '(' or '<'
-      let handlerName = "";
-      let idx = match.index + match[0].length;
-      
-      while (idx < content.length) {
-        // Skip whitespace
-        if (/\s/.test(content[idx]!)) {
-          idx++;
-          continue;
-        }
-        
-        // Skip line comments
-        if (content[idx] === "/" && content[idx+1] === "/") {
-          while (idx < content.length && content[idx] !== "\n") idx++;
-          continue;
-        }
-        
-        // Skip block comments
-        if (content[idx] === "/" && content[idx+1] === "*") {
-          idx += 2;
-          while (idx < content.length && !(content[idx] === "*" && content[idx+1] === "/")) idx++;
-          idx += 2;
-          continue;
-        }
-        
-        // Skip other decorators
-        if (content[idx] === "@") {
-          idx++;
-          // Skip identifier
-          while (idx < content.length && /[A-Za-z0-9_$]/.test(content[idx]!)) idx++;
-          // If it has parens, skip them
-          if (content[idx] === "(") {
-            let depth = 1;
-            idx++;
-            while (idx < content.length && depth > 0) {
-              if (content[idx] === "(") depth++;
-              else if (content[idx] === ")") depth--;
-              idx++;
-            }
-          }
-          continue;
-        }
-        
-        // Skip keywords like 'async', 'public', 'private', 'protected'
-        const substr = content.slice(idx);
-        const keywordMatch = /^(?:async|public|private|protected)\s+/.exec(substr);
-        if (keywordMatch) {
-           idx += keywordMatch[0].length;
-           continue;
-        }
-
-        // We should be at the method name now
-        const methodMatch = /^([A-Za-z_$][\w$]*)\s*[<([]/.exec(substr);
-        if (methodMatch) {
-          handlerName = methodMatch[1]!;
-          break;
-        }
-        
-        // If we hit something unexpected, stop
-        break;
+      const classMatch = CLASS_DECLARATION.exec(trimmed);
+      if (classMatch) {
+        currentClass = classMatch[1]!;
+        activeController = pendingController;
+        pendingController = null;
+        lineStart += line.length + 1;
+        continue;
       }
-      
-      if (!handlerName) continue;
 
-      const line = content.slice(0, match.index).split("\n").length;
-      const id = generateNodeId(filePath, "route", routeName);
-      nodes.push({ id, kind: "route", name: routeName, qualifiedName: routeName, filePath, language,
-        startLine: line, endLine: line, startColumn: 0, endColumn: match[0].length,
-        isExported: false, updatedAt: 0 });
-      references.push({ fromNodeId: id, referenceName: handlerName, referenceKind: "function_ref",
-        filePath, language, line: line, column: 0 }); // Note: line is the decorator line
+      const decoratorMatch = HTTP_DECORATOR.exec(trimmed);
+      if (decoratorMatch && activeController && !activeController.skip) {
+        const method = decoratorMatch[1]!.toUpperCase();
+        const handlerName = findHandlerName(blanked, lineStart + line.length);
+        if (handlerName) {
+          // An empty argument list is a route with no path; an argument that
+          // is not a string literal (an array, a constant) cannot be read
+          // statically — no route beats a wrong route.
+          const args = extractBalancedArgs(trimmed, trimmed.indexOf("("));
+          const trimmedArgs = args === null ? null : args.trim();
+          const rawPath: string | null = trimmedArgs === null
+            ? null
+            : trimmedArgs === "" ? "" : firstStringArgument(args!);
+          if (rawPath !== null) {
+            const routeName = `${method} ${normalizeRoutePath(activeController.prefix, rawPath)}`;
+            const handler = handlerName;
+            const signature = `${routeName} -> ${handler}`;
+            // Two routes can share a name in one file (NestJS versioning:
+            // @Version('1') @Get() findAllV1 / @Version('2') @Get()
+            // findAllV2). The handler in the signature distinguishes most;
+            // the ordinal in the role covers the rest, mirroring Express.
+            const ordinal = occurrences.get(routeName) ?? 0;
+            occurrences.set(routeName, ordinal + 1);
+            const role = `nestjs-route:${ordinal}`;
+            const id = generateNodeId(filePath, "route", routeName, routeName, role, signature);
+            nodes.push({
+              id,
+              identityKey: canonicalNodeIdentity(filePath, "route", routeName, role, signature),
+              kind: "route",
+              name: routeName,
+              qualifiedName: routeName,
+              filePath,
+              language,
+              startLine: blanked.slice(0, lineStart).split("\n").length,
+              endLine: blanked.slice(0, lineStart).split("\n").length,
+              startColumn: 0,
+              endColumn: line.length,
+              signature,
+              isExported: false,
+              updatedAt: 0,
+            });
+            references.push({
+              fromNodeId: id,
+              referenceName: handler,
+              referenceKind: "function_ref",
+              filePath,
+              language,
+              line: blanked.slice(0, lineStart).split("\n").length - 1,
+              column: 0,
+              // The TypeScript extractor names methods `Class::method`;
+              // carrying the owning controller lets resolution distinguish
+              // two same-named handlers across controllers in one file.
+              ...(currentClass ? { candidates: [`${currentClass}::${handler}`] } : {}),
+            });
+          }
+        }
+      }
+
+      lineStart += line.length + 1;
     }
-    
+
     return { nodes, references };
   },
   resolve(ref, context): ResolvedRef | null {
     if (ref.referenceKind !== "function_ref") return null;
-    const candidates = context.getNodesByName(ref.referenceName)
-      .filter((node) => node.kind === "method" || node.kind === "function");
-    const sameFile = candidates.filter((node) => node.filePath === ref.filePath);
-    
-    // NestJS methods are always in the same file as the controller route decorators.
-    if (sameFile.length === 1) {
-       return { original: ref, targetNodeId: sameFile[0]!.id, confidence: 1, resolvedBy: "framework" };
+    const sameFile = context.getNodesInFile(ref.filePath)
+      .filter((node) => (node.kind === "method" || node.kind === "function") && node.name === ref.referenceName);
+    // NestJS handlers live in the same file as the controller. A unique
+    // same-file declaration binds; when several share the name (two
+    // controllers in one file), the owning class recorded at extraction
+    // picks the one the route was declared on.
+    let target = sameFile.length === 1 ? sameFile[0] : null;
+    if (!target && sameFile.length > 1 && ref.candidates?.length) {
+      const qualified = sameFile.filter((node) => ref.candidates!.includes(node.qualifiedName));
+      if (qualified.length === 1) target = qualified[0]!;
     }
-    
-    return null;
+    return target
+      ? { original: ref, targetNodeId: target.id, confidence: 0.8, resolvedBy: "nestjs-route-handler" }
+      : null;
   },
 };
 
@@ -155,5 +152,155 @@ function languageFor(filePath: string): Language | null {
   if (/\.tsx$/.test(filePath)) return "tsx";
   if (/\.(js|mjs|cjs)$/.test(filePath)) return "javascript";
   if (/\.jsx$/.test(filePath)) return "jsx";
+  return null;
+}
+
+/**
+ * Blank comments out of the source, replacing every comment character with a
+ * space and preserving all newlines, so scanning sees comment-free code while
+ * every offset, line number, and column stays valid against the original.
+ * String literals are preserved verbatim — decorator arguments live in them.
+ */
+function blankComments(content: string): string {
+  const out: string[] = [];
+  let state: "code" | "line" | "block" | "string" = "code";
+  let quote = "";
+  for (let i = 0; i < content.length; i++) {
+    const ch = content[i]!;
+    const next = content[i + 1];
+    if (state === "code") {
+      if (ch === "/" && next === "/") { state = "line"; out.push("  "); i++; continue; }
+      if (ch === "/" && next === "*") { state = "block"; out.push("  "); i++; continue; }
+      if (ch === "\"" || ch === "'" || ch === "`") { state = "string"; quote = ch; out.push(ch); continue; }
+      out.push(ch);
+      continue;
+    }
+    if (state === "line") {
+      if (ch === "\n") { state = "code"; out.push("\n"); } else out.push(" ");
+      continue;
+    }
+    if (state === "block") {
+      if (ch === "*" && next === "/") { state = "code"; out.push("  "); i++; continue; }
+      out.push(ch === "\n" ? "\n" : " ");
+      continue;
+    }
+    // Inside a string: escape sequences cannot close it.
+    if (ch === quote && content[i - 1] !== "\\") state = "code";
+    out.push(ch);
+  }
+  return out.join("");
+}
+
+/**
+ * Read `@Controller(...)` arguments into a prefix, or a skip when the argument
+ * cannot be read statically. Every form resets whatever the previous
+ * controller left behind — a `@Controller` without a readable path must not
+ * inherit one (#102 review).
+ */
+function parseControllerArgs(line: string): { prefix: string; skip: boolean } {
+  const open = line.indexOf("(");
+  if (open < 0) return { prefix: "", skip: false };
+  const args = extractBalancedArgs(line, open);
+  if (args === null) return { prefix: "", skip: true };
+  const trimmedArgs = args.trim();
+  if (trimmedArgs === "") return { prefix: "", skip: false };
+
+  const literal = STRING_LITERAL_ARG.exec(trimmedArgs);
+  if (literal) return { prefix: literal[2]!, skip: false };
+
+  if (trimmedArgs.startsWith("{")) {
+    const objectPath = OBJECT_PATH_ARG.exec(trimmedArgs);
+    return { prefix: objectPath ? objectPath[2]! : "", skip: false };
+  }
+
+  // A constant identifier or an array of paths is not statically readable
+  // here; skip this controller's routes rather than emit a wrong prefix.
+  return { prefix: "", skip: true };
+}
+
+/** The first positional string-literal argument, or null when absent. */
+function firstStringArgument(argsText: string): string | null {
+  const match = STRING_LITERAL_ARG.exec(argsText.trim());
+  return match ? match[2]! : null;
+}
+
+/** `GET /users/:id` from the controller prefix and the method's path. */
+function normalizeRoutePath(prefix: string, methodPath: string): string {
+  let fullPath = prefix;
+  if (fullPath && !fullPath.startsWith("/")) fullPath = "/" + fullPath;
+  let subPath = methodPath;
+  if (subPath && !subPath.startsWith("/")) subPath = "/" + subPath;
+  if (subPath === "/") subPath = "";
+  fullPath += subPath;
+  if (!fullPath) fullPath = "/";
+  else if (fullPath.length > 1 && fullPath.endsWith("/")) fullPath = fullPath.slice(0, -1);
+  return fullPath;
+}
+
+/**
+ * Extract the argument text of the call whose `(` sits at `open`, skipping
+ * over string literals so a `)` inside `'List users :)'` does not close it.
+ * Returns null when the call does not close on this line.
+ */
+function extractBalancedArgs(line: string, open: number): string | null {
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = open; i < line.length; i++) {
+    const ch = line[i]!;
+    if (quote) {
+      if (ch === quote && line[i - 1] !== "\\") quote = null;
+      continue;
+    }
+    if (ch === "\"" || ch === "'" || ch === "`") { quote = ch; continue; }
+    if (ch === "(") depth++;
+    else if (ch === ")") {
+      depth--;
+      if (depth === 0) return line.slice(open + 1, i);
+    }
+  }
+  return null;
+}
+
+/**
+ * Forward-scan from just past a decorator line for the handler name: skip
+ * whitespace, further decorators (string-aware, so `@ApiOperation({
+ * summary: 'List users :)' })` no longer swallows the route), and modifier
+ * keywords, then read the identifier that opens a parameter list.
+ */
+function findHandlerName(content: string, from: number): string | null {
+  let idx = from;
+  while (idx < content.length) {
+    const ch = content[idx]!;
+    if (/\s/.test(ch)) { idx++; continue; }
+    if (ch === "@") {
+      idx++;
+      while (idx < content.length && /[A-Za-z0-9_$]/.test(content[idx]!)) idx++;
+      if (content[idx] === "(") {
+        let depth = 0;
+        let quote: string | null = null;
+        while (idx < content.length) {
+          const c = content[idx]!;
+          if (quote) {
+            if (c === quote && content[idx - 1] !== "\\") quote = null;
+          } else if (c === "\"" || c === "'" || c === "`") {
+            quote = c;
+          } else if (c === "(") {
+            depth++;
+          } else if (c === ")") {
+            depth--;
+            if (depth === 0) { idx++; break; }
+          }
+          idx++;
+        }
+      }
+      continue;
+    }
+    const rest = content.slice(idx);
+    const keyword = /^(?:public|private|protected|static|readonly|override|async)\s+/.exec(rest);
+    if (keyword) { idx += keyword[0].length; continue; }
+    const method = /^([A-Za-z_$][\w$]*)\s*[<(]/.exec(rest);
+    if (method) return method[1]!;
+    return null;
+  }
   return null;
 }

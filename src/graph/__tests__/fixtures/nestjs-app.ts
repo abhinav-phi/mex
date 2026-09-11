@@ -1,45 +1,65 @@
-import { Controller, Get, Post, Param, Delete, Put, Patch, Options, Head, All } from '@nestjs/common';
+import { Controller, Get, Post, Param, Delete, Version } from '@nestjs/common';
 
 @Controller('users')
 export class UsersController {
-  
-  // Empty method path -> GET /users
   @Get()
   async findAll() {
     return [];
   }
 
-  // Parameterized path -> GET /users/:id
   @Get(':id')
   findOne(@Param('id') id: string) {
     return { id };
   }
 
-  // Nested parameterized path -> POST /users/:id/posts
   @Post(':id/posts')
-  @HttpCode(201) // Simulate other decorators
+  @HttpCode(201)
   createPost(@Param('id') id: string) {
     return { id, post: true };
   }
-  
-  // Missing handler name (anonymous function) - Should not happen typically, but simulating edge case
-  @Delete('anonymous')
-  // We don't have a handler name here for extraction, let's just make it a normal one for positive testing
-  deleteUser() {
-    return false;
+
+  @Version('1')
+  @Get()
+  listV1() {
+    return ['v1'];
+  }
+
+  @Version('2')
+  @Get()
+  listV2() {
+    return ['v2'];
   }
 }
 
-// Controller with no prefix
 @Controller()
 export class RootController {
   @Get('health')
   healthCheck() {
     return 'ok';
   }
-  
-  @All() // Test All decorator
+
+  @All()
   fallback() {
     return 'fallback';
+  }
+}
+
+// A commented-out route is not a route.
+// @Get('legacy')
+// legacyHandler() {}
+
+@Controller({ path: 'admin', version: '2' })
+export class AdminController {
+  @Delete(':id')
+  remove(@Param('id') id: string) {
+    return { id };
+  }
+}
+
+@Controller(ADMIN_PATH_CONSTANT)
+export class UnreadableController {
+  @Get('probe')
+  probe() {
+    return null;
   }
 }
