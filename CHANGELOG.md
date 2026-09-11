@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `mex sync` now migrates an inline `mex://` anchor together with a `grounds_to` entry for the same moved node. The anchor used to reconcile on its own against the stored baseline instead of the refreshed frontmatter fingerprint. When that baseline was missing, or still listed a neighbour that had since been re-identified, the anchor was skipped or scored `AMBIGUOUS`, sync moved the shared baseline row anyway, and the next `mex check` reported `GROUNDING_GONE` until the link was edited by hand (#128).
+
 ## [0.8.1] - 2026-09-10
 
 ### Added

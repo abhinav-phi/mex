@@ -26,7 +26,7 @@ import {
 } from "../src/graph/runtime.js";
 import { extractGroundings, writeGroundings } from "../src/markdown.js";
 import { buildCombinedBrief } from "../src/sync/brief-builder.js";
-import { serializeFingerprint } from "../src/graph/fingerprint.js";
+import { deserializeFingerprint, serializeFingerprint } from "../src/graph/fingerprint.js";
 import { openSqlite } from "../src/graph/db/sqlite.js";
 import {
   inspectGraphSidecars,
@@ -402,6 +402,170 @@ describe("code-graph grounding integration", () => {
     expect(report.issues.filter((issue) => issue.code.startsWith("GROUNDING_"))).toMatchObject([
       { code: "GROUNDING_DRIFT" },
     ]);
+  }, 20_000);
+
+  it("migrates an inline anchor atomically when grounds_to and the anchor share a moved node (#128)", async () => {
+    const { root, scaffold, config } = fixture();
+    const source = join(root, "src", "service.ts");
+    writeFileSync(source, "export function calculateTotal(items: number[]): number {\n  return items.reduce((a, b) => a + b, 0);\n}\n");
+
+    const engine = createGraphEngine({ rootDir: root });
+    await engine.build();
+    const node = engine.searchNodes("calculateTotal").find((entry) => entry.kind === "function")!;
+    engine.close();
+
+    // Ground the node BOTH in frontmatter and as an inline anchor — the shape
+    // the stack.md template encourages.
+    let runtime = await loadGroundingRuntime(config);
+    const fingerprint = runtime!.reconciler.getFingerprint(node.id);
+    writeFileSync(scaffold, writeGroundings(readFileSync(scaffold, "utf-8"), [{
+      node: node.id,
+      fingerprint: serializeFingerprint(fingerprint!),
+    }]) + `\n[\`calculateTotal()\`](mex://${node.id})\n`);
+    refreshGroundingBaselines(config, [scaffold], runtime!);
+    runtime!.close();
+
+    // Move the function to another file with an identical body, replace the
+    // original, and rebuild: the old node id vanishes from the store entirely.
+    const movedSource = join(root, "src", "moved.ts");
+    writeFileSync(movedSource, readFileSync(source, "utf-8"));
+    writeFileSync(source, "export const unrelated = 1;\n");
+    const rebuilt = createGraphEngine({ rootDir: root });
+    await rebuilt.build();
+    const movedNode = rebuilt.searchNodes("calculateTotal").find((entry) => entry.kind === "function")!;
+    expect(movedNode.id).not.toBe(node.id);
+    rebuilt.close();
+
+    runtime = await loadGroundingRuntime(config);
+    const moved = persistMovedGroundings(config, [scaffold], runtime!);
+    runtime!.close();
+
+    expect(moved).toBe(2); // grounds_to entry + inline anchor, one resolution
+    const persistedContent = readFileSync(scaffold, "utf-8");
+    expect(persistedContent).not.toContain(`mex://${node.id}`);
+    expect(persistedContent).toContain(`mex://${movedNode.id}`);
+    expect(extractGroundings(persistedContent)[0].node).toBe(movedNode.id);
+
+    // The next check must not report the anchor as gone.
+    const report = await runDriftCheckWithGraphStatus(config, { graphWarning: () => {} });
+    expect(report.issues.filter((issue) => issue.code === "GROUNDING_GONE")).toHaveLength(0);
+  }, 20_000);
+
+  it("migrates the inline anchor from the grounds_to resolution even when the store lost the old node's rows (#128)", async () => {
+    const { root, scaffold, config } = fixture();
+    const source = join(root, "src", "service.ts");
+    writeFileSync(source, "export function calculateTotal(items: number[]): number {\n  return items.reduce((a, b) => a + b, 0);\n}\n");
+
+    const engine = createGraphEngine({ rootDir: root });
+    await engine.build();
+    const node = engine.searchNodes("calculateTotal").find((entry) => entry.kind === "function")!;
+    engine.close();
+
+    let runtime = await loadGroundingRuntime(config);
+    const fingerprint = runtime!.reconciler.getFingerprint(node.id);
+    writeFileSync(scaffold, writeGroundings(readFileSync(scaffold, "utf-8"), [{
+      node: node.id,
+      fingerprint: serializeFingerprint(fingerprint!),
+    }]) + `\n[\`calculateTotal()\`](mex://${node.id})\n`);
+    refreshGroundingBaselines(config, [scaffold], runtime!);
+    runtime!.close();
+
+    const movedSource = join(root, "src", "moved.ts");
+    writeFileSync(movedSource, readFileSync(source, "utf-8"));
+    writeFileSync(source, "export const unrelated = 1;\n");
+    const rebuilt = createGraphEngine({ rootDir: root });
+    await rebuilt.build();
+    const movedNode = rebuilt.searchNodes("calculateTotal").find((entry) => entry.kind === "function")!;
+    rebuilt.close();
+
+    // A store where the old node's rows are already gone (the reporter's
+    // post-move state): no grounded-source row, no fingerprint row, and no
+    // compatibility alias. Without per-node atomic migration the anchor pass
+    // finds no baseline and silently skips, leaving GROUNDING_GONE behind.
+    const db = openSqlite(join(root, ".mex", "graph.db"));
+    try {
+      db.prepare("DELETE FROM _mex_grounded_source WHERE node_id = ?").run(node.id);
+      db.prepare("DELETE FROM node_fingerprints WHERE node_id = ?").run(node.id);
+      db.prepare("DELETE FROM node_aliases WHERE alias_id = ?").run(node.id);
+    } finally {
+      db.close();
+    }
+
+    runtime = await loadGroundingRuntime(config);
+    const moved = persistMovedGroundings(config, [scaffold], runtime!);
+    runtime!.close();
+
+    expect(moved).toBe(2);
+    const persistedContent = readFileSync(scaffold, "utf-8");
+    expect(persistedContent).not.toContain(`mex://${node.id}`);
+    expect(persistedContent).toContain(`mex://${movedNode.id}`);
+    expect(extractGroundings(persistedContent)[0].node).toBe(movedNode.id);
+
+    const report = await runDriftCheckWithGraphStatus(config, { graphWarning: () => {} });
+    expect(report.issues.filter((issue) => issue.code === "GROUNDING_GONE")).toHaveLength(0);
+  }, 20_000);
+
+  it("migrates the inline anchor with its grounds_to entry when the anchor's own baseline is stale (#128)", async () => {
+    const { root, scaffold, config } = fixture();
+    const source = join(root, "src", "service.ts");
+    writeFileSync(source, "export function calculateTotal(items: number[]): number {\n  return items.reduce((a, b) => a + b, 0);\n}\n");
+
+    const engine = createGraphEngine({ rootDir: root });
+    await engine.build();
+    const node = engine.searchNodes("calculateTotal").find((entry) => entry.kind === "function")!;
+    engine.close();
+
+    let runtime = await loadGroundingRuntime(config);
+    const fingerprint = runtime!.reconciler.getFingerprint(node.id);
+    writeFileSync(scaffold, writeGroundings(readFileSync(scaffold, "utf-8"), [{
+      node: node.id,
+      fingerprint: serializeFingerprint(fingerprint!),
+    }]) + `\n[\`calculateTotal()\`](mex://${node.id})\n`);
+    refreshGroundingBaselines(config, [scaffold], runtime!);
+    runtime!.close();
+
+    const movedSource = join(root, "src", "moved.ts");
+    writeFileSync(movedSource, readFileSync(source, "utf-8"));
+    writeFileSync(source, "export const unrelated = 1;\n");
+    const rebuilt = createGraphEngine({ rootDir: root });
+    await rebuilt.build();
+    const movedNode = rebuilt.searchNodes("calculateTotal").find((entry) => entry.kind === "function")!;
+    rebuilt.close();
+
+    // The shape real stores reach without losing any rows: migrations refresh
+    // the frontmatter fingerprint but copy the stored baseline verbatim, so the
+    // stored row can keep a neighbour id that has since been re-identified.
+    // That alone scores the anchor AMBIGUOUS while grounds_to scores MOVED.
+    const db = openSqlite(join(root, ".mex", "graph.db"));
+    try {
+      const row = db.prepare("SELECT fingerprint FROM _mex_grounded_source WHERE node_id = ?")
+        .get(node.id) as { fingerprint: string };
+      const stored = deserializeFingerprint(row.fingerprint)!;
+      const staleNeighbors = [...stored.neighbors, "function:00000000000000000000000000000000"].sort();
+      db.prepare("UPDATE _mex_grounded_source SET fingerprint = ? WHERE node_id = ?")
+        .run(serializeFingerprint({ ...stored, neighbors: staleNeighbors }), node.id);
+      db.prepare("DELETE FROM node_fingerprints WHERE node_id = ?").run(node.id);
+      db.prepare("DELETE FROM node_aliases WHERE alias_id = ?").run(node.id);
+    } finally {
+      db.close();
+    }
+
+    runtime = await loadGroundingRuntime(config);
+    // Precondition: on its own, the anchor's stale baseline is not enough to move.
+    const anchorBaseline = runtime!.reconciler.getGroundedSource(".mex/context/architecture.md", node.id)!;
+    expect(runtime!.reconciler.reconcile(node.id, deserializeFingerprint(anchorBaseline.fingerprint)!))
+      .toEqual({ kind: "AMBIGUOUS", candidate: movedNode.id });
+    const moved = persistMovedGroundings(config, [scaffold], runtime!);
+    runtime!.close();
+
+    expect(moved).toBe(2);
+    const persistedContent = readFileSync(scaffold, "utf-8");
+    expect(persistedContent).not.toContain(`mex://${node.id}`);
+    expect(persistedContent).toContain(`mex://${movedNode.id}`);
+    expect(extractGroundings(persistedContent)[0].node).toBe(movedNode.id);
+
+    const after = await runDriftCheckWithGraphStatus(config, { graphWarning: () => {} });
+    expect(after.issues.filter((issue) => issue.code.startsWith("GROUNDING_"))).toHaveLength(0);
   }, 20_000);
 
   it("keeps legacy checks running when the graph engine fails to load", async () => {
