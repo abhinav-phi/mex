@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Check } from "lucide-react";
 import { HubApiError, type HubApi } from "../api/client";
@@ -6,10 +6,15 @@ import type { SetupCommitPreview, SetupCommitResponse } from "../api/types";
 import { Button } from "../components/primitives/button";
 import { Textarea } from "../components/primitives/textarea";
 import { SetupCommitDiff } from "./SetupCommitDiff";
-import { MAX_FORMATTED_DIFF_LINES, MAX_FORMATTED_REVIEW_LINES, parseSetupDiff } from "./setup-commit-diff";
+import { parseSetupDiff, type SetupDiff } from "./setup-commit-diff";
 import styles from "../styles/setup.module.css";
 
-type CommitApi = Pick<HubApi, "previewSetupCommit" | "commitSetup">;
+type CommitApi = Pick<HubApi, "previewSetupCommit" | "commitSetup" | "setupCommitDiff">;
+/** Diffs load when a file is first expanded, so review size no longer bounds one response. */
+type LoadedDiff =
+  | { state: "loading" }
+  | { state: "error"; message: string }
+  | { state: "loaded"; diff: string; parsed: SetupDiff };
 
 export function SetupCommitReview({ api, onCommitted, onReviewInvalid, onOpenHub, opening = false }: {
   api: CommitApi;
@@ -22,7 +27,9 @@ export function SetupCommitReview({ api, onCommitted, onReviewInvalid, onOpenHub
   const [message, setMessage] = useState<string | null>(null);
   const [viewed, setViewed] = useState<Set<string>>(() => new Set());
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [diffs, setDiffs] = useState<Map<string, LoadedDiff>>(() => new Map());
   const [attempted, setAttempted] = useState(false);
+  const revision = useRef<string | null>(null);
   const [expired, setExpired] = useState(false);
   const [committed, setCommitted] = useState<SetupCommitResponse | null>(null);
   const inFlight = useRef(false);
@@ -32,12 +39,14 @@ export function SetupCommitReview({ api, onCommitted, onReviewInvalid, onOpenHub
       if (!api.previewSetupCommit) throw new Error("Setup review is unavailable.");
       return api.previewSetupCommit();
     },
-    onMutate: () => { setAttempted(true); setPreview(null); },
+    onMutate: () => { setAttempted(true); setPreview(null); revision.current = null; },
     onSuccess: (next) => {
+      revision.current = next.revision;
       setPreview(next);
       setMessage((current) => current ?? next.defaultMessage);
       setViewed(new Set());
       setExpanded(new Set());
+      setDiffs(new Map());
       setExpired(Date.parse(next.expiresAt) <= Date.now());
       commit.reset();
     },
@@ -66,14 +75,28 @@ export function SetupCommitReview({ api, onCommitted, onReviewInvalid, onOpenHub
     return () => window.clearTimeout(timer);
   }, [preview]);
 
-  const files = useMemo(() => {
-    let remaining = MAX_FORMATTED_REVIEW_LINES;
-    return preview?.files.map((file) => {
-      const parsed = parseSetupDiff(file.diff, file.truncated, Math.min(remaining, MAX_FORMATTED_DIFF_LINES));
-      if (parsed.formatted) remaining -= parsed.rows.length;
-      return { ...file, parsed };
-    }) ?? [];
-  }, [preview]);
+  const loadDiff = (path: string) => {
+    const current = preview;
+    if (!current || diffs.get(path)?.state === "loading" || diffs.get(path)?.state === "loaded") return;
+    const settle = (value: LoadedDiff) => {
+      // A response for an earlier review must never appear under a newer one.
+      if (revision.current !== current.revision) return;
+      setDiffs((previous) => new Map(previous).set(path, value));
+      if (value.state === "loaded") setViewed((previous) => new Set(previous).add(path));
+    };
+    settle({ state: "loading" });
+    if (!api.setupCommitDiff) {
+      settle({ state: "error", message: "Setup diffs are unavailable in this build. Review the files in Git instead." });
+      return;
+    }
+    api.setupCommitDiff({ revision: current.revision, path }).then(
+      (loaded) => settle({ state: "loaded", diff: loaded.diff, parsed: parseSetupDiff(loaded.diff, loaded.truncated) }),
+      (error: unknown) => {
+        if (error instanceof HubApiError && error.problem.code === "REVISION_CONFLICT") setExpired(true);
+        settle({ state: "error", message: problemDetail(error, "This diff could not be loaded. Collapse the file and open it again.") });
+      },
+    );
+  };
 
   if (committed) return (
     <div className={styles.notice} data-tone={committed.recoveryRequired ? "danger" : undefined} role={committed.recoveryRequired ? "alert" : "status"}>
@@ -114,27 +137,41 @@ export function SetupCommitReview({ api, onCommitted, onReviewInvalid, onOpenHub
           </div>
           <p className={styles.commitScopeNote}>Only the files listed below will be committed. Nothing is pushed.</p>
           <div className={styles.commitFiles} key={preview.revision}>
-            {files.map((file) => (
-              <details key={file.path} className={styles.commitFile} onToggle={(event) => {
-                const open = event.currentTarget.open;
-                setExpanded((current) => {
-                  const next = new Set(current);
-                  if (open) next.add(file.path); else next.delete(file.path);
-                  return next;
-                });
-                if (open) setViewed((current) => new Set(current).add(file.path));
-              }}>
-                <summary>
-                  <span className={styles.commitFilePath}>{file.path}</span>
-                  <span className={styles.commitFileStatus} data-status={file.status}>{file.status}</span>
-                  {file.parsed.formatted ? <span className={styles.commitDiffCounts} aria-label={`${file.parsed.added} added lines, ${file.parsed.deleted} deleted lines`}>
-                    <span data-change="added">+{file.parsed.added}</span><span data-change="deleted">−{file.parsed.deleted}</span>
-                  </span> : null}
-                  {viewed.has(file.path) ? <span className={styles.commitViewed}><Check aria-hidden="true" />Viewed</span> : null}
-                </summary>
-                <SetupCommitDiff path={file.path} diff={file.diff} parsed={file.parsed} expanded={expanded.has(file.path)} />
-              </details>
-            ))}
+            {preview.files.map((file) => {
+              const loaded = diffs.get(file.path);
+              return (
+                <details key={file.path} className={styles.commitFile} onToggle={(event) => {
+                  const open = event.currentTarget.open;
+                  setExpanded((current) => {
+                    const next = new Set(current);
+                    if (open) next.add(file.path); else next.delete(file.path);
+                    return next;
+                  });
+                  if (open) loadDiff(file.path);
+                  else if (loaded?.state === "error") setDiffs((current) => { const next = new Map(current); next.delete(file.path); return next; });
+                }}>
+                  <summary>
+                    <span className={styles.commitFilePath}>{file.path}</span>
+                    <span className={styles.commitFileStatus} data-status={file.status}>{file.status}</span>
+                    <span className={styles.commitDiffCounts} aria-label={`${file.additions} added lines, ${file.deletions} deleted lines`}>
+                      <span data-change="added">+{file.additions}</span><span data-change="deleted">−{file.deletions}</span>
+                    </span>
+                    {viewed.has(file.path) ? <span className={styles.commitViewed}><Check aria-hidden="true" />Viewed</span> : null}
+                  </summary>
+                  {loaded?.state === "loaded" ? (
+                    <SetupCommitDiff path={file.path} diff={loaded.diff} parsed={loaded.parsed} expanded={expanded.has(file.path)} />
+                  ) : (
+                    <div className={styles.commitDiff} role="region" aria-label={`Diff for ${file.path}`}>
+                      {expanded.has(file.path) ? (
+                        <p className={styles.commitDiffNotice} role={loaded?.state === "error" ? "alert" : "status"}>
+                          {loaded?.state === "error" ? loaded.message : "Loading diff…"}
+                        </p>
+                      ) : null}
+                    </div>
+                  )}
+                </details>
+              );
+            })}
           </div>
           <p className={styles.commitViewedCount}>Viewed {viewed.size} of {preview.files.length} files</p>
           {!preview.canCommit ? <p className={styles.notice} data-tone="warning" role="status">{preview.blockedReason ?? "These changes cannot be committed yet. Refresh the review after resolving the project state."}</p> : null}

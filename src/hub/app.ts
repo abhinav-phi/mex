@@ -146,11 +146,15 @@ import {
   SetupCommitPreviewSchema,
   SetupCommitRequestSchema,
   SetupCommitResponseSchema,
+  SetupCommitDiffRequestSchema,
+  SetupCommitDiffSchema,
   type SetupRun,
   type SetupStartRequest,
   type SetupStatus,
   type SetupTranscriptBatch,
   type SetupCommitPreview,
+  type SetupCommitDiff,
+  type SetupCommitDiffRequest,
   type SetupCommitRequest,
   type SetupCommitResponse,
 } from "@mex/hub-contracts/setup";
@@ -217,6 +221,7 @@ export interface HubSetupService {
   readTranscript?(runId: string, after: number): SetupTranscriptBatch;
   subscribeTranscript?(listener: () => void): () => void;
   previewCommit?(): Promise<SetupCommitPreview>;
+  commitDiff?(request: SetupCommitDiffRequest): SetupCommitDiff | Promise<SetupCommitDiff>;
   commitSetup?(request: SetupCommitRequest): Promise<SetupCommitResponse>;
 }
 
@@ -823,6 +828,14 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     const setup = requireSetup(options.setup);
     if (!setup.previewCommit) throw unavailable("Setup commit review is unavailable in this build.");
     return resourceResponse(SetupCommitPreviewSchema, await setup.previewCommit());
+  });
+
+  app.post("/api/v1/setup/commit/diff", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    const request = parseInput(SetupCommitDiffRequestSchema, await readBoundedJson(context.req.raw));
+    const setup = requireSetup(options.setup);
+    if (!setup.commitDiff) throw unavailable("Setup commit review is unavailable in this build.");
+    return resourceResponse(SetupCommitDiffSchema, await setup.commitDiff(request));
   });
 
   app.post("/api/v1/setup/commit", async (context) => {

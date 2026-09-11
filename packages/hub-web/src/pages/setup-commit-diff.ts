@@ -1,5 +1,4 @@
 export const MAX_FORMATTED_DIFF_LINES = 1_500;
-export const MAX_FORMATTED_REVIEW_LINES = 3_000;
 
 export type SetupDiffRow =
   | { kind: "addition" | "deletion" | "context"; text: string; oldLine: number | null; newLine: number | null }

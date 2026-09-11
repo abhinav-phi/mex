@@ -7,6 +7,8 @@ import type {
   SetupCommitPreview,
   SetupCommitRequest,
   SetupCommitResponse,
+  SetupCommitDiff,
+  SetupCommitDiffRequest,
 } from "@mex/hub-contracts/setup";
 import { SETUP_ACTIVITY_LIMIT } from "@mex/hub-contracts/setup";
 import {
@@ -94,6 +96,15 @@ export class HubSetupRunner {
       const status = await this.requireCommitCheckpoint();
       return this.commits().preview(status.configuredTools);
     });
+  }
+
+  /** In-memory review read; it does not wait on or block the Git review lease. */
+  commitDiff(request: SetupCommitDiffRequest): SetupCommitDiff {
+    if (this.shuttingDown) throw new HubHttpError(503, "CAPABILITY_UNAVAILABLE", "Setup is stopping", "Restart the Hub before reviewing setup files.");
+    if (this.commitService === null) {
+      throw new HubHttpError(409, "REVISION_CONFLICT", "Review changed", "Review the setup changes again before opening a file.");
+    }
+    return this.commitService.diff(request);
   }
 
   commitSetup(request: SetupCommitRequest): Promise<SetupCommitResponse> {

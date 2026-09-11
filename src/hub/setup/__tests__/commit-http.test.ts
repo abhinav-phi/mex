@@ -14,16 +14,18 @@ const revision = "00000000-0000-4000-8000-000000000192";
 const preview = {
   revision, expiresAt: "2026-09-10T12:00:00.000Z", branch: "main", head: null,
   defaultMessage: "chore: initialize MEX", canCommit: true, blockedReason: null,
-  files: [{ path: ".mex/config.json", status: "added" as const, diff: "+<script>literal review text</script>\n", truncated: false }],
+  files: [{ path: ".mex/config.json", status: "added" as const, additions: 1, deletions: 0, diffCharacters: 38, truncated: false }],
 };
+const fileDiff = { revision, path: ".mex/config.json", diff: "+<script>literal review text</script>\n", truncated: false };
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe("setup commit HTTP boundary", () => {
-  it.each(["/commit/preview", "/commit"])("protects %s with session, Host, Origin and CSRF", async (path) => {
+  it.each(["/commit/preview", "/commit/diff", "/commit"])("protects %s with session, Host, Origin and CSRF", async (path) => {
     const f = fixture();
     const headers = await authenticate(f.app);
-    const body = path === "/commit" ? JSON.stringify({ revision, message: "Initialize MEX" }) : "{}";
+    const body = path === "/commit" ? JSON.stringify({ revision, message: "Initialize MEX" })
+      : path === "/commit/diff" ? JSON.stringify({ revision, path: ".mex/config.json" }) : "{}";
     const noCsrf = { ...headers }; delete noCsrf["x-mex-csrf"];
     const noCookie = { ...headers }; delete noCookie.cookie;
     for (const [input, expected] of [
@@ -34,6 +36,7 @@ describe("setup commit HTTP boundary", () => {
       expect(response.status).toBe(expected);
     }
     expect(f.previewCommit).not.toHaveBeenCalled();
+    expect(f.commitDiff).not.toHaveBeenCalled();
     expect(f.commitSetup).not.toHaveBeenCalled();
   });
 
@@ -46,12 +49,29 @@ describe("setup commit HTTP boundary", () => {
       ["/commit", { revision, message: "Commit", files: ["README.md"] }],
       ["/commit", { revision, message: "x".repeat(2001) }],
       ["/commit?force=true", { revision, message: "Commit" }],
+      ["/commit/diff", { revision, path: "../outside.md" }],
+      ["/commit/diff", { revision, path: "C:/outside.md" }],
+      ["/commit/diff", { revision: "old", path: ".mex/config.json" }],
+      ["/commit/diff", { revision, path: ".mex/config.json", context: 99 }],
+      ["/commit/diff?path=README.md", { revision, path: ".mex/config.json" }],
     ] as const) {
       const response = await f.app.request(`${ORIGIN}/api/v1/setup${path}`, { method: "POST", headers, body: JSON.stringify(body) });
       expect(response.status).toBe(400);
     }
     expect(f.previewCommit).not.toHaveBeenCalled();
+    expect(f.commitDiff).not.toHaveBeenCalled();
     expect(f.commitSetup).not.toHaveBeenCalled();
+  });
+
+  it("serves one reviewed file's diff as inert JSON text", async () => {
+    const f = fixture();
+    const headers = await authenticate(f.app);
+    const response = await f.app.request(`${ORIGIN}/api/v1/setup/commit/diff`, { method: "POST", headers, body: JSON.stringify({ revision, path: ".mex/config.json" }) });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(await response.json()).toEqual(fileDiff);
+    expect(f.commitDiff).toHaveBeenCalledExactlyOnceWith({ revision, path: ".mex/config.json" });
   });
 
   it("returns the exact bounded review and saves only the revision and message supplied by the reviewed action", async () => {
@@ -86,18 +106,19 @@ function fixture(withSetup = true) {
   const root = mkdtempSync(join(tmpdir(), "mex-setup-commit-http-")); roots.push(root);
   const base = createSetupHubServices(root);
   const previewCommit = vi.fn(async () => preview);
+  const commitDiff = vi.fn((_request: unknown) => fileDiff);
   const commitSetup = vi.fn(async (_request: unknown) => ({ commit: "a".repeat(40), files: [".mex/config.json"], message: "Setup files committed.", run: base.setup.snapshot() }));
   const setup: HubSetupService = {
     status: () => base.setup.status(), snapshot: () => base.setup.snapshot(),
     start: (request) => base.setup.start(request), cancel: () => base.setup.cancel(),
-    subscribe: (listener) => base.setup.subscribe(listener), previewCommit, commitSetup,
+    subscribe: (listener) => base.setup.subscribe(listener), previewCommit, commitDiff, commitSetup,
   };
   let random = 20;
   const app = createHubApp({
     security: new HubSessionManager({ bootstrapToken: TOKEN, expectedOrigin: ORIGIN, random: (size) => new Uint8Array(size).fill(random++) }),
     services: base.services, ...(withSetup ? { setup } : {}),
   });
-  return { app, previewCommit, commitSetup };
+  return { app, previewCommit, commitDiff, commitSetup };
 }
 
 async function authenticate(app: ReturnType<typeof createHubApp>): Promise<Record<string, string>> {

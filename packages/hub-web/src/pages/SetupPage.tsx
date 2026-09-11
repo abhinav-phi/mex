@@ -324,7 +324,7 @@ export function SetupPage() {
               })}
             />
           ) : null}
-          {view === "commit" && api.previewSetupCommit && api.commitSetup ? <>
+          {view === "commit" && api.previewSetupCommit && api.commitSetup && api.setupCommitDiff ? <>
             <SetupCommitReview
               api={api}
               onCommitted={(response) => {

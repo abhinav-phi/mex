@@ -54,8 +54,9 @@ const commitCommands = ["git diff -- .mex", "git add .mex", 'git commit -m "chor
 const commitPreview = (): SetupCommitPreview => ({
   revision: "a944e8d9-7e02-4d04-9a62-d8b347b8e7dc", expiresAt: new Date(Date.now() + 600_000).toISOString(),
   branch: "main", head: null, defaultMessage: "chore: initialize MEX", canCommit: true, blockedReason: null,
-  files: [{ path: ".mex/config.json", status: "added", diff: "+new project identity", truncated: false }],
+  files: [{ path: ".mex/config.json", status: "added", additions: 1, deletions: 0, diffCharacters: 21, truncated: false }],
 });
+const commitDiff = vi.fn(async ({ revision, path }: { revision: string; path: string }) => ({ revision, path, diff: "+new project identity", truncated: false }));
 const setupUnavailable = new HubApiError({
   type: "about:blank", title: "Setup unavailable", status: 409,
   code: "CAPABILITY_UNAVAILABLE", detail: "This process is serving the Project Hub.", requestId: "setup-test",
@@ -170,6 +171,7 @@ describe("Hub setup wizard", () => {
     const preview = commitPreview();
     const api = Object.assign(harness.api, {
       previewSetupCommit: vi.fn(async () => preview),
+      setupCommitDiff: commitDiff,
       commitSetup: vi.fn(async () => ({ commit: "a".repeat(40), files: [".mex/config.json"], message: "Setup committed locally.", run: { ...idleRun, status: "running" as const, populated: true, stage: "ready" as const } })),
     });
     renderSetup(api);
@@ -191,6 +193,7 @@ describe("Hub setup wizard", () => {
     });
     const api = Object.assign(harness.api, {
       previewSetupCommit: vi.fn(async () => commitPreview()),
+      setupCommitDiff: commitDiff,
       commitSetup: vi.fn(async () => ({ commit: "a".repeat(40), files: [".mex/config.json"], message: "Setup committed locally.", run: { ...idleRun, status: "failed" as const, populated: true, stage: "ready" as const, error: "The Project Hub could not open." } })),
     });
     renderSetup(api);
@@ -210,6 +213,7 @@ describe("Hub setup wizard", () => {
     const warning = "The commit is saved. Keep the index.lock recovery file and inspect Git status before continuing manually.";
     const api = Object.assign(harness.api, {
       previewSetupCommit: vi.fn(async () => commitPreview()),
+      setupCommitDiff: commitDiff,
       commitSetup: vi.fn(async () => {
         harness.updateStatus({ stage: "ready", ready: true });
         return { commit: "a".repeat(40), files: [".mex/config.json"], recoveryRequired: true, message: warning, run: { ...idleRun, status: "failed" as const, populated: true, stage: "ready" as const, ready: true, error: warning } };

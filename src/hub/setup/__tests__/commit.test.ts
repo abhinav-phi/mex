@@ -150,7 +150,7 @@ describe("reviewed setup commits using real Git", () => {
     let time = Date.now();
     const service = new SetupCommitService({ projectRoot: root, now: () => new Date(time) });
     const first = await service.preview([]);
-    first.files[0]!.diff = "changed UI data";
+    first.files[0]!.additions = 999;
     const second = await service.preview([]);
     await expect(service.commit({ revision: first.revision, message: "Setup" })).rejects.toThrow("Review the latest diff");
     time += 5 * 60_000;
@@ -182,8 +182,10 @@ describe("reviewed setup commits using real Git", () => {
     expect(preview.files.map(({ path, status }) => ({ path, status }))).toEqual([
       { path: ".mex/context/architecture.md", status: "modified" }, { path: ".mex/patterns/example.md", status: "deleted" },
     ]);
-    expect(preview.files[0]!.diff).toContain("+Updated with CRLF.\n");
-    expect(preview.files[0]!.diff).not.toContain("\r");
+    const { diff } = service.diff({ revision: preview.revision, path: ".mex/context/architecture.md" });
+    expect(diff).toContain("+Updated with CRLF.\n");
+    expect(diff).not.toContain("\r");
+    expect(preview.files[0]).toMatchObject({ additions: 1, deletions: 1, diffCharacters: diff.length });
     const result = await service.commit({ revision: preview.revision, message: "Update setup" });
     expect(git(root, "show", `${result.commit}:.mex/context/architecture.md`)).toBe("# Architecture\nUpdated with CRLF.\n");
     expect(readFileSync(join(root, ".mex/context/architecture.md"), "utf8")).toContain("\r\n");
@@ -452,7 +454,8 @@ describe("reviewed setup commits using real Git", () => {
     if (kind === "symlink") symlinkSync(join(root, "README.md"), join(root, ".mex/context/link.md"));
     if (kind === "directory") mkdirSync(join(root, ".mex/context/directory.md"));
     if (kind === "many") for (let index = 0; index < 201; index++) write(root, `.mex/context/${index}.md`, "a\n");
-    if (kind === "truncated") write(root, ".mex/context/long.md", "This is a long line in a large review.\n".repeat(1_000));
+    // Under the 256 KiB file limit, but its diff exceeds one file's 128 Ki-character review.
+    if (kind === "truncated") write(root, ".mex/context/long.md", "This is a long line in a large review.\n".repeat(5_000));
     if (kind === "merge") write(root, ".git/MERGE_HEAD", git(root, "rev-parse", "HEAD"));
     const index = readFileSync(join(root, ".git/index"));
     const service = new SetupCommitService({ projectRoot: root });
@@ -467,6 +470,48 @@ describe("reviewed setup commits using real Git", () => {
     if (kind === "truncated") expect(preview.files.some((file) => file.truncated)).toBe(true);
     expect(readFileSync(join(root, ".git/index"))).toEqual(index);
   });
+
+  it("commits a populated-size review whose diffs are served one file at a time", async () => {
+    const root = fixture();
+    setup(root);
+    // Larger in total than the former 128 Ki-character inline preview, as a real populated scaffold is.
+    for (let index = 0; index < 3; index++) {
+      write(root, `.mex/context/topic-${index}.md`, `# Topic ${index}\n${"Documented project behavior.\n".repeat(1_800)}`);
+    }
+    const { service, preview } = await review(root);
+    expect(preview.files.reduce((total, file) => total + file.diffCharacters, 0)).toBeGreaterThan(131_072);
+    expect(JSON.stringify(preview)).not.toContain("Documented project behavior");
+    const topic = preview.files.find((file) => file.path === ".mex/context/topic-2.md")!;
+    expect(topic).toMatchObject({ status: "added", additions: 1_801, deletions: 0, truncated: false });
+    const diff = service.diff({ revision: preview.revision, path: topic.path });
+    expect(diff).toMatchObject({ revision: preview.revision, path: topic.path, truncated: false });
+    expect(diff.diff).toHaveLength(topic.diffCharacters);
+    expect(diff.diff).toContain("+# Topic 2\n");
+    const result = await service.commit({ revision: preview.revision, message: "Setup" });
+    expect(result.files).toHaveLength(preview.files.length);
+  }, 60_000);
+
+  it("serves diffs only for the current review, including a blocked one, and never authorizes it", async () => {
+    const root = fixture();
+    setup(root);
+    write(root, ".mex/context/long.md", "This is a long line in a large review.\n".repeat(5_000));
+    let time = Date.now();
+    const service = new SetupCommitService({ projectRoot: root, now: () => new Date(time) });
+    const blockedReview = await service.preview([]);
+    expect(blockedReview.canCommit).toBe(false);
+    const long = service.diff({ revision: blockedReview.revision, path: ".mex/context/long.md" });
+    expect(long.truncated).toBe(true);
+    expect(long.diff.length).toBeLessThanOrEqual(131_072);
+    await expect(service.commit({ revision: blockedReview.revision, message: "Setup" })).rejects.toThrow("Review the latest diff");
+    expect(git(root, "rev-list", "--count", "HEAD").trim()).toBe("1");
+
+    rmSync(join(root, ".mex/context/long.md"));
+    const current = await service.preview([]);
+    expect(() => service.diff({ revision: blockedReview.revision, path: ".mex/ROUTER.md" })).toThrow("Review the latest diff");
+    expect(() => service.diff({ revision: current.revision, path: "README.md" })).toThrow("not part of the current setup review");
+    time += 5 * 60_000;
+    expect(() => service.diff({ revision: current.revision, path: ".mex/ROUTER.md" })).toThrow("expired");
+  }, 60_000);
 
   it("serializes operations, clears pending authorization and shuts down without mutation", async () => {
     const root = fixture();

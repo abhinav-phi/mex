@@ -10,6 +10,8 @@ import {
   SETUP_COMMIT_MAX_FILE_BYTES,
   SETUP_COMMIT_MAX_FILE_DIFF_CHARACTERS,
   SETUP_COMMIT_MAX_TOTAL_DIFF_CHARACTERS,
+  type SetupCommitDiff,
+  type SetupCommitDiffRequest,
   type SetupCommitFile,
   type SetupCommitPreview,
   type SetupCommitRequest,
@@ -43,8 +45,16 @@ interface Snapshot {
   paths: string[];
   indexBytes: Buffer | null;
 }
+/** The preview lists metadata; the diff text stays here and is served one file at a time. */
+interface ReviewedFile {
+  path: string;
+  status: SetupCommitFile["status"];
+  diff: string;
+  truncated: boolean;
+}
 interface Review {
   preview: SetupCommitPreview;
+  files: ReviewedFile[];
   tools: readonly AiTool[];
   fingerprint: string;
   tree: string;
@@ -52,7 +62,7 @@ interface Review {
 interface Candidate {
   index: string;
   tree: string;
-  files: SetupCommitFile[];
+  files: ReviewedFile[];
   blockedReason: string | null;
 }
 
@@ -111,14 +121,17 @@ export class SetupCommitService {
         preview.branch = snapshot.git.ref?.replace(/^refs\/heads\//u, "") ?? null;
         preview.head = snapshot.git.head;
         const candidate = await this.candidate(snapshot, temporary);
-        preview.files = candidate.files;
+        preview.files = candidate.files.map(fileSummary);
         preview.blockedReason = candidate.blockedReason;
         if ((await this.snapshot(selected)).fingerprint !== snapshot.fingerprint) throw stale();
         if (preview.files.length === 0 && preview.blockedReason === null) {
           preview.blockedReason = "There are no setup file changes to commit. Refresh setup, or use Git manually if other files need attention.";
         }
         preview.canCommit = preview.files.length > 0 && preview.blockedReason === null;
-        if (preview.canCommit) this.review = { preview, tools: selected, fingerprint: snapshot.fingerprint, tree: candidate.tree };
+        // A blocked review stays readable so its diffs can guide the manual commit.
+        if (preview.files.length > 0) {
+          this.review = { preview, files: candidate.files, tools: selected, fingerprint: snapshot.fingerprint, tree: candidate.tree };
+        }
       } catch (error) {
         preview.blockedReason = safeReason(error);
       } finally {
@@ -127,6 +140,17 @@ export class SetupCommitService {
       // Caller mutations cannot change the authorization stored by this service.
       return structuredClone(preview);
     });
+  }
+
+  /** Reads retained review text only; it never runs Git or rereads the working tree. */
+  diff(request: SetupCommitDiffRequest): SetupCommitDiff {
+    if (this.closed) throw blocked("The setup session has closed. Reopen Hub to continue.");
+    const review = this.review;
+    if (review === null || request.revision !== review.preview.revision
+      || this.now() >= Date.parse(review.preview.expiresAt)) throw stale();
+    const file = review.files.find((entry) => entry.path === request.path);
+    if (file === undefined) throw new HubHttpError(404, "NOT_FOUND", "File not in review", "This file is not part of the current setup review.");
+    return { revision: review.preview.revision, path: file.path, diff: file.diff, truncated: file.truncated };
   }
 
   commit(request: SetupCommitRequest): Promise<SetupCommitResult> {
@@ -140,7 +164,7 @@ export class SetupCommitService {
         return structuredClone(this.receipt.result);
       }
       const review = this.review;
-      if (review === null || request.revision !== review.preview.revision
+      if (review === null || !review.preview.canCommit || request.revision !== review.preview.revision
         || this.now() >= Date.parse(review.preview.expiresAt)) throw stale();
       // Consume the review before work starts, including on a failed commit.
       this.clear();
@@ -161,7 +185,7 @@ export class SetupCommitService {
         } catch { throw blocked("Git is busy or its index cannot be locked. Finish other Git operations, then review again."); }
         const candidate = await this.candidate(snapshot, temporary);
         if (candidate.blockedReason !== null || candidate.tree !== review.tree
-          || JSON.stringify(candidate.files) !== JSON.stringify(review.preview.files)) throw stale();
+          || JSON.stringify(candidate.files) !== JSON.stringify(review.files)) throw stale();
         const merged = await this.mergedIndex(snapshot, candidate, temporary);
         // Both the real index and every reviewed working file must still be the reviewed version.
         if ((await this.snapshot(review.tools)).fingerprint !== review.fingerprint) throw stale();
@@ -211,7 +235,7 @@ export class SetupCommitService {
             // A known commit must never be presented as a failed/no-op request (or duplicated on retry).
             keepLock = true;
             const response: SetupCommitResult = {
-              commit: committed, files: review.preview.files.map((file) => file.path),
+              commit: committed, files: review.files.map((file) => file.path),
               recoveryRequired: true,
               message: "The setup commit was created, but Git changed before its index could be installed. Nothing was pushed. Keep the Git index.lock recovery file and inspect Git status before continuing manually.",
             };
@@ -328,7 +352,7 @@ export class SetupCommitService {
     const tree = objectId((await git(snapshot.git.root, ["write-tree"], { index })).text.trim());
     const changed = await git(snapshot.git.root, ["diff", "--cached", "--name-status", "--no-renames", "-z"], { index });
     const fields = changed.text.split("\0");
-    const files: SetupCommitFile[] = [];
+    const files: ReviewedFile[] = [];
     let total = 0;
     let blockedReason: string | null = null;
     for (let offset = 0; offset + 1 < fields.length && fields[offset] !== ""; offset += 2) {
@@ -375,6 +399,18 @@ export class SetupCommitService {
   }
 }
 
+function fileSummary(file: ReviewedFile): SetupCommitFile {
+  let additions = 0;
+  let deletions = 0;
+  let inHunk = false;
+  for (const line of file.diff.split("\n")) {
+    // Header lines such as "--- a/path" precede the first hunk; inside hunks they are content.
+    if (line.startsWith("@@ ")) inHunk = true;
+    else if (inHunk && line.startsWith("+")) additions++;
+    else if (inHunk && line.startsWith("-")) deletions++;
+  }
+  return { path: file.path, status: file.status, additions, deletions, diffCharacters: file.diff.length, truncated: file.truncated };
+}
 function scopePrefixes(tools: readonly AiTool[]): string[] {
   return [".mex", ...tools.flatMap((tool) => [ANCHORS[tool], ...(tool === "claude" ? [".claude/skills/mex-inbox", ".claude/skills/mex-relay"] : tool === "codex" ? [".agents/skills/mex-inbox", ".agents/skills/mex-relay"] : [])])];
 }

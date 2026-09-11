@@ -150,6 +150,9 @@ export type {
   SetupTranscriptEntry,
   SetupTranscriptBatch,
   SetupCommitPreview,
+  SetupCommitFile,
+  SetupCommitDiff,
+  SetupCommitDiffRequest,
   SetupCommitRequest,
   SetupCommitResponse,
 } from "@mex/hub-contracts/setup";

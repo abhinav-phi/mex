@@ -63,8 +63,10 @@ export const SetupStartRequestSchema = z.object({
 export const SetupCancelRequestSchema = z.object({}).strict();
 
 export const SETUP_COMMIT_MAX_FILES = 200;
-export const SETUP_COMMIT_MAX_FILE_DIFF_CHARACTERS = 32_768;
-export const SETUP_COMMIT_MAX_TOTAL_DIFF_CHARACTERS = 131_072;
+/** One file's diff is fetched on demand; JSON escaping keeps it inside Hub's 1 MiB response bound. */
+export const SETUP_COMMIT_MAX_FILE_DIFF_CHARACTERS = 131_072;
+/** Server-retained review text. The preview itself carries only per-file metadata. */
+export const SETUP_COMMIT_MAX_TOTAL_DIFF_CHARACTERS = 1_048_576;
 export const SETUP_COMMIT_MAX_FILE_BYTES = 262_144;
 
 const setupCommitPath = z.string().min(1).max(1_024)
@@ -74,9 +76,25 @@ const setupCommitPath = z.string().min(1).max(1_024)
 const gitObjectId = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u);
 
 export const SetupCommitPreviewRequestSchema = z.object({}).strict();
+const lineCount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 export const SetupCommitFileSchema = z.object({
   path: setupCommitPath,
   status: z.enum(["added", "modified", "deleted"]),
+  additions: lineCount,
+  deletions: lineCount,
+  diffCharacters: z.number().int().nonnegative().max(SETUP_COMMIT_MAX_FILE_DIFF_CHARACTERS),
+  truncated: z.boolean(),
+}).strict();
+
+export const SetupCommitDiffRequestSchema = z.object({
+  revision: z.string().uuid(),
+  path: setupCommitPath,
+}).strict();
+
+/** One reviewed file's diff, served from the exact snapshot its revision names. */
+export const SetupCommitDiffSchema = z.object({
+  revision: z.string().uuid(),
+  path: setupCommitPath,
   diff: z.string().max(SETUP_COMMIT_MAX_FILE_DIFF_CHARACTERS),
   truncated: z.boolean(),
 }).strict();
@@ -91,7 +109,7 @@ export const SetupCommitPreviewSchema = z.object({
   canCommit: z.boolean(),
   blockedReason: boundedReason.nullable(),
 }).strict().superRefine((preview, context) => {
-  if (preview.files.reduce((total, file) => total + file.diff.length, 0) > SETUP_COMMIT_MAX_TOTAL_DIFF_CHARACTERS) {
+  if (preview.files.reduce((total, file) => total + file.diffCharacters, 0) > SETUP_COMMIT_MAX_TOTAL_DIFF_CHARACTERS) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "Setup diff exceeds the total review limit." });
   }
   if (new Set(preview.files.map((file) => file.path)).size !== preview.files.length) {
@@ -199,6 +217,8 @@ export type SetupTranscriptBatch = z.infer<typeof SetupTranscriptBatchSchema>;
 export type SetupRun = z.infer<typeof SetupRunSchema>;
 export type SetupCommitFile = z.infer<typeof SetupCommitFileSchema>;
 export type SetupCommitPreview = z.infer<typeof SetupCommitPreviewSchema>;
+export type SetupCommitDiffRequest = z.infer<typeof SetupCommitDiffRequestSchema>;
+export type SetupCommitDiff = z.infer<typeof SetupCommitDiffSchema>;
 export type SetupCommitRequest = z.infer<typeof SetupCommitRequestSchema>;
 export type SetupCommitResult = z.infer<typeof SetupCommitResultSchema>;
 export type SetupCommitResponse = z.infer<typeof SetupCommitResponseSchema>;

@@ -47,6 +47,8 @@ import type {
   SetupStatus,
   SetupTranscriptBatch,
   SetupCommitPreview,
+  SetupCommitDiff,
+  SetupCommitDiffRequest,
   SetupCommitRequest,
   SetupCommitResponse,
 } from "@mex/hub-contracts/setup";
@@ -232,6 +234,7 @@ export interface HubApi {
   subscribeToSetup?(onSnapshot: (run: SetupRun) => void, onDisconnect?: () => void): JobSubscription;
   subscribeToSetupTranscript?(runId: string, onBatch: (batch: SetupTranscriptBatch) => void, onDisconnect?: () => void): JobSubscription;
   previewSetupCommit?(): Promise<SetupCommitPreview>;
+  setupCommitDiff?(request: SetupCommitDiffRequest): Promise<SetupCommitDiff>;
   commitSetup?(request: SetupCommitRequest): Promise<SetupCommitResponse>;
 }
 
@@ -785,6 +788,15 @@ export class HttpHubApi implements HubApi {
       "/setup/commit/preview",
       async () => (await loadSetupContract()).SetupCommitPreviewSchema,
       { method: "POST", body: "{}" },
+      true,
+    );
+  }
+
+  setupCommitDiff(request: SetupCommitDiffRequest): Promise<SetupCommitDiff> {
+    return this.#requestWhenOk(
+      "/setup/commit/diff",
+      async () => (await loadSetupContract()).SetupCommitDiffSchema,
+      { method: "POST", body: JSON.stringify(request) },
       true,
     );
   }

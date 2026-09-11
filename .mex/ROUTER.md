@@ -44,7 +44,9 @@ Then read this file fully before doing anything else in this session.
   Mode and empty tool choices survive refresh. New code projects show a bounded
   setup-file diff with numbered, highlighted additions/removals and an explicit
   local commit action before in-place Hub promotion; the commit preserves
-  unrelated staged work and never pushes.
+  unrelated staged work and never pushes. The review lists per-file counts and
+  loads each file's diff on expand from the retained snapshot (128 Ki characters
+  per file, 1 Mi per review); any truncated diff still forces a manual commit.
   Unsupported Git configurations retain the manual checkpoint. Setup never
   runs git init, while Agent-memory completes without Graph or Wiki. Existing
   committed code projects retain Hub Health recovery for missing local indexes.
