@@ -72,8 +72,10 @@
   outline: none;
 }
 
+/* minmax(0, 1fr): wide diff rows scroll inside .commitDiff instead of widening the card. */
 .page {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   width: min(100%, 1080px);
   margin: 0 auto;
   gap: 22px;
@@ -311,6 +313,7 @@
 
 .body {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 20px;
   padding: 22px 24px 24px;
 }
@@ -900,6 +903,7 @@
 
 .commitReview {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 

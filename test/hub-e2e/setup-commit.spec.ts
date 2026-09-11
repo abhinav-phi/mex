@@ -130,6 +130,18 @@ async function reviewAllFiles(page: Page, action: string, expectedPaths: string[
     await expect(details.locator("summary").first()).toContainText("Viewed");
   }
   await expect(commit).toBeEnabled();
+  // With every diff open, wide rows scroll inside their diff; review actions stay inside the card.
+  // The card clips overflow, so hidden width there is exactly what hid the actions.
+  const card = page.locator("section[aria-labelledby='setup-title']");
+  expect(await card.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  const cardBox = (await card.boundingBox())!;
+  expect(cardBox.x + cardBox.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+  for (const button of [commit, page.getByRole("button", { name: "Refresh review", exact: true })]) {
+    const box = (await button.boundingBox())!;
+    expect(box.x + box.width).toBeLessThanOrEqual(cardBox.x + cardBox.width);
+  }
+  const stack = page.getByRole("region", { name: "Diff for .mex/context/stack.md", exact: true });
+  expect(await stack.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
   return preview;
 }
 
@@ -196,6 +208,8 @@ function createFixture() {
   for (const name of ["AGENTS.md", "ROUTER.md", "context/architecture.md", "context/stack.md", "context/conventions.md", "context/decisions.md", "context/setup.md"]) {
     const path = `.mex/${name}`;
     writeFileSync(join(project, path), path === architecturePath ? architectureAfter
+      // One unwrapped line far wider than the review card, as real populated prose often is.
+      : path === ".mex/context/stack.md" ? `# Setup review fixture\n\n${"Populated stack detail without a break. ".repeat(60)}\n`
       : "# Setup review fixture\n\nPopulated project fixture content.\n");
     setupPaths.push(path);
   }
