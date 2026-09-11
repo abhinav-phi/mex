@@ -1,7 +1,7 @@
-export const DELETE = async (request: Request): Promise<Response> => {
+export const DELETE = async () => {
   return new Response(null, { status: 204 });
 };
 
-export function HEAD(): Response {
+export function HEAD() {
   return new Response(null);
 }

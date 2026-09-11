@@ -43,10 +43,37 @@ describe("Next.js App Router resolver", () => {
     expect(deriveRoutePath("app/docs/[...path]/route.ts")).toBe("/docs/[...path]");
   });
 
+  it("locates the App Router root as a segment, not a substring (#179 review)", () => {
+    expect(deriveRoutePath("apps/web/app/api/orders/route.ts")).toBe("/api/orders");
+    expect(deriveRoutePath("packages/webapp/app/api/users/route.ts")).toBe("/api/users");
+    expect(deriveRoutePath("apps/web/src/app/api/orders/route.ts")).toBe("/api/orders");
+  });
+
+  it("drops private folders from derived paths", () => {
+    expect(deriveRoutePath("app/_lib/route.ts")).toBe("/");
+    expect(deriveRoutePath("app/users/_components/route.ts")).toBe("/users");
+  });
+
   it("returns null for paths outside an App Router root", () => {
     expect(deriveRoutePath("pages/api/users.ts")).toBeNull();
     expect(deriveRoutePath("src/components/route.ts")).toBeNull();
     expect(deriveRoutePath("app/nested/page.tsx")).toBeNull();
+  });
+
+  it("emits at most one route node per method, so repeated declarations cannot collide (#179 review)", () => {
+    const overloaded = [
+      "export function GET(a: Request): Response;",
+      "export function GET(a: Request, b: unknown): Response;",
+      "export function GET(a: Request, b?: unknown): Response { return new Response(); }",
+      "",
+      "/*",
+      "export function GET(stale: Request): Response { return new Response(); }",
+      "*/",
+    ].join("\n");
+
+    const result = nextjsResolver.extract!("app/api/x/route.ts", overloaded);
+    expect(result.nodes).toHaveLength(1);
+    expect(result.nodes[0]!.name).toBe("GET /api/x");
   });
 
   it("emits one route node per exported HTTP handler and references it", () => {
@@ -67,10 +94,13 @@ describe("Next.js App Router resolver", () => {
     expect(result.references.map((ref) => ref.referenceKind)).toEqual(["function_ref", "function_ref"]);
   });
 
-  it("handles arrow-function exports and javascript route files", () => {
+  it("handles typed arrow-function exports and javascript route files", () => {
+    const custom = "export const GET: RouteHandler = async () => {\n  return new Response();\n};\n";
+    const typed = nextjsResolver.extract!("app/typed/route.ts", custom);
+    expect(typed.nodes.map((node) => node.name)).toEqual(["GET /typed"]);
+
     const source = readFileSync(itemsFixture, "utf-8");
     const result = nextjsResolver.extract!("app/items/route.js", source);
-
     expect(result.nodes.map((node) => node.name)).toEqual([
       "DELETE /items",
       "HEAD /items",
@@ -98,8 +128,8 @@ describe("Next.js App Router resolver", () => {
     const target = usersNodes.find((node) => node.name === "GET")!;
     expect(nextjsResolver.resolve(ref, context)).toMatchObject({
       targetNodeId: target.id,
-      confidence: 1,
-      resolvedBy: "framework",
+      confidence: 0.8,
+      resolvedBy: "nextjs-route-handler",
     });
   });
 

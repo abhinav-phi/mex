@@ -11,7 +11,9 @@ const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"
 
 const NEXT_DEPENDENCY = /["']next["']\s*:/;
 const EXPORTED_FUNCTION = /^\s*export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/;
-const EXPORTED_ARROW = /^\s*export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*(?::[^=]*)?=>/;
+// The name may carry a type annotation (`export const GET: RouteHandler = …`)
+// while still binding a handler function (#179 review).
+const EXPORTED_ARROW = /^\s*export\s+const\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*(?::[^=]*)?=>/;
 
 /** Route files this resolver understands; everything else is another App Router concern. */
 const ROUTE_FILE = /(?:^|\/)route\.(ts|tsx|js|jsx|mts|mjs|cts|cjs)$/;
@@ -20,10 +22,11 @@ export const nextjsResolver: FrameworkResolver = {
   name: "nextjs",
   languages: ["typescript", "javascript", "tsx", "jsx"],
   detect(context) {
-    // Next.js route handlers live only in route files, so the files themselves
-    // are the reliable observable. package.json is checked when present for a
-    // stronger signal, but staged config globs already surface it when the
-    // repository has one at the root.
+    // The `next` dependency is the issue's primary signal. The route files
+    // themselves are an additional one: staged config globs only surface a
+    // ROOT package.json, so a monorepo app (packages/web/app/api/x/route.ts)
+    // would otherwise go undetected even though its route modules are staged
+    // corpus files the resolver can genuinely serve (#179 review).
     const pkg = context.readFile("package.json");
     if (pkg && NEXT_DEPENDENCY.test(pkg)) return true;
     return context.getAllFiles().some((filePath) => ROUTE_FILE.test(filePath.replace(/\\/g, "/")));
@@ -43,6 +46,11 @@ export const nextjsResolver: FrameworkResolver = {
     const nodes: GraphNode[] = [];
     const references: UnresolvedRef[] = [];
     const lines = content.split(/\r?\n/);
+    // A route module can export each HTTP verb at most once, so one route
+    // node per method per file is the contract. Repeated declarations —
+    // TypeScript overloads, a stale handler inside a block comment — used to
+    // emit colliding node ids and fail the whole build (#179 review).
+    const emitted = new Set<string>();
 
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
       const line = lines[lineIndex]!;
@@ -50,6 +58,8 @@ export const nextjsResolver: FrameworkResolver = {
       const arrowExport = fnExport ? null : EXPORTED_ARROW.exec(line);
       const handlerName = fnExport?.[1] ?? arrowExport?.[1];
       if (!handlerName || !isHttpMethod(handlerName)) continue;
+      if (emitted.has(handlerName)) continue;
+      emitted.add(handlerName);
 
       const routeName = `${handlerName} ${routePath}`;
       const signature = `${routeName} -> ${handlerName}`;
@@ -96,8 +106,8 @@ export const nextjsResolver: FrameworkResolver = {
     return {
       original: ref,
       targetNodeId: candidates[0]!.id,
-      confidence: 1,
-      resolvedBy: "framework",
+      confidence: 0.8,
+      resolvedBy: "nextjs-route-handler",
     };
   },
 };
@@ -114,25 +124,25 @@ function isHttpMethod(name: string): name is (typeof HTTP_METHODS)[number] {
  * `src` prefix. Dynamic segment text such as `[id]` and catch-alls such as
  * `[...slug]` is preserved verbatim — the brackets are Next's own route
  * syntax and rewriting them would lose the distinction between routes.
- * Route groups `(marketing)` never appear in URLs, so their segment is
- * dropped the way Next itself resolves them.
+ * Route groups `(marketing)` and private folders `_lib` never appear in
+ * URLs, so those segments are dropped the way Next itself resolves them.
+ *
+ * The App Router root is located as a path SEGMENT, not a substring: the
+ * first cut at `indexOf("app")` turned `apps/web/app/api/orders/route.ts`
+ * into `/s/web/app/api/orders` (#179 review).
  */
 export function deriveRoutePath(normalizedFilePath: string): string | null {
   if (!ROUTE_FILE.test(normalizedFilePath)) return null;
-  const withoutFile = normalizedFilePath.slice(0, normalizedFilePath.lastIndexOf("/"));
-  const appRoot = /(^|\/)src\/app(\/|$)/.test(withoutFile)
-    ? "src/app"
-    : /(^|\/)app(\/|$)/.test(withoutFile)
-      ? "app"
-      : null;
-  if (appRoot === null) return null;
+  const root = /(?:^|\/)src\/app(?:\/|$)/.exec(normalizedFilePath)
+    ?? /(?:^|\/)app(?:\/|$)/.exec(normalizedFilePath);
+  if (!root) return null;
 
-  const start = withoutFile.indexOf(appRoot) + appRoot.length;
-  const segments = withoutFile.slice(start)
+  const start = root.index + root[0].length;
+  const withoutFile = normalizedFilePath.slice(start, normalizedFilePath.lastIndexOf("/"));
+  const segments = withoutFile
     .split("/")
-    .filter((segment) => segment.length > 0 && !segment.startsWith("("));
-  const path = `/${segments.join("/")}`;
-  return path === "/" ? "/" : path.replace(/\/+$/, "");
+    .filter((segment) => segment.length > 0 && !segment.startsWith("(") && !segment.startsWith("_"));
+  return `/${segments.join("/")}`;
 }
 
 function languageFor(filePath: string): "typescript" | "javascript" | "tsx" | "jsx" | null {
