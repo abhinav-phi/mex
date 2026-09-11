@@ -1,4 +1,4 @@
-import { AI_TOOLS, type AiTool } from "./types.js";
+﻿import { AI_TOOLS, type AiTool } from "./types.js";
 
 export interface AgentCommand {
   readonly command: string;
@@ -8,8 +8,9 @@ export interface AgentCommand {
 /**
  * Headless Claude has no one to answer approval prompts, so every shell command
  * the population prompt relies on must be pre-approved or it is denied. Only the
- * read-only graph commands and the event log are allowed; maintenance, Team,
- * and Git commands still require a person.
+ * read-only graph commands and the event log are allowed; maintenance and Team
+ * commands still require a person. Claude already auto-approves read-only Git
+ * history commands such as `git log`.
  */
 const HEADLESS_CLAUDE_MEX_COMMANDS = [
   "mex graph scope",
