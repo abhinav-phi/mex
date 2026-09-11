@@ -27,6 +27,7 @@ const lazyWorkbenchSources = [
   "src/pages/ActivityPage.tsx",
   "src/pages/JobsPage.tsx",
   "src/pages/HealthPage.tsx",
+  "src/pages/SetupPage.tsx",
 ];
 const entryKey = Object.keys(manifest).find((key) => manifest[key].isEntry);
 if (!entryKey) throw new Error("The production Hub manifest has no application entry.");
@@ -84,6 +85,18 @@ if (!overviewRuntimeKey || !manifest[overviewRuntimeKey].isDynamicEntry) {
 }
 if (initialChunks.has(overviewRuntimeKey)) {
   throw new Error("The Overview aggregate validator leaked into the application shell.");
+}
+const setupRuntimeKey = Object.keys(manifest).find((candidate) => {
+  const record = manifest[candidate] ?? {};
+  return record.name === "setup" || [candidate, record.src].some((value) => (
+    typeof value === "string" && /(?:^|\/)hub-contracts\/dist\/setup\.js$/u.test(value)
+  ));
+});
+if (!setupRuntimeKey || !manifest[setupRuntimeKey].isDynamicEntry) {
+  throw new Error("The production Hub manifest has no lazy Setup contract.");
+}
+if (initialChunks.has(setupRuntimeKey) || homeChunks.has(setupRuntimeKey)) {
+  throw new Error("The Setup contract leaked into the application shell or Home workbench.");
 }
 const relayEntry = workbenchEntries.find((entry) => entry.source === "src/pages/RelayPage.tsx");
 const relayComposerKey = Object.keys(manifest).find((candidate) => (

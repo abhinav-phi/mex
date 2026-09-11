@@ -1,6 +1,15 @@
 import { defineConfig, configDefaults } from "vitest/config";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const contractsSrc = resolve(dirname(fileURLToPath(import.meta.url)), "packages/hub-contracts/src");
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      "@mex/hub-contracts/setup": resolve(contractsSrc, "setup.ts"),
+    },
+  },
   test: {
     // `.demo/` is a reference clone of the grad-capital demo (code-graph port
     // source, spec §0). It is gitignored and its own tests depend on packages we

@@ -3,6 +3,8 @@ import { extname, join, resolve } from "node:path";
 import { RELEASE_ROUTE_MANIFEST_HINTS } from "./routes.mjs";
 import { assetBudgetCandidate } from "./statistics.mjs";
 
+const SETUP_ASSET_CALIBRATION = JSON.parse(readFileSync(new URL("./setup-asset-budget.json", import.meta.url), "utf8"));
+
 const FORBIDDEN_SHELL_HINTS = [
   "HomePage",
   "SearchPage",
@@ -19,6 +21,8 @@ const FORBIDDEN_SHELL_HINTS = [
   "HealthPage",
   "JobsPage",
   "SettingsPage",
+  "SetupPage",
+  "hub-contracts/dist/setup",
   "/setup/",
 ];
 
@@ -37,6 +41,8 @@ const FORBIDDEN_HOME_HINTS = [
   "HealthPage",
   "JobsPage",
   "SettingsPage",
+  "SetupPage",
+  "hub-contracts/dist/setup",
   "/setup/",
 ];
 
@@ -53,9 +59,7 @@ export function measureBuiltAssets(outputRoot, budgets) {
 
   const initialKeys = manifestClosure(manifest, [entryKey], false);
   assertNoForbiddenWorkbench(manifest, initialKeys, "initial application shell", FORBIDDEN_SHELL_HINTS);
-  if (Object.keys(manifest).some((key) => /(?:^|\/)setup(?:\/|\.|$)/iu.test(key))) {
-    throw new Error("The operational Hub manifest contains setup code.");
-  }
+  assertSetupManifestBoundary(manifest);
 
   const initialFiles = filesForKeys(manifest, initialKeys);
   // Fonts are imported by the global entry CSS. Vite does not consistently
@@ -92,12 +96,70 @@ export function measureBuiltAssets(outputRoot, budgets) {
     .sort((left, right) => right.bytes - left.bytes || left.file.localeCompare(right.file));
   const largestJsChunk = chunks[0] ?? { file: null, bytes: 0 };
   const result = { initial, routes, largestJsChunk };
-  const violations = evaluateAssetBudgets(result, budgets);
+  const violations = [
+    ...evaluateAssetBudgets(result, budgets),
+    ...evaluateSetupAssetBudget(measureManifestSetupAssets(root, manifest, initialFiles)),
+  ];
   return {
     ...result,
     budgetCandidates: candidateAssetBudgets(result),
-    violations,
+    violations: violations.slice(0, 100),
   };
+}
+
+/** Only the browser wizard and its private schemas may introduce setup chunks. */
+export function assertSetupManifestBoundary(manifest) {
+  const allowed = new Map([
+    ["src/pages/SetupPage.tsx", "SetupPage"],
+    ["../hub-contracts/dist/setup.js", "setup"],
+  ]);
+  const seen = new Set();
+  for (const [key, record] of Object.entries(manifest)) {
+    const identities = [key, record.src, record.name, record.file].filter((value) => typeof value === "string");
+    if (!identities.some((value) => /(?:^|[/_.-])setup(?:page)?(?:[/_.-]|$)/iu.test(normalized(value)))) continue;
+    const source = record.src ?? key;
+    if (identities.some((value) => /(?:^|\/)setup\//iu.test(normalized(value)))
+      || !allowed.has(source) || record.isDynamicEntry !== true || seen.has(source)
+      || (record.name !== undefined && record.name !== allowed.get(source))) {
+      throw new Error("The production Hub manifest contains unexpected or non-lazy setup code.");
+    }
+    seen.add(source);
+  }
+  if (seen.size !== allowed.size) {
+    throw new Error("The production Hub manifest must contain the lazy setup page and setup contract boundary.");
+  }
+}
+
+/** Incremental wizard bytes, separate from the operational route/report schema. */
+export function measureSetupAssets(outputRoot) {
+  const root = resolve(outputRoot);
+  const manifest = JSON.parse(readFileSync(join(root, ".vite", "manifest.json"), "utf8"));
+  assertManifest(manifest);
+  assertSetupManifestBoundary(manifest);
+  const entryKey = Object.keys(manifest).find((key) => manifest[key]?.isEntry === true);
+  if (!entryKey) throw new Error("The production Hub manifest has no entry module.");
+  const initialKeys = manifestClosure(manifest, [entryKey], false);
+  assertNoForbiddenWorkbench(manifest, initialKeys, "initial application shell", FORBIDDEN_SHELL_HINTS);
+  const initialFiles = filesForKeys(manifest, initialKeys);
+  for (const path of filesUnder(root)) {
+    if (isFont(path)) initialFiles.add(relativeAsset(root, path));
+  }
+  return measureManifestSetupAssets(root, manifest, initialFiles);
+}
+
+function measureManifestSetupAssets(root, manifest, initialFiles) {
+  const setupKeys = Object.entries(manifest)
+    .filter(([key, record]) => ["src/pages/SetupPage.tsx", "../hub-contracts/dist/setup.js"].includes(record.src ?? key))
+    .map(([key]) => key);
+  const setupFiles = filesForKeys(manifest, manifestClosure(manifest, setupKeys, false));
+  for (const file of initialFiles) setupFiles.delete(file);
+  return summarizeFiles(root, setupFiles);
+}
+
+export function evaluateSetupAssetBudget(measurement, limits = SETUP_ASSET_CALIBRATION.limits) {
+  const violations = [];
+  compareSizeGroup(violations, "assets.setup", measurement, limits);
+  return violations;
 }
 
 export function assertNoForbiddenWorkbench(manifest, keys, label, hints) {

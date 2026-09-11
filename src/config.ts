@@ -111,6 +111,7 @@ const CONFIG_FILE = "config.json";
 
 interface MexPersistedConfig {
   aiTools?: unknown;
+  setupMode?: unknown;
   wiki?: unknown;
   staleness?: unknown;
   watch?: unknown;
@@ -133,6 +134,21 @@ function loadAiTools(raw: MexPersistedConfig | null): AiTool[] {
 /** Read an existing setup tool selection without requiring a complete scaffold. */
 export function loadConfiguredAiTools(scaffoldRoot: string): AiTool[] {
   return loadAiTools(loadPersistedConfig(scaffoldRoot));
+}
+
+/** Distinguish an explicit empty selection from a setup that never chose tools. */
+export function hasConfiguredAiTools(scaffoldRoot: string): boolean {
+  return Array.isArray(loadPersistedConfig(scaffoldRoot)?.aiTools);
+}
+
+/** Read setup intent without initializing config; older projects use code-repo. */
+export function loadConfiguredSetupMode(scaffoldRoot: string): "code-repo" | "agent-memory" {
+  return loadPersistedConfig(scaffoldRoot)?.setupMode === "agent-memory" ? "agent-memory" : "code-repo";
+}
+
+/** Persist setup intent using the same atomic, key-preserving config writer. */
+export function saveConfiguredSetupMode(scaffoldRoot: string, mode: "code-repo" | "agent-memory"): void {
+  mergeIntoConfig(scaffoldRoot, { setupMode: mode });
 }
 
 function loadStalenessThresholds(scaffoldRoot: string, raw: MexPersistedConfig | null): StalenessThresholds | undefined {

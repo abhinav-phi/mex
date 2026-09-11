@@ -102,7 +102,7 @@ Then inspect the generated files:
 git status --short
 ```
 
-Review and run the exact scoped `git add` commands printed by setup. After committing that setup checkpoint, open the Hub:
+Open `npx mex-agent@0.8.1 hub` to review the setup-file diff and explicitly commit it locally from the setup checkpoint. You can also review and run the scoped `git add` commands printed by setup, then commit through your Git client:
 
 ```bash
 git commit -m "chore: initialize MEX"
@@ -112,7 +112,7 @@ npx mex-agent@0.8.1 hub
 ![Three steps to a ready project: run setup, populate memory, then review and commit the checkpoint before opening Hub.](docs/diagrams/readme/setup.svg)
 
 > [!NOTE]
-> The Hub starts only when the current `.mex/config.json` is committed at `HEAD`. MEX never stages, commits, pushes, or pulls.
+> The full Hub opens when the current `.mex/config.json` is committed at `HEAD`. Its setup wizard can commit the reviewed setup files on your explicit request, preserving unrelated staged work. Repositories with unsupported Git hooks or content filters keep the manual checkpoint. MEX never pushes or pulls.
 
 Push the reviewed setup commit through your team's normal Git workflow so teammates receive the same project memory and selected agent instructions. In Hub's Team/Members page, add the people who will participate and choose your local identity. Review and apply those actions explicitly; commit and push new Member records too. Your current-member selection stays local.
 
@@ -396,7 +396,7 @@ MEX 0.8 does **not** provide:
 
 - a cloud-hosted Hub or hosted knowledge sync;
 - live notifications, presence, or real-time chat;
-- automatic Git staging, commits, pushes, or pulls;
+- Git staging or commits without explicit review, or any pushes or pulls;
 - authentication, repository authorization, or RBAC;
 - Jira-style task management;
 - a shared Code Graph or Wiki SQLite database;

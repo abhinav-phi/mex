@@ -2410,6 +2410,27 @@ test.describe("built production Hub", () => {
 
   test("bootstraps once, stays exact-origin and idle, and never exposes fixture content", async ({ page }) => {
     const errors = watchBrowserErrors(page);
+    const consoleErrorUrls: string[] = [];
+    const failedResponses: Array<{
+      url: string;
+      method: string;
+      status: number;
+      contentType: string | undefined;
+      body: Promise<unknown>;
+    }> = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") consoleErrorUrls.push(message.location().url);
+    });
+    page.on("response", (candidate) => {
+      if (candidate.status() < 400) return;
+      failedResponses.push({
+        url: candidate.url(),
+        method: candidate.request().method(),
+        status: candidate.status(),
+        contentType: candidate.headers()["content-type"],
+        body: candidate.json().catch(() => ({ invalidProblemBody: true })),
+      });
+    });
     const productionOrigin = new URL(bootstrapUrl).origin;
     const crossOriginRequests: string[] = [];
     const teamAccessDialogRequests: string[] = [];
@@ -2553,9 +2574,33 @@ test.describe("built production Hub", () => {
     expect(crossOriginRequests).toEqual([]);
     expect(response?.headers()["content-security-policy"]).toContain("default-src 'self'");
     await expectAccessible(page);
-    expect(errors).toEqual([
+    // Each of the eight full-page navigations discovers that this operational
+    // process has no setup wizard. Its legacy Wiki scaffold needs migration. Accept
+    // only those exact failures, with their real endpoint and Problem Details.
+    const expectedFailures = [
+      ...Array.from({ length: 8 }, () => `${productionOrigin}/api/v1/setup`),
+      `${productionOrigin}/api/v1/wiki/graph`,
+    ].sort();
+    expect(failedResponses.map((candidate) => candidate.url).sort()).toEqual(expectedFailures);
+    for (const candidate of failedResponses) {
+      const setup = new URL(candidate.url).pathname === "/api/v1/setup";
+      expect(candidate.method).toBe("GET");
+      expect(candidate.status).toBe(503);
+      expect(candidate.contentType).toBe("application/problem+json; charset=UTF-8");
+      expect(await candidate.body).toEqual({
+        type: "about:blank",
+        title: setup ? "Capability unavailable" : "Migration required",
+        status: 503,
+        code: setup ? "CAPABILITY_UNAVAILABLE" : "MIGRATION_REQUIRED",
+        detail: setup ? "Setup is not available in this Hub process." : "The local state requires an explicit supported migration.",
+        instance: new URL(candidate.url).pathname,
+        requestId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+      });
+    }
+    expect(consoleErrorUrls.sort()).toEqual(expectedFailures);
+    expect(errors).toEqual(expectedFailures.map(() =>
       "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
-    ]);
+    ));
   });
 });
 

@@ -43,7 +43,7 @@ describe("Project Hub routes", () => {
     ["/not-a-route", "Page not found"],
   ])("renders %s as an intentional view", async (route, heading) => {
     renderRoute(route);
-    expect(await screen.findByRole("heading", { level: 1, name: heading })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: heading }, { timeout: 5_000 })).toBeVisible();
   });
 
   it("exposes keyboard navigation and a skip link", async () => {

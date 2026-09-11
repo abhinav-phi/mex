@@ -14,12 +14,13 @@ import { join } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { describe, expect, it, vi } from "vitest";
-import { assertNoForbiddenWorkbench, evaluateAssetBudgets, measureBuiltAssets } from "./assets.mjs";
+import { assertNoForbiddenWorkbench, assertSetupManifestBoundary, evaluateAssetBudgets, evaluateSetupAssetBudget, measureBuiltAssets, measureSetupAssets } from "./assets.mjs";
 import { assertReleaseRouteReady } from "./browser.mjs";
 import {
   releaseWorkbenchPaths,
   RELEASE_ROUTE_KEYS,
   RELEASE_ROUTE_PATTERNS,
+  RELEASE_ROUTE_REDIRECTS,
 } from "./routes.mjs";
 import { createBenchmarkEnvironment } from "./environment.mjs";
 import {
@@ -146,7 +147,14 @@ describe("release benchmark contract", () => {
     );
     const registeredPatterns = [...appRoutes.matchAll(/<Route\s+(index|path="([^"]+)")\s+element=/gu)]
       .map((match) => match[1] === "index" ? "(index)" : match[2]);
-    expect(registeredPatterns).toEqual(Object.values(RELEASE_ROUTE_PATTERNS));
+    expect(registeredPatterns.filter((pattern) => !Object.hasOwn(RELEASE_ROUTE_REDIRECTS, pattern)))
+      .toEqual(Object.values(RELEASE_ROUTE_PATTERNS));
+    const redirects = [...appRoutes.matchAll(/<Route\s+path="([^"]+)"\s+element=\{<Navigate\s+to="([^"]+)"\s+replace\s*\/>\}\s*\/>/gu)]
+      .map((match) => [match[1], match[2]]);
+    expect(redirects).toEqual(Object.entries(RELEASE_ROUTE_REDIRECTS));
+    for (const pattern of Object.keys(RELEASE_ROUTE_REDIRECTS)) {
+      expect(registeredPatterns.filter((registered) => registered === pattern)).toEqual([pattern]);
+    }
     for (const profile of ["small", "medium", "large"]) {
       expect(Object.keys(budgets.runtime.browserHeapBytes[profile]))
         .toEqual(RELEASE_ROUTE_KEYS);
@@ -648,6 +656,28 @@ describe("release benchmark contract", () => {
     }]);
   });
 
+  it("enforces the additive setup asset limit from retained deterministic build bytes", () => {
+    const calibration = JSON.parse(readFileSync(new URL("./setup-asset-budget.json", import.meta.url), "utf8"));
+    expect(calibration.schemaVersion).toBe(1);
+    expect(calibration.formula).toBe("ceil(built bytes * 1.05)");
+    expect(calibration.limits).toEqual({ jsBytes: 107648, cssBytes: 21081, fontBytes: 0 });
+    for (const [field, extension] of [["jsBytes", ".js"], ["cssBytes", ".css"], ["fontBytes", ".woff2"]]) {
+      expect(calibration.files.filter(({ file }) => file.endsWith(extension)).reduce((total, { bytes }) => total + bytes, 0))
+        .toBe(calibration.measured[field]);
+      expect(assetBudgetCandidate(calibration.measured[field])).toBe(calibration.limits[field]);
+    }
+    for (const file of calibration.files) expect(file.sha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(evaluateSetupAssetBudget(calibration.limits)).toEqual([]);
+    for (const field of ["jsBytes", "cssBytes", "fontBytes"]) {
+      expect(evaluateSetupAssetBudget({ ...calibration.limits, [field]: calibration.limits[field] + 1 }))
+        .toEqual([{ metric: `assets.setup.${field}`, measured: calibration.limits[field] + 1,
+          budget: calibration.limits[field], reason: "budget_exceeded" }]);
+    }
+    expect(evaluateSetupAssetBudget(calibration.measured, {})).toHaveLength(3);
+    expect(Object.keys(budgets.assets.routes)).toEqual(RELEASE_ROUTE_KEYS);
+    expect(Object.keys(budgets.assets.routes)).not.toContain("setup");
+  });
+
   it("measures the default Context graph separately from its lazy knowledge list and detail", () => {
     const output = mkdtempSync(join(tmpdir(), "mex-context-assets-"));
     try {
@@ -655,11 +685,14 @@ describe("release benchmark contract", () => {
       mkdirSync(join(output, "assets"));
       const pages = ["HomePage", "SearchPage", "ContextPage", "KnowledgePage", "SymbolPage",
         "CapabilityPage", "WorkstreamsPage", "SpecsPage", "InboxPage", "RelayPage",
-        "MembersPage", "ActivityPage", "JobsPage", "HealthPage", "SettingsPage"];
+        "MembersPage", "ActivityPage", "JobsPage", "HealthPage", "SettingsPage", "SetupPage"];
       const manifest = {
         "index.html": { file: "assets/index.js", isEntry: true, dynamicImports: pages },
         "graph-runtime": { file: "assets/graph.js" },
         "record-runtime": { file: "assets/record.js" },
+        "../hub-contracts/dist/setup.js": {
+          file: "assets/setup.js", src: "../hub-contracts/dist/setup.js", isDynamicEntry: true,
+        },
       };
       for (const page of pages) {
         manifest[page] = {
@@ -687,6 +720,17 @@ describe("release benchmark contract", () => {
       expect(measurement.initial.files.map(({ file }) => file)).toEqual(["assets/index.js"]);
       expect(measurement.routes.home.files.map(({ file }) => file)).toEqual(["assets/HomePage.js"]);
       expect(measurement.routes.settings.files.map(({ file }) => file)).toEqual(["assets/SettingsPage.js"]);
+      expect(measureSetupAssets(output).files.map(({ file }) => file)).toEqual([
+        "assets/SetupPage.js", "assets/setup.js",
+      ]);
+      const setupPage = join(output, "assets/SetupPage.js");
+      const originalSetup = readFileSync(setupPage, "utf8");
+      const setupLimit = JSON.parse(readFileSync(new URL("./setup-asset-budget.json", import.meta.url), "utf8")).limits.jsBytes;
+      writeFileSync(setupPage, "x".repeat(setupLimit + 1));
+      expect(measureBuiltAssets(output, budgets.assets).violations).toEqual([
+        expect.objectContaining({ metric: "assets.setup.jsBytes", reason: "budget_exceeded" }),
+      ]);
+      writeFileSync(setupPage, originalSetup);
 
       manifest.HomePage.imports = ["SettingsPage"];
       writeFileSync(join(output, ".vite", "manifest.json"), JSON.stringify(manifest));
@@ -695,9 +739,48 @@ describe("release benchmark contract", () => {
       manifest["index.html"].imports = ["SettingsPage"];
       writeFileSync(join(output, ".vite", "manifest.json"), JSON.stringify(manifest));
       expect(() => measureBuiltAssets(output, budgets.assets)).toThrow("initial application shell still includes SettingsPage.");
+      delete manifest["index.html"].imports;
+      for (const setupKey of ["SetupPage", "../hub-contracts/dist/setup.js"]) {
+        manifest.HomePage.imports = [setupKey];
+        writeFileSync(join(output, ".vite", "manifest.json"), JSON.stringify(manifest));
+        expect(() => measureBuiltAssets(output, budgets.assets)).toThrow(/Home workbench still includes .*setup/iu);
+        delete manifest.HomePage.imports;
+        manifest["index.html"].imports = [setupKey];
+        writeFileSync(join(output, ".vite", "manifest.json"), JSON.stringify(manifest));
+        expect(() => measureBuiltAssets(output, budgets.assets)).toThrow(/initial application shell still includes .*setup/iu);
+        delete manifest["index.html"].imports;
+      }
     } finally {
       rmSync(output, { recursive: true, force: true });
     }
+  });
+
+  it("permits only the lazy browser setup page and contract chunks, including opaque manifest keys", () => {
+    const manifest = {
+      "_opaque-page.js": { file: "assets/opaque-page.js", src: "src/pages/SetupPage.tsx", isDynamicEntry: true },
+      "_opaque-contract.js": { file: "assets/opaque-contract.js", src: "../hub-contracts/dist/setup.js", isDynamicEntry: true },
+    };
+    expect(() => assertSetupManifestBoundary(manifest)).not.toThrow();
+    for (const key of Object.keys(manifest)) {
+      const eager = structuredClone(manifest);
+      eager[key].isDynamicEntry = false;
+      expect(() => assertSetupManifestBoundary(eager)).toThrow(/unexpected or non-lazy setup/);
+      const missing = structuredClone(manifest);
+      delete missing[key];
+      expect(() => assertSetupManifestBoundary(missing)).toThrow(/must contain the lazy setup page and setup contract/);
+    }
+    for (const source of ["src/setup/headless.ts", "../hub-contracts/dist/setup-internal.js", "src/pages/setup/HiddenPage.tsx"]) {
+      const contaminated = {
+        ...manifest,
+        "_opaque-backend.js": { file: "assets/opaque.js", src: source, isDynamicEntry: true },
+      };
+      expect(() => assertSetupManifestBoundary(contaminated)).toThrow(/unexpected or non-lazy setup/);
+    }
+    const misleadingSource = {
+      ...manifest,
+      "src/setup/headless.ts": { file: "assets/backend.js", src: "src/pages/SetupPage.tsx", isDynamicEntry: true },
+    };
+    expect(() => assertSetupManifestBoundary(misleadingSource)).toThrow(/unexpected or non-lazy setup/);
   });
 
   it("rejects forbidden workbench modules hidden behind opaque chunk keys", () => {

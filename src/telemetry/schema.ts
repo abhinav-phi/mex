@@ -25,7 +25,7 @@ export const TELEMETRY_COMMANDS = [
 export const TELEMETRY_PAGES = [
   "home", "search", "knowledge", "knowledge_detail", "code", "code_symbol", "workstreams",
   "specs", "spec_detail", "playbooks", "catch_up", "inbox", "relays", "members", "activity",
-  "jobs", "health", "settings", "not_found",
+  "jobs", "health", "settings", "setup", "not_found",
 ] as const;
 export const TELEMETRY_ACTIONS = [
   "member.add", "member.update", "member.deactivate", "member.reactivate", "member.select", "member.clear",

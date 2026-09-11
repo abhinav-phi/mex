@@ -9,6 +9,7 @@ import { buildSyncBrief, buildCombinedBrief } from "./brief-builder.js";
 import { findScaffoldFiles } from "../drift/index.js";
 import { captureGroundingBaselines, groundingReviewNodeIds, loadGroundingRuntime, persistMovedGroundings, previewGroundingBaseline } from "../graph/runtime.js";
 import { writeGroundings } from "../markdown.js";
+import { buildAgentCommand } from "../agent-command.js";
 
 const INTERACTIVE_AI_TIMEOUT_MS = 15 * 60_000;
 
@@ -33,14 +34,12 @@ export function runToolInteractive(
   cwd: string,
   options: RunToolInteractiveOptions = {},
 ): boolean {
-  const meta = AI_TOOLS[tool];
-  if (!meta.cli) return false;
-
-  const args = [...meta.promptFlag, brief];
+  const invocation = buildAgentCommand(tool, brief, "interactive");
+  if (invocation === null) return false;
   // cross-spawn resolves Windows `.cmd`/`.bat` wrappers (npm installs `claude`
   // as `claude.cmd`) and escapes args correctly — plain spawnSync throws ENOENT
   // on Windows, and `shell: true` mangles the multi-line prompt (issue #85).
-  const result = crossSpawn.sync(meta.cli, args, {
+  const result = crossSpawn.sync(invocation.command, invocation.args, {
     cwd,
     stdio: "inherit",
     ...(options.timeoutMs === null

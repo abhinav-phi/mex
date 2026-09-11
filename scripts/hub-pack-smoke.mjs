@@ -1198,20 +1198,20 @@ function runFreshCodeRepoSetup(cli, project, agentBin) {
 function runInteractiveAgentSetup(cli, project, workRoot) {
   const emptyPath = join(workRoot, "empty-agent-path");
   mkdirSync(emptyPath, { recursive: true });
-  installGitOnlyPath(emptyPath);
 
+  // This fixture exercises the code Hub after setup, so persist code-repo intent.
   // Keep the packed smoke independent from developer-machine agent installs.
-  // The CLI itself is launched through an absolute Node path. PATH contains
-  // only Git, which setup needs for ignore verification, so agent discovery
-  // reliably chooses the manual-population branch.
+  // Launch Node by absolute path and restrict PATH to Git, then prove the
+  // selected agent CLIs are absent before exercising manual population.
   const env = { ...process.env, MEX_TELEMETRY: "0", NO_COLOR: "1" };
   for (const key of Object.keys(env)) {
     if (key.toLowerCase() === "path") delete env[key];
   }
-  env.PATH = emptyPath;
+  env.PATH = installGitOnlyPath(emptyPath);
+  verifyManualSetupEnvironment(project, env);
 
   return new Promise((resolveOutput, reject) => {
-    const setup = spawn(process.execPath, [cli, "setup", "--mode", "agent-memory"], {
+    const setup = spawn(process.execPath, [cli, "setup", "--mode", "code-repo"], {
       cwd: project,
       env,
       stdio: ["pipe", "pipe", "pipe"],
@@ -1283,16 +1283,48 @@ function runInteractiveAgentSetup(cli, project, workRoot) {
 }
 
 function installGitOnlyPath(directory) {
-  const locator = process.platform === "win32" ? "where.exe" : "which";
-  const located = spawnSync(locator, ["git"], { encoding: "utf8" });
+  const executable = locateSmokeExecutable(process.platform === "win32" ? "git.exe" : "git");
+  if (process.platform === "win32") {
+    // Direct spawn cannot execute git.cmd. Keep native Git in its installation
+    // directory so its runtime and helper paths remain valid.
+    return dirname(executable);
+  }
+  symlinkSync(executable, join(directory, "git"));
+  return directory;
+}
+
+function locateSmokeExecutable(command) {
+  const located = spawnSync(process.platform === "win32" ? "where.exe" : "which", [command], {
+    encoding: "utf8", timeout: 5_000, windowsHide: true,
+  });
   const executable = located.status === 0
     ? located.stdout.split(/\r?\n/u).find((line) => line.trim().length > 0)?.trim()
     : undefined;
-  if (!executable) throw new Error("The packed setup smoke could not locate Git.");
-  if (process.platform === "win32") {
-    writeFileSync(join(directory, "git.cmd"), `@"${executable}" %*\r\n`, "utf8");
-  } else {
-    symlinkSync(executable, join(directory, "git"));
+  if (!executable) throw new Error(`The packed setup smoke could not locate ${command}.`);
+  return resolve(executable);
+}
+
+function verifyManualSetupEnvironment(project, env) {
+  const options = { cwd: project, env, encoding: "utf8", timeout: 5_000, windowsHide: true };
+  const git = spawnSync("git", ["rev-parse", "--show-toplevel"], options);
+  if (git.error || git.status !== 0) {
+    throw new Error("The packed setup smoke cannot run native Git in its restricted PATH.", {
+      cause: git.error,
+    });
+  }
+  // Locate the probe before restricting its environment. A missing `where` or
+  // `which` must never count as evidence that Claude/Codex are unavailable.
+  const locator = locateSmokeExecutable(process.platform === "win32" ? "where.exe" : "which");
+  for (const command of ["claude", "codex"]) {
+    const found = spawnSync(locator, [command], options);
+    if (found.status === 0) {
+      throw new Error(`The packed setup smoke unexpectedly exposes ${command} in its restricted PATH.`);
+    }
+    if (found.error || found.status !== 1) {
+      throw new Error(`The packed setup smoke could not verify that ${command} is unavailable.`, {
+        cause: found.error,
+      });
+    }
   }
 }
 
@@ -1320,7 +1352,8 @@ function verifyPackedSetupOutput(output) {
 function verifySetupConfig(project) {
   const config = JSON.parse(readFileSync(join(project, ".mex", "config.json"), "utf8"));
   if (
-    JSON.stringify(config.aiTools) !== JSON.stringify(["claude", "codex"])
+    config.setupMode !== "code-repo"
+    || JSON.stringify(config.aiTools) !== JSON.stringify(["claude", "codex"])
     || config.scaffold_id !== "11111111-1111-4111-8111-111111111111"
     || config.scaffold_name !== "packed-hub-smoke"
     || JSON.stringify(config.wiki) !== JSON.stringify({
@@ -1328,7 +1361,7 @@ function verifySetupConfig(project) {
       readOnly: ["context/read-only/**"],
     })
   ) {
-    throw new Error("The packed interactive setup did not persist both clients without changing existing config.");
+    throw new Error("The packed interactive setup did not persist code-repo intent and both clients while preserving existing config.");
   }
 }
 

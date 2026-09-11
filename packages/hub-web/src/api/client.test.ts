@@ -544,4 +544,25 @@ describe("HttpHubApi shared-contract boundary", () => {
     expect(received).toHaveBeenCalledWith(terminal);
     expect(FakeEventSource.latest.close).toHaveBeenCalledOnce();
   });
+
+  it("recovers setup on connection and reconnection errors, then stops on close", () => {
+    class FakeEventSource {
+      static latest: FakeEventSource;
+      readonly close = vi.fn();
+      onerror: (() => void) | null = null;
+      onmessage: EventListener | null = null;
+      constructor() { FakeEventSource.latest = this; }
+      addEventListener() { /* No snapshots arrive before promotion. */ }
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const disconnected = vi.fn();
+    const subscription = new HttpHubApi().subscribeToSetup(vi.fn(), disconnected);
+    FakeEventSource.latest.onerror?.();
+    FakeEventSource.latest.onerror?.();
+    expect(disconnected).toHaveBeenCalledTimes(2);
+    subscription.close();
+    FakeEventSource.latest.onerror?.();
+    expect(disconnected).toHaveBeenCalledTimes(2);
+    expect(FakeEventSource.latest.close).toHaveBeenCalledOnce();
+  });
 });

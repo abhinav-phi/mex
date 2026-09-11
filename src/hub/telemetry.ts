@@ -7,7 +7,7 @@ export const HubPageViewSchema = z.object({
   page: z.enum([
     "home", "search", "knowledge", "knowledge_detail", "code", "code_symbol",
     "workstreams", "specs", "spec_detail", "playbooks", "catch_up", "inbox",
-    "relays", "members", "activity", "jobs", "health", "settings", "not_found",
+    "relays", "members", "activity", "jobs", "health", "settings", "setup", "not_found",
   ]),
 }).strict();
 

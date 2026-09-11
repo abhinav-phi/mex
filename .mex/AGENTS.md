@@ -14,7 +14,7 @@ A local-first TypeScript CLI and browser Hub that turns repository code and agen
 - Ordinary reads never repair, migrate, or initialize state; mutations and maintenance must be explicit.
 - Keep the package-root API limited to intentional exports from `src/index.ts`.
 - Never weaken containment, freshness, privacy, or bounded-work checks to make a test pass.
-- MEX never stages, commits, pushes, or pulls on a user's behalf.
+- MEX may create a local setup commit only after the user reviews the exact setup-file diff and explicitly chooses the Hub commit action. Preserve unrelated staged work. MEX never pushes or pulls.
 
 ## Commands
 - Dev: `npm run dev`

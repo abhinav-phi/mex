@@ -3,6 +3,7 @@ const PAGE_ROUTES = {
   "/workstreams": "workstreams", "/specs": "specs", "/playbooks": "playbooks",
   "/catch-up": "catch_up", "/inbox": "inbox", "/relays": "relays", "/members": "members",
   "/activity": "activity", "/jobs": "jobs", "/health": "health", "/settings": "settings",
+  "/setup": "setup",
 } as const;
 
 export type HubTelemetryPage = typeof PAGE_ROUTES[keyof typeof PAGE_ROUTES]

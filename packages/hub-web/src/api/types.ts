@@ -139,6 +139,23 @@ export type {
   WikiRelationsResponse,
   WikiSource,
 } from "@mex/hub-contracts";
+export type {
+  SetupRun,
+  SetupStartRequest,
+  SetupStatus,
+  SetupToolStatus,
+  SetupStage,
+  SetupProgress,
+  SetupProgressStep,
+  SetupTranscriptEntry,
+  SetupTranscriptBatch,
+  SetupCommitPreview,
+  SetupCommitFile,
+  SetupCommitDiff,
+  SetupCommitDiffRequest,
+  SetupCommitRequest,
+  SetupCommitResponse,
+} from "@mex/hub-contracts/setup";
 
 export type CapabilityName = "graph" | "wiki" | "jobs" | "activity" | "members" | "workstreams" | "specs" | "inbox" | "relays";
 export type Tone = "neutral" | "info" | "success" | "warning" | "danger";

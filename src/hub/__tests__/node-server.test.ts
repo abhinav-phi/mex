@@ -37,6 +37,18 @@ describe("startHubNodeServer", () => {
     }
   });
 
+  it("serves a replacement app on the same listener", async () => {
+    const app = new Hono().get("/", (context) => context.text("setup"));
+    const server = await startHubNodeServer({ app });
+    try {
+      expect(await (await fetch(server.origin)).text()).toBe("setup");
+      server.replaceApp(new Hono().get("/", (context) => context.text("hub")));
+      expect(await (await fetch(server.origin)).text()).toBe("hub");
+    } finally {
+      await server.close();
+    }
+  });
+
   it("rejects invalid explicit ports before opening a listener", async () => {
     const app = new Hono();
     await expect(startHubNodeServer({ app, port: 65_536 })).rejects.toThrow(/Hub port/);
