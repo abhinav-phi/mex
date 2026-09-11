@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SetupRunSchema } from "@mex/hub-contracts/setup";
 import type { HeadlessSetupOptions } from "../../../setup/headless.js";
 import { SetupPopulationError } from "../../../setup/population.js";
+import { SetupFinalizationError } from "../../../setup/index.js";
 
 const mocks = vi.hoisted(() => ({ inspect: vi.fn(), execute: vi.fn(), status: vi.fn(), initial: vi.fn() }));
 vi.mock("../../../setup/headless.js", () => ({ inspectSetupStatus: mocks.inspect, runHeadlessSetup: mocks.execute }));
@@ -174,6 +175,19 @@ describe("setup run lifecycle", () => {
     runner.start({ mode: "code-repo", tools: ["codex"] });
     await vi.waitFor(() => expect(runner.snapshot().status).toBe("failed"));
     expect(runner.snapshot()).toMatchObject({ prompt: null, error: expect.stringContaining("authenticate") });
+    await runner.shutdown();
+  });
+
+  it("reports a finalization failure's authored remediation instead of a generic failure", async () => {
+    mocks.execute.mockRejectedValue(new SetupFinalizationError(
+      "Grounding finalization failed: 1 authored grounding reference could not be verified against the code graph. "
+        + "Skipped grounding baseline for unavailable node <exact-node-id> in .mex/AGENTS.md.",
+    ));
+    const runner = new HubSetupRunner({ projectRoot: "/test" });
+    runner.start({ mode: "code-repo", tools: ["claude"] });
+    await vi.waitFor(() => expect(runner.snapshot().status).toBe("failed"));
+    expect(runner.snapshot().error).toContain("<exact-node-id> in .mex/AGENTS.md");
+    expect(runner.snapshot().error).not.toContain("Run mex setup in this project for details");
     await runner.shutdown();
   });
 

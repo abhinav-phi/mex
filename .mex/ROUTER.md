@@ -33,6 +33,9 @@ Then read this file fully before doing anything else in this session.
   `mex setup` steps through a headless engine, pauses at population with a
   copyable prompt when no selected CLI is available. Claude/Codex population
   runs as a cancellable background process; failures surface safe diagnostics.
+  Headless Claude pre-approves only the read-only graph, impact, and event-log
+  `mex` commands (Bash and PowerShell); other commands are still denied.
+  Finalization failures show their authored remediation in the Hub.
   Both tools stream their visible assistant messages and compact fixed tool
   activity labels to a read-only view with bounded scrollback, elapsed time,
   and honest quiet periods. Commands, arguments, paths, and tool results are

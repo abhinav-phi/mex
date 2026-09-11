@@ -15,7 +15,7 @@ import {
   type HeadlessSetupResult,
 } from "../../setup/headless.js";
 import { HubHttpError } from "../http/errors.js";
-import { setupCommitCheckpointCommands } from "../../setup/index.js";
+import { setupCommitCheckpointCommands, SetupFinalizationError } from "../../setup/index.js";
 import { SetupPopulationError } from "../../setup/population.js";
 import { initialSetupStatus, projectSetupStatus } from "./readiness.js";
 import { SetupTranscriptStore } from "./transcript.js";
@@ -332,7 +332,7 @@ export class HubSetupRunner {
     } catch (error) {
       // Child output and arbitrary filesystem exceptions are never a browser payload.
       const message = signal.aborted ? "Setup was cancelled. You can resume it when ready."
-        : error instanceof SetupPopulationError || error instanceof HubHttpError ? error.message
+        : error instanceof SetupPopulationError || error instanceof SetupFinalizationError || error instanceof HubHttpError ? error.message
         : "Setup could not finish. Run mex setup in this project for details, then retry.";
       this.run = {
         ...this.run,

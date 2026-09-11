@@ -5,6 +5,30 @@ export interface AgentCommand {
   readonly args: string[];
 }
 
+/**
+ * Headless Claude has no one to answer approval prompts, so every shell command
+ * the population prompt relies on must be pre-approved or it is denied. Only the
+ * read-only graph commands and the event log are allowed; maintenance, Team,
+ * and Git commands still require a person.
+ */
+const HEADLESS_CLAUDE_MEX_COMMANDS = [
+  "mex graph scope",
+  "mex graph get",
+  "mex graph query",
+  "mex graph status",
+  "mex impact",
+  "mex logging",
+  "mex log",
+  "mex timeline",
+  "mex capabilities",
+] as const;
+
+/** Windows sessions may run commands through PowerShell rather than Bash. */
+export const HEADLESS_CLAUDE_ALLOWED_TOOLS = HEADLESS_CLAUDE_MEX_COMMANDS.flatMap((command) => [
+  `Bash(${command}:*)`,
+  `PowerShell(${command}:*)`,
+]);
+
 /** Terminal and browser adapters share tool support and argument construction. */
 export function buildAgentCommand(
   tool: AiTool,
@@ -17,7 +41,11 @@ export function buildAgentCommand(
   if (mode === "headless" && tool === "claude") {
     return {
       command: meta.cli,
-      args: ["-p", instruction, "--permission-mode", "acceptEdits", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
+      args: [
+        "-p", instruction, "--permission-mode", "acceptEdits",
+        "--allowedTools", HEADLESS_CLAUDE_ALLOWED_TOOLS.join(","),
+        "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+      ],
     };
   }
   if (mode === "headless" && tool === "codex") {

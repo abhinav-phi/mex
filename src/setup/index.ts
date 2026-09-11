@@ -630,20 +630,53 @@ async function confirmPopulationFinished(mexDir: string): Promise<boolean> {
   }
 }
 
+/**
+ * A finalization failure whose message is composed here from MEX-authored text,
+ * relative scaffold paths, and scaffold-authored node ids — never from arbitrary
+ * exceptions — so the Hub may show it instead of a generic failure.
+ */
+export class SetupFinalizationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SetupFinalizationError";
+  }
+}
+
+// Keeps the composed message inside the Hub's 512-character run error.
+const FINALIZATION_DETAIL_LIMIT = 2;
+const FINALIZATION_DETAIL_CHARS = 140;
+
 export async function finalizeCodeRepoSetup(projectRoot: string, mexDir: string): Promise<void> {
   info("Capturing grounding baselines...");
+  const captureWarnings: string[] = [];
+  let result: GroundingBaselineCaptureResult;
   try {
-    const result = await captureGroundingBaselines(
+    result = await captureGroundingBaselines(
       { projectRoot, scaffoldRoot: mexDir, aiTools: [] },
-      { warn },
+      {
+        warn: (message) => {
+          warn(message);
+          if (captureWarnings.length < FINALIZATION_DETAIL_LIMIT) {
+            captureWarnings.push(message.slice(0, FINALIZATION_DETAIL_CHARS));
+          }
+        },
+      },
     );
-    assertGroundingCaptureReady(result);
-    if (result.captured > 0) ok(`Captured ${result.captured} grounding baseline(s)`);
-    else info("No authored grounding baselines needed capture");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Grounding finalization failed: ${message}. Rerun mex setup after fixing it.`);
   }
+  try {
+    assertGroundingCaptureReady(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const detail = captureWarnings.length === 0 ? "" : ` ${captureWarnings.join(" ")}`;
+    throw new SetupFinalizationError(
+      `Grounding finalization failed: ${message}${detail} Correct or remove those grounds_to entries or mex:// links, then rerun setup.`,
+    );
+  }
+  if (result.captured > 0) ok(`Captured ${result.captured} grounding baseline(s)`);
+  else info("No authored grounding baselines needed capture");
 
   const config = findConfig(projectRoot);
   const wiki = await finalizeSetupWiki({
@@ -657,7 +690,7 @@ export async function finalizeCodeRepoSetup(projectRoot: string, mexDir: string)
   if (!wiki.ready) {
     const codes = [...new Set(wiki.diagnostics.map((entry) => entry.code))].join(", ");
     const suffix = codes.length === 0 ? "" : ` (${codes})`;
-    throw new Error(`${wiki.reason ?? "Wiki setup did not finish."}${suffix} Fix the issue and rerun mex setup.`);
+    throw new SetupFinalizationError(`${wiki.reason ?? "Wiki setup did not finish."}${suffix} Fix the issue and rerun mex setup.`);
   }
   ok(`Wiki ready with ${wiki.indexedEntities} indexed entit${wiki.indexedEntities === 1 ? "y" : "ies"}`);
 }

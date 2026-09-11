@@ -15,6 +15,7 @@ import { checkBrokenLinks } from "../src/drift/checkers/broken-link.js";
 import { runDriftCheckWithGraphStatus } from "../src/drift/index.js";
 import { captureGroundingBaselines, loadGroundingRuntime, previewGroundingBaseline } from "../src/graph/runtime.js";
 import { finalizeSetupWiki } from "../src/setup/wiki-finalize.js";
+import { finalizeCodeRepoSetup, SetupFinalizationError } from "../src/setup/index.js";
 
 const roots: string[] = [];
 
@@ -40,8 +41,30 @@ describe("setup graph-grounding population", () => {
       expect(prompt).toMatch(/do not\s+duplicate, delete, or rename a pattern/iu);
       expect(prompt).toContain("Edge targets are relative to the .mex/ scaffold root");
       expect(prompt).not.toContain("Read 2-3 representative files");
+      // Agents are told to retain this rule in AGENTS.md; a verbatim copy must
+      // not leave a placeholder link that setup then verifies against the graph.
+      expect(findMexAnchors(prompt)).toEqual([]);
     }
   });
+
+  it("names an unverifiable placeholder anchor in a safe finalization failure", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mex-setup-placeholder-"));
+    roots.push(root);
+    const scaffoldRoot = join(root, ".mex");
+    mkdirSync(join(root, "src"), { recursive: true });
+    mkdirSync(scaffoldRoot, { recursive: true });
+    writeFileSync(join(root, "src", "service.ts"), "export function liveService(): number { return 1; }\n");
+    writeFileSync(join(scaffoldRoot, "AGENTS.md"),
+      "# Agents\n\nAnchor symbols inline as [`symbolName()`](mex://<exact-node-id>) with the node id only.\n");
+    const engine = createGraphEngine({ rootDir: root });
+    await engine.build();
+    engine.close();
+
+    const failure = await finalizeCodeRepoSetup(root, scaffoldRoot).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(SetupFinalizationError);
+    expect((failure as Error).message).toContain("<exact-node-id> in .mex/AGENTS.md");
+    expect((failure as Error).message.length).toBeLessThanOrEqual(512);
+  }, 30_000);
 
   it("preserves authored scaffold content when a fresh project resumes setup", () => {
     const prompt = buildFreshPrompt();

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildAgentCommand } from "../../agent-command.js";
+import { buildAgentCommand, HEADLESS_CLAUDE_ALLOWED_TOOLS } from "../../agent-command.js";
 import {
   HeadlessPopulationError,
   launchHeadlessSetupPopulation,
@@ -44,7 +44,9 @@ describe("headless population process", () => {
       expect(observed.args).toContainEqual(expect.stringMatching(/^Read the full setup population prompt from/));
       if (tool === "codex") expect(observed.args.slice(0, -1)).toEqual(["exec", "--json", "--sandbox", "workspace-write"]);
       else expect(observed.args).toEqual([
-        "-p", expect.any(String), "--permission-mode", "acceptEdits", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+        "-p", expect.any(String), "--permission-mode", "acceptEdits",
+        "--allowedTools", HEADLESS_CLAUDE_ALLOWED_TOOLS.join(","),
+        "--output-format", "stream-json", "--verbose", "--include-partial-messages",
       ]);
       await expect(run).resolves.toEqual({ tool, completed: true });
       expect(heartbeat).toBeGreaterThan(0);
@@ -64,6 +66,18 @@ describe("headless population process", () => {
     expect(buildAgentCommand("cursor", "prompt", "headless")).toBeNull();
     expect(buildAgentCommand("codex", "prompt", "headless", { allowNonGit: true })?.args)
       .toEqual(["exec", "--json", "--sandbox", "workspace-write", "--skip-git-repo-check", "prompt"]);
+  });
+
+  it("pre-approves only the read-only mex commands headless Claude population needs", () => {
+    for (const shell of ["Bash", "PowerShell"]) {
+      for (const command of ["mex graph scope", "mex graph get", "mex graph query", "mex impact", "mex logging", "mex log"]) {
+        expect(HEADLESS_CLAUDE_ALLOWED_TOOLS).toContain(`${shell}(${command}:*)`);
+      }
+    }
+    for (const rule of HEADLESS_CLAUDE_ALLOWED_TOOLS) {
+      expect(rule).toMatch(/^(Bash|PowerShell)\(mex [a-z]+( [a-z]+)?:\*\)$/);
+      expect(rule).not.toMatch(/refresh|rebuild|setup|sync|member|relay|inbox|git/);
+    }
   });
 
   it.each(["claude", "codex"] as const)("streams split %s activity before the child exits and flushes its final record", async (tool) => {
