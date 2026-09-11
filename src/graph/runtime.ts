@@ -354,7 +354,6 @@ export function persistMovedGroundings(
     for (const anchor of [...anchors].reverse()) {
       const migratedId = migratedNodes.get(anchor.nodeId);
       if (migratedId !== undefined) {
-        if (migratedId === anchor.nodeId) continue;
         anchoredContent = rewriteMexAnchor(anchoredContent, anchor, migratedId);
         moved += 1;
         continue;
