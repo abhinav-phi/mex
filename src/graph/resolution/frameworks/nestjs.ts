@@ -68,16 +68,19 @@ export const nestjsResolver: FrameworkResolver = {
       const decoratorMatch = HTTP_DECORATOR.exec(trimmed);
       if (decoratorMatch && activeController && !activeController.skip) {
         const method = decoratorMatch[1]!.toUpperCase();
-        const handlerName = findHandlerName(blanked, lineStart + line.length);
-        if (handlerName) {
+        // Scan from just past the decorator's closing paren, not the line
+        // end: `@Get() list() {}` on one line must bind `list`, not the next
+        // method. (#102 review round 2.)
+        const openInLine = line.length - line.trimStart().length + trimmed.indexOf("(");
+        const span = openInLine >= 0 ? extractBalancedArgs(line, openInLine) : null;
+        const handlerName = findHandlerName(blanked, lineStart + (span?.end ?? line.length));
+        if (handlerName && span) {
           // An empty argument list is a route with no path; an argument that
-          // is not a string literal (an array, a constant) cannot be read
-          // statically — no route beats a wrong route.
-          const args = extractBalancedArgs(trimmed, trimmed.indexOf("("));
-          const trimmedArgs = args === null ? null : args.trim();
-          const rawPath: string | null = trimmedArgs === null
-            ? null
-            : trimmedArgs === "" ? "" : firstStringArgument(args!);
+          // is not a string literal (an array, a constant, a template with
+          // an interpolation) cannot be read statically — no route beats a
+          // wrong route.
+          const trimmedArgs = span.args.trim();
+          const rawPath: string | null = trimmedArgs === "" ? "" : firstStringArgument(span.args);
           if (rawPath !== null) {
             const routeName = `${method} ${normalizeRoutePath(activeController.prefix, rawPath)}`;
             const handler = handlerName;
@@ -200,17 +203,26 @@ function blankComments(content: string): string {
 function parseControllerArgs(line: string): { prefix: string; skip: boolean } {
   const open = line.indexOf("(");
   if (open < 0) return { prefix: "", skip: false };
-  const args = extractBalancedArgs(line, open);
-  if (args === null) return { prefix: "", skip: true };
-  const trimmedArgs = args.trim();
+  const span = extractBalancedArgs(line, open);
+  if (span === null) return { prefix: "", skip: true };
+  const trimmedArgs = span.args.trim();
   if (trimmedArgs === "") return { prefix: "", skip: false };
 
   const literal = STRING_LITERAL_ARG.exec(trimmedArgs);
-  if (literal) return { prefix: literal[2]!, skip: false };
+  if (literal) {
+    const path = firstStringArgument(trimmedArgs);
+    return path === null ? { prefix: "", skip: true } : { prefix: path, skip: false };
+  }
 
   if (trimmedArgs.startsWith("{")) {
+    // An object with a `path` key must have a statically readable value for
+    // it; `{ path: CONSTANT }` is as unreadable as a bare constant argument.
+    // An object with no `path` at all (`{ host: '…' }`) is unprefixed.
+    const hasPath = /(?:^|[,{]\s*)path\s*:/.test(trimmedArgs);
+    if (!hasPath) return { prefix: "", skip: false };
     const objectPath = OBJECT_PATH_ARG.exec(trimmedArgs);
-    return { prefix: objectPath ? objectPath[2]! : "", skip: false };
+    if (!objectPath) return { prefix: "", skip: true };
+    return { prefix: objectPath[2]!, skip: false };
   }
 
   // A constant identifier or an array of paths is not statically readable
@@ -218,15 +230,21 @@ function parseControllerArgs(line: string): { prefix: string; skip: boolean } {
   return { prefix: "", skip: true };
 }
 
-/** The first positional string-literal argument, or null when absent. */
+/**
+ * The first positional string-literal argument, or null when absent, or when
+ * it is a template with an interpolation — `` `${BASE}/x` `` has no static
+ * path and must not be emitted verbatim.
+ */
 function firstStringArgument(argsText: string): string | null {
   const match = STRING_LITERAL_ARG.exec(argsText.trim());
-  return match ? match[2]! : null;
+  if (!match) return null;
+  if (match[1] === "`" && match[2]!.includes("${")) return null;
+  return match[2]!;
 }
 
 /** `GET /users/:id` from the controller prefix and the method's path. */
 function normalizeRoutePath(prefix: string, methodPath: string): string {
-  let fullPath = prefix;
+  let fullPath = prefix.replace(/\/+$/, "");
   if (fullPath && !fullPath.startsWith("/")) fullPath = "/" + fullPath;
   let subPath = methodPath;
   if (subPath && !subPath.startsWith("/")) subPath = "/" + subPath;
@@ -238,11 +256,13 @@ function normalizeRoutePath(prefix: string, methodPath: string): string {
 }
 
 /**
- * Extract the argument text of the call whose `(` sits at `open`, skipping
- * over string literals so a `)` inside `'List users :)'` does not close it.
- * Returns null when the call does not close on this line.
+ * Extract the argument text of the call whose `(` sits at `open`, and the
+ * offset just past its closing `)`. Skipping over string literals keeps a `)`
+ * inside `'List users :)'` from closing it; the end offset lets the caller
+ * start the handler scan at the right place when the decorator and its method
+ * share a line. Returns null when the call does not close on this line.
  */
-function extractBalancedArgs(line: string, open: number): string | null {
+function extractBalancedArgs(line: string, open: number): { args: string; end: number } | null {
   let depth = 0;
   let quote: string | null = null;
   for (let i = open; i < line.length; i++) {
@@ -255,7 +275,7 @@ function extractBalancedArgs(line: string, open: number): string | null {
     if (ch === "(") depth++;
     else if (ch === ")") {
       depth--;
-      if (depth === 0) return line.slice(open + 1, i);
+      if (depth === 0) return { args: line.slice(open + 1, i), end: i + 1 };
     }
   }
   return null;

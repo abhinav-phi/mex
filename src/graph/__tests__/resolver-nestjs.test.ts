@@ -161,6 +161,45 @@ describe("NestJS framework resolver", () => {
     expect(result.references).toContainEqual(expect.objectContaining({ referenceName: "findAll" }));
   });
 
+  it("binds a decorator written on the same line as its method (#102 review r2)", () => {
+    const custom = [
+      "@Controller('users')",
+      "export class UsersController {",
+      "  @Get() list() { return []; }",
+      "  @Get(':id') findOne(@Param('id') id: string) { return { id }; }",
+      "}",
+      "",
+    ].join("\n");
+    const result = nestjsResolver.extract!("src/inline.ts", custom);
+    expect(result.nodes.map((node) => node.signature)).toEqual([
+      "GET /users -> list",
+      "GET /users/:id -> findOne",
+    ]);
+  });
+
+  it("skips an object controller whose path is not a literal, trims slashes, and refuses interpolated templates", () => {
+    const custom = [
+      "@Controller({ path: USERS_PATH, version: '1' })",
+      "export class UnreadableController {",
+      "  @Get(':id')",
+      "  findOne() {}",
+      "}",
+      "",
+      "@Controller('/users/')",
+      "export class SlashedController {",
+      "  @Get('/:id/')",
+      "  findOne() {}",
+      "",
+      "  @Get(`${BASE}/x`)",
+      "  templated() {}",
+      "}",
+      "",
+    ].join("\n");
+    const result = nestjsResolver.extract!("src/edge.ts", custom);
+    // { path: CONSTANT } behaves like the bare-constant form: routes skipped.
+    expect(result.nodes.map((node) => node.name)).toEqual(["GET /users/:id"]);
+  });
+
   it("leaves ambiguous references unresolved unless the owning class disambiguates", () => {
     const handler1 = node("method:1", "duplicateMethod");
     const handler2 = { ...node("method:2", "duplicateMethod"), startLine: 10 };
