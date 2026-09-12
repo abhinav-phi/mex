@@ -49,9 +49,12 @@ describe("Next.js App Router resolver", () => {
     expect(deriveRoutePath("apps/web/src/app/api/orders/route.ts")).toBe("/api/orders");
   });
 
-  it("drops private folders from derived paths", () => {
-    expect(deriveRoutePath("app/_lib/route.ts")).toBe("/");
-    expect(deriveRoutePath("app/users/_components/route.ts")).toBe("/users");
+  it("opts private folders and everything under them out of routing", () => {
+    expect(deriveRoutePath("app/_lib/route.ts")).toBeNull();
+    expect(deriveRoutePath("app/users/_components/route.ts")).toBeNull();
+    expect(deriveRoutePath("app/_internal/api/route.ts")).toBeNull();
+    expect(nextjsResolver.extract!("app/_lib/route.ts", "export function GET() {}\n"))
+      .toEqual({ nodes: [], references: [] });
   });
 
   it("returns null for paths outside an App Router root", () => {

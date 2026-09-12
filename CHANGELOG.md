@@ -94,7 +94,6 @@ All notable changes to this project will be documented in this file.
 - COMPATIBILITY.md documents the FTS5 requirement, a one-line command to check the Node you actually run, and that the v0.6.3 fallback predates the code graph. The preflight's error message pointed at a document that said nothing about FTS5 (#110).
 - `mex graph rebuild`/`refresh`/`repair` and `mex wiki rebuild-index` now ensure `.mex/.gitignore` exists before creating a store. Only `mex setup` did this, so building a store in a checkout that had never run setup left `graph.db`, `-wal` and `-shm` untracked, ready for the next `git add -A` to commit (#110).
 
-<<<<<<< HEAD
 ### Compatibility
 
 - New open-to-team Relays use schema v4. Teammates need MEX 0.8.1 before
@@ -106,11 +105,6 @@ All notable changes to this project will be documented in this file.
   projects to refresh managed skills and anchors and start a new agent session.
   A completed 0.8.0 setup does not need to run again solely for this upgrade;
   follow any explicit maintenance action reported by `mex graph status`.
-=======
-### Added
-- `mex telemetry disable` and `mex telemetry enable`, writing the same `~/.mex/config.json` key as `mex config set telemetry on|off`. `mex telemetry --help` and `mex telemetry status` now name the `DO_NOT_TRACK=1` and `MEX_TELEMETRY=0` env opt-outs and say which one is in effect; previously the only switch lived under `config` and the env vars appeared solely in the first-run notice (#110).
-- A bounded Next.js App Router resolver turning `app/**/route.ts|js` modules (including `src/app` roots) into route nodes: one per exported HTTP handler (`GET` through `HEAD`), with the URL path derived from the route file's directory, dynamic segments such as `[id]` and catch-alls preserved verbatim, and route groups `(marketing)` excluded the way Next resolves them. Same-file handlers resolve only when unambiguous; Pages Router, layouts, and pages stay out of scope (#95).
->>>>>>> a37a046 (feat(graph): add Next.js App Router route resolver)
 
 ## [0.8.0] - 2026-09-02
 

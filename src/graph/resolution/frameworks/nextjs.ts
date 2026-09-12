@@ -124,8 +124,10 @@ function isHttpMethod(name: string): name is (typeof HTTP_METHODS)[number] {
  * `src` prefix. Dynamic segment text such as `[id]` and catch-alls such as
  * `[...slug]` is preserved verbatim — the brackets are Next's own route
  * syntax and rewriting them would lose the distinction between routes.
- * Route groups `(marketing)` and private folders `_lib` never appear in
- * URLs, so those segments are dropped the way Next itself resolves them.
+ * Route groups `(marketing)` never appear in URLs, so those segments are
+ * dropped the way Next itself resolves them. A private folder `_lib` opts
+ * itself and everything under it out of routing, so a route file inside one
+ * serves no URL at all.
  *
  * The App Router root is located as a path SEGMENT, not a substring: the
  * first cut at `indexOf("app")` turned `apps/web/app/api/orders/route.ts`
@@ -139,9 +141,9 @@ export function deriveRoutePath(normalizedFilePath: string): string | null {
 
   const start = root.index + root[0].length;
   const withoutFile = normalizedFilePath.slice(start, normalizedFilePath.lastIndexOf("/"));
-  const segments = withoutFile
-    .split("/")
-    .filter((segment) => segment.length > 0 && !segment.startsWith("(") && !segment.startsWith("_"));
+  const rawSegments = withoutFile.split("/").filter((segment) => segment.length > 0);
+  if (rawSegments.some((segment) => segment.startsWith("_"))) return null;
+  const segments = rawSegments.filter((segment) => !segment.startsWith("("));
   return `/${segments.join("/")}`;
 }
 
