@@ -41,3 +41,10 @@ class Custom:
     @app.route("/probe")
     def probe(self):
         return None
+
+ops = Blueprint("ops", __name__, url_prefix="/admin")
+
+
+@ops.get("/settings")
+def admin_settings():
+    return None

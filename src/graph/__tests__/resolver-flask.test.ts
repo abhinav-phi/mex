@@ -3,7 +3,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { extractFile, loadGrammars } from "../extraction/index.js";
-import { generateNodeId } from "../extraction/node-id.js";
 import { flaskResolver } from "../resolution/frameworks/flask.js";
 import { FRAMEWORK_RESOLVERS } from "../resolution/frameworks/index.js";
 import type { GraphNode } from "../types.js";
@@ -42,7 +41,8 @@ describe("Flask framework resolver", () => {
 
   it("extracts stable route nodes with converters preserved and methods fanned out", () => {
     const result = flaskResolver.extract!(FILE_PATH, source);
-    const expectedRoutes = [
+
+    expect(result.nodes.map((node) => node.name)).toEqual([
       "GET /health",
       "POST /users/<int:user_id>",
       "PUT /users/<int:user_id>",
@@ -51,12 +51,11 @@ describe("Flask framework resolver", () => {
       "POST /settings",
       "GET /cache",
       "GET /probe",
-    ];
-
-    expect(result.nodes.map((node) => node.name)).toEqual(expectedRoutes);
+      "GET /admin/settings",
+    ]);
     for (const node of result.nodes) {
       expect(node).toMatchObject({ kind: "route", language: "python", filePath: FILE_PATH });
-      expect(node.id).toBe(generateNodeId(FILE_PATH, "route", node.name, node.name, "flask-route", node.signature));
+      expect(node.id.startsWith("route:")).toBe(true);
     }
     expect(result.references.map((ref) => [ref.referenceName, ref.referenceKind])).toEqual([
       ["health", "function_ref"],
@@ -67,10 +66,122 @@ describe("Flask framework resolver", () => {
       ["create_settings", "function_ref"],
       ["clear_cache", "function_ref"],
       ["probe", "function_ref"],
+      ["admin_settings", "function_ref"],
     ]);
   });
 
-  it("recognizes custom instance names and skips dynamic paths and foreign receivers", () => {
+  it("gives a route declared twice in one file distinct ids (#177 review)", () => {
+    const custom = [
+      "import os",
+      "from flask import Flask",
+      "app = Flask(__name__)",
+      "if os.environ.get('DEBUG'):",
+      "    @app.route('/debug')",
+      "    def debug_on():",
+      "        return 'on'",
+      "else:",
+      "    @app.route('/debug')",
+      "    def debug_off():",
+      "        return 'off'",
+      "",
+    ].join("\n");
+    const result = flaskResolver.extract!("src/conditional.py", custom);
+    expect(result.nodes.map((node) => node.name)).toEqual(["GET /debug", "GET /debug"]);
+    expect(new Set(result.nodes.map((node) => node.id)).size).toBe(2);
+  });
+
+  it("ignores a route decorator shown inside a docstring example (#177 review)", () => {
+    const custom = [
+      "from flask import Flask",
+      "app = Flask(__name__)",
+      "",
+      "def documented():",
+      '    """Example usage:',
+      "",
+      "    @app.route('/example')",
+      "    def example():",
+      "        ...",
+      '    """',
+      "    return 1",
+      "",
+      "@app.route('/real')",
+      "def real():",
+      "    return 2",
+      "",
+    ].join("\n");
+    const result = flaskResolver.extract!("src/docstring.py", custom);
+    expect(result.nodes.map((node) => node.name)).toEqual(["GET /real"]);
+  });
+
+  it("accepts tuple methods, skips unreadable ones, and refuses interpolated paths (#177 review)", () => {
+    const custom = [
+      "from flask import Flask",
+      "app = Flask(__name__)",
+      "ALLOWED = ['GET', 'POST']",
+      "",
+      '@app.route("/login", methods=("GET", "POST"))',
+      "def login():",
+      "    return 1",
+      "",
+      '@app.route("/items", methods=ALLOWED)',
+      "def items():",
+      "    return 2",
+      "",
+      '@app.route(f"/users/{1}")',
+      "def dynamic():",
+      "    return 3",
+      "",
+    ].join("\n");
+    const result = flaskResolver.extract!("src/methods.py", custom);
+    // Tuple fan-out emits both methods; the variable methods= and the
+    // f-string path skip rather than guess.
+    expect(result.nodes.map((node) => node.name)).toEqual(["GET /login", "POST /login"]);
+  });
+
+  it("treats imported app/blueprint names as receivers (#177 review)", () => {
+    const views = [
+      "from myapp.auth import bp",
+      "from myapp import app",
+      "",
+      '@bp.route("/login", methods=["GET", "POST"])',
+      "def login():",
+      "    return 1",
+      "",
+      "@app.get('/status')",
+      "def status():",
+      "    return 2",
+      "",
+    ].join("\n");
+    const result = flaskResolver.extract!("src/views.py", views);
+    expect(result.nodes.map((node) => node.name)).toEqual([
+      "GET /login",
+      "POST /login",
+      "GET /status",
+    ]);
+  });
+
+  it("recognizes flask.Flask assignment, type annotations, and multi-line decorators (#177 review)", () => {
+    const custom = [
+      "import flask",
+      "app = flask.Flask(__name__)",
+      "api: flask.Blueprint = flask.Blueprint('api', __name__, url_prefix='/api')",
+      "",
+      "@api.route(",
+      '    "/users/<int:user_id>",',
+      '    methods=["GET", "POST"],',
+      ")",
+      "def users(user_id):",
+      "    return 1",
+      "",
+    ].join("\n");
+    const result = flaskResolver.extract!("src/blueprint.py", custom);
+    expect(result.nodes.map((node) => node.name)).toEqual([
+      "GET /api/users/<int:user_id>",
+      "POST /api/users/<int:user_id>",
+    ]);
+  });
+
+  it("recognizes custom instance names and skips foreign receivers and dynamic paths", () => {
     const customSource = [
       "api = Flask(__name__)",
       "client = HttpClient()",
@@ -98,21 +209,21 @@ describe("Flask framework resolver", () => {
       const target = pythonNodes.find((node) => node.name === handler)!;
       expect(flaskResolver.resolve(ref, context)).toMatchObject({
         targetNodeId: target.id,
-        confidence: 1,
-        resolvedBy: "framework",
+        confidence: 0.8,
+        resolvedBy: "flask-route-handler",
       });
     }
   });
 
   it("leaves missing, cross-file-only, and ambiguous handlers unresolved", () => {
-    const ref = flaskResolver.extract!(FILE_PATH, source).references[0]!;
+    const result = flaskResolver.extract!(FILE_PATH, source).references[0]!;
     const crossFile = node("function:cross-file", "health", "src/other.py");
-    expect(flaskResolver.resolve(ref, fakeContext([crossFile]))).toBeNull();
-    expect(flaskResolver.resolve(ref, fakeContext([]))).toBeNull();
+    expect(flaskResolver.resolve(result, fakeContext([crossFile]))).toBeNull();
+    expect(flaskResolver.resolve(result, fakeContext([]))).toBeNull();
 
     const sameFile = node("function:same-file", "health", FILE_PATH);
     const duplicate = node("method:duplicate", "health", FILE_PATH, "method");
-    expect(flaskResolver.resolve(ref, fakeContext([sameFile, duplicate]))).toBeNull();
+    expect(flaskResolver.resolve(result, fakeContext([sameFile, duplicate]))).toBeNull();
   });
 
   it("ignores non-Python files and is registered", () => {

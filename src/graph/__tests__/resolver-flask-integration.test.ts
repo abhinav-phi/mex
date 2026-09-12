@@ -45,7 +45,7 @@ describe("Flask resolver integration", () => {
 
       const resolved = db.prepare(
         "SELECT e.target, n.name AS route_name FROM edges e JOIN nodes n ON n.id = e.source"
-        + " WHERE e.kind = 'references' AND e.provenance = 'framework' AND e.resolution_method = 'framework'",
+        + " WHERE e.kind = 'references' AND e.provenance = 'framework' AND e.resolution_method = 'flask-route-handler'",
       ).all() as Array<{ target: string; route_name: string }>;
       expect(resolved).toHaveLength(2);
       for (const edge of resolved) {
