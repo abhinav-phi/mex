@@ -452,6 +452,164 @@ describe("checkDependencies", () => {
     const issues = checkDependencies(claims, tmpDir);
     expect(issues).toHaveLength(0);
   });
+
+  it("checks claims against pyproject.toml [project] dependencies (#3)", () => {
+    writeFileSync(join(tmpDir, "pyproject.toml"), [
+      "[project]",
+      'name = "svc"',
+      'dependencies = ["fastapi>=0.115", "celery[redis]==5.4.0"]',
+      "",
+    ].join("\n"));
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "FastAPI" }),
+      claim({ kind: "dependency", value: "celery" }),
+      claim({ kind: "dependency", value: "boto3" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].claim.value).toBe("boto3");
+  });
+
+  it("reads pyproject optional-dependencies and poetry tables", () => {
+    writeFileSync(join(tmpDir, "pyproject.toml"), [
+      "[project.optional-dependencies]",
+      'dev = ["pytest>=8.0", "httpx"]',
+      "",
+      "[tool.poetry.dependencies]",
+      'python = "^3.12"',
+      'SQLAlchemy = "^2.0"',
+      "",
+    ].join("\n"));
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "pytest" }),
+      claim({ kind: "dependency", value: "httpx" }),
+      claim({ kind: "dependency", value: "SQLAlchemy" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("reads a dependencies array written one item per line (#3)", () => {
+    writeFileSync(join(tmpDir, "pyproject.toml"), [
+      "[build-system]",
+      'requires = ["hatchling"]',
+      "",
+      "[project]",
+      'name = "svc"',
+      'requires-python = ">=3.10"',
+      "dependencies = [",
+      '    "mcp>=1.0.0,<3",',
+      "    # pinned below 4 until the next major settles",
+      '    "fastmcp>=3.2.4,<4",',
+      '    "celery[redis]==5.4.0",',
+      "]",
+      "",
+      "[project.optional-dependencies]",
+      "embeddings = [",
+      '    "sentence-transformers>=3.0.0,<6",',
+      "]",
+      "all = [",
+      '    "svc[embeddings]",',
+      "]",
+      "",
+    ].join("\n"));
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "mcp" }),
+      claim({ kind: "dependency", value: "FastMCP" }),
+      claim({ kind: "dependency", value: "celery" }),
+      claim({ kind: "dependency", value: "sentence-transformers" }),
+      claim({ kind: "dependency", value: "boto3" }),
+      // The `all` extra lists the project itself; that is not a dependency.
+      claim({ kind: "dependency", value: "svc" }),
+    ], tmpDir);
+    expect(issues.map((i) => i.claim.value)).toEqual(["boto3", "svc"]);
+  });
+
+  it("keeps the items after a PEP 508 environment marker (#3)", () => {
+    writeFileSync(join(tmpDir, "pyproject.toml"), [
+      "[project]",
+      'name = "svc"',
+      "dependencies = [",
+      `    "tomli>=2.0.0,<3; python_version < '3.11'",`,
+      '    "fastapi>=0.115",',
+      "]",
+      "",
+    ].join("\n"));
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "tomli" }),
+      claim({ kind: "dependency", value: "FastAPI" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("reads poetry groups and PEP 735 dependency groups (#3)", () => {
+    writeFileSync(join(tmpDir, "pyproject.toml"), [
+      "[dependency-groups]",
+      "dev = [",
+      '    "ruff",',
+      '    { include-group = "test" },',
+      "]",
+      'test = ["pytest>=8.0"]',
+      "",
+      "[tool.poetry.group.dev.dependencies]",
+      'python = "^3.12"',
+      'mypy = "^1.11"',
+      'httpx = { version = "^0.27", optional = true }',
+      "",
+    ].join("\n"));
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "ruff" }),
+      claim({ kind: "dependency", value: "pytest" }),
+      claim({ kind: "dependency", value: "mypy" }),
+      claim({ kind: "dependency", value: "httpx" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("takes the constraint out of a poetry inline table (#3)", () => {
+    writeFileSync(join(tmpDir, "pyproject.toml"), [
+      "[tool.poetry.dependencies]",
+      'httpx = { version = "^0.27.2", python = ">=3.10" }',
+      "",
+    ].join("\n"));
+    // The claimed version is nowhere in the constraint. Keeping the whole
+    // inline table as the version would match "3.10" against the marker and
+    // report nothing.
+    const issues = checkDependencies([
+      claim({ kind: "version", value: "httpx 3.10" }),
+      claim({ kind: "version", value: "httpx 0.27" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe("VERSION_MISMATCH");
+    expect(issues[0].message).toContain("^0.27.2");
+  });
+
+  it("matches PyPI names written with the import spelling (#3)", () => {
+    writeFileSync(join(tmpDir, "pyproject.toml"), [
+      "[project]",
+      'name = "svc"',
+      "dependencies = [",
+      '    "sentence-transformers>=3.0.0",',
+      '    "tree-sitter>=0.23.0",',
+      "]",
+      "",
+    ].join("\n"));
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "sentence_transformers" }),
+      claim({ kind: "dependency", value: "Tree.Sitter" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("keeps npm names exact — `lodash.debounce` is not `lodash-debounce`", () => {
+    writeFileSync(
+      join(tmpDir, "package.json"),
+      JSON.stringify({ dependencies: { "lodash.debounce": "^4.0.8" } })
+    );
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "lodash-debounce" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe("DEPENDENCY_MISSING");
+  });
 });
 
 // ── Cross-file Checker ──
