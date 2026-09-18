@@ -1,8 +1,21 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { runExport } from "../src/export.js";
+import {
+  MAX_EXPORT_FILES,
+  MAX_EXPORT_FILE_BYTES,
+  MAX_EXPORT_TOTAL_BYTES,
+  runExport,
+} from "../src/export.js";
 import type { MexConfig } from "../src/types.js";
 
 let tmpDir: string;
@@ -55,5 +68,115 @@ describe("mex export (#56)", () => {
   it("fails with guidance when the scaffold is missing", async () => {
     rmSync(join(tmpDir, ".mex"), { recursive: true, force: true });
     await expect(runExport(config, {})).rejects.toThrow("No scaffold files found. Run: mex setup");
+  });
+});
+
+describe("mex export destination safety (#183 P1)", () => {
+  it("refuses an --out path that is an existing scaffold file, keeping its bytes", async () => {
+    const routerPath = join(tmpDir, ".mex/ROUTER.md");
+    const before = readFileSync(routerPath, "utf-8");
+    await expect(runExport(config, { out: ".mex/ROUTER.md" })).rejects.toThrow(
+      /Refusing to export: ".mex\/ROUTER\.md" would overwrite scaffold file ROUTER\.md/
+    );
+    expect(readFileSync(routerPath, "utf-8")).toBe(before);
+  });
+
+  it("refuses an --out path that is the project configuration, keeping its bytes", async () => {
+    const configPath = join(tmpDir, ".mex/config.json");
+    writeFileSync(configPath, JSON.stringify({ scaffold_id: "keep-me" }));
+    await expect(runExport(config, { out: ".mex/config.json" })).rejects.toThrow(
+      /Refusing to export: ".mex\/config\.json" would overwrite project configuration/
+    );
+    expect(readFileSync(configPath, "utf-8")).toBe(JSON.stringify({ scaffold_id: "keep-me" }));
+  });
+
+  it("refuses a symlink alias of a scaffold file, keeping the target bytes", async () => {
+    const routerPath = join(tmpDir, ".mex/ROUTER.md");
+    const before = readFileSync(routerPath, "utf-8");
+    mkdirSync(join(tmpDir, "exports"));
+    symlinkSync(routerPath, join(tmpDir, "exports/scaffold.md"));
+    await expect(runExport(config, { out: "exports/scaffold.md" })).rejects.toThrow(
+      /Refusing to export/
+    );
+    expect(readFileSync(routerPath, "utf-8")).toBe(before);
+  });
+
+  it("refuses a scaffold file reached through a symlinked parent directory", async () => {
+    // Directory junctions need no special privilege (unlike file symlinks),
+    // so this exercises the same alias detection on every platform.
+    const routerPath = join(tmpDir, ".mex/ROUTER.md");
+    const before = readFileSync(routerPath, "utf-8");
+    symlinkSync(join(tmpDir, ".mex"), join(tmpDir, "xlink"), "junction");
+    await expect(runExport(config, { out: "xlink/ROUTER.md" })).rejects.toThrow(
+      /Refusing to export: "xlink\/ROUTER\.md" would overwrite scaffold file ROUTER\.md/
+    );
+    expect(readFileSync(routerPath, "utf-8")).toBe(before);
+  });
+
+  it("excludes a previous bundle inside the scaffold from its own inputs", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const bundleRel = ".mex/context/bundle.md";
+    await runExport(config, { out: bundleRel });
+    const first = readFileSync(join(tmpDir, bundleRel), "utf-8");
+    expect(first).not.toContain("## context/bundle.md");
+    await runExport(config, { out: bundleRel });
+    const second = readFileSync(join(tmpDir, bundleRel), "utf-8");
+    expect(second).toBe(first);
+    expect(logSpy).toHaveBeenCalled();
+  });
+});
+
+describe("mex export bounds (#183 P2)", () => {
+  function resetScaffold(files: Array<{ rel: string; bytes: number }>): void {
+    rmSync(join(tmpDir, ".mex"), { recursive: true, force: true });
+    for (const file of files) {
+      const target = join(tmpDir, ".mex", file.rel);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, Buffer.alloc(file.bytes, "a"));
+    }
+  }
+
+  function filler(count: number, bytes: number, prefix = "context/f"): Array<{ rel: string; bytes: number }> {
+    return Array.from({ length: count }, (_, index) => ({ rel: `${prefix}${index}.md`, bytes }));
+  }
+
+  it("refuses when the file count exceeds the limit and writes nothing", async () => {
+    resetScaffold(filler(MAX_EXPORT_FILES + 1, 0));
+    await expect(runExport(config, { out: "exports/scaffold.md" })).rejects.toThrow(
+      new RegExp(`supports at most ${MAX_EXPORT_FILES}`)
+    );
+    expect(existsSync(join(tmpDir, "exports/scaffold.md"))).toBe(false);
+  });
+
+  it("accepts exactly the file-count limit", async () => {
+    resetScaffold(filler(MAX_EXPORT_FILES, 0));
+    await expect(runExport(config, {})).resolves.toBeUndefined();
+  });
+
+  it("refuses a file larger than the per-file limit and writes nothing", async () => {
+    resetScaffold([{ rel: "context/big.md", bytes: MAX_EXPORT_FILE_BYTES + 1 }]);
+    await expect(runExport(config, { out: "exports/scaffold.md" })).rejects.toThrow(
+      new RegExp(`supports at most ${MAX_EXPORT_FILE_BYTES} bytes per file`)
+    );
+    expect(existsSync(join(tmpDir, "exports/scaffold.md"))).toBe(false);
+  });
+
+  it("accepts a file of exactly the per-file limit", async () => {
+    resetScaffold([{ rel: "context/big.md", bytes: MAX_EXPORT_FILE_BYTES }]);
+    await expect(runExport(config, {})).resolves.toBeUndefined();
+  });
+
+  it("refuses when the aggregate exceeds the total limit and writes nothing", async () => {
+    // Nine 1 MiB files stay within the per-file cap but total 9 MiB.
+    resetScaffold(filler(9, MAX_EXPORT_FILE_BYTES));
+    await expect(runExport(config, { out: "exports/scaffold.md" })).rejects.toThrow(
+      new RegExp(`supports at most ${MAX_EXPORT_TOTAL_BYTES} bytes in total`)
+    );
+    expect(existsSync(join(tmpDir, "exports/scaffold.md"))).toBe(false);
+  });
+
+  it("accepts an aggregate of exactly the total limit", async () => {
+    resetScaffold(filler(8, MAX_EXPORT_FILE_BYTES));
+    await expect(runExport(config, {})).resolves.toBeUndefined();
   });
 });
