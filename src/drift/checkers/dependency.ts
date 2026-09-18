@@ -60,9 +60,7 @@ export function checkDependencies(
     if (KNOWN_RUNTIMES.has(name)) continue;
 
     // Fuzzy match: "React" → "react", "Express" → "express"
-    const found = deps.find(
-      (d) => d.name.toLowerCase() === name
-    );
+    const found = findDependency(deps, name);
     if (!found) {
       issues.push({
         code: "DEPENDENCY_MISSING",
@@ -82,9 +80,7 @@ export function checkDependencies(
 
     const name = match[1].trim().toLowerCase();
     const claimedVersion = match[2];
-    const found = deps.find(
-      (d) => d.name.toLowerCase() === name
-    );
+    const found = findDependency(deps, name);
 
     if (found && !found.version.includes(claimedVersion)) {
       issues.push({
@@ -104,6 +100,21 @@ export function checkDependencies(
 interface DepEntry {
   name: string;
   version: string;
+  /** Set for manifests whose names normalize (PEP 503). npm names are compared
+   *  verbatim: `lodash.debounce` and `lodash-debounce` are different packages
+   *  there, while `sentence_transformers` and `sentence-transformers` are one
+   *  package on PyPI. */
+  normalizes?: boolean;
+}
+
+/** A claimed name against the manifest list. Prose uses the import spelling
+ *  (`sentence_transformers`, `Tree.Sitter`) where the manifest carries the
+ *  distribution name, so a normalizing ecosystem matches either. */
+function findDependency(deps: DepEntry[], claimed: string): DepEntry | undefined {
+  const exact = deps.find((d) => d.name.toLowerCase() === claimed);
+  if (exact) return exact;
+  const normalized = normalizeName(claimed);
+  return deps.find((d) => d.normalizes && normalizeName(d.name) === normalized);
 }
 
 function loadAllDependencies(projectRoot: string): DepEntry[] | null {
@@ -210,7 +221,7 @@ function specEntry(item: string): DepEntry | null {
   const spec = quoted[2]!;
   const name = /^([A-Za-z0-9][\w.-]*)/.exec(spec)?.[1];
   if (!name) return null;
-  return { name, version: spec.slice(name.length).trim() || "*" };
+  return { name, version: spec.slice(name.length).trim() || "*", normalizes: true };
 }
 
 /** PEP 503 names: `Tree_Sitter` and `tree-sitter` are the same package. */
@@ -282,6 +293,7 @@ export function parsePyprojectDependencies(content: string): DepEntry[] {
       entries.push({
         name: key,
         version: inline?.[2] ?? (value.replace(/^["']|["'],?\s*$/g, "") || "*"),
+        normalizes: true,
       });
       if (!/[\]}]/.test(maskStrings(value)) && /^[[{]/.test(value)) open = "skip";
       continue;

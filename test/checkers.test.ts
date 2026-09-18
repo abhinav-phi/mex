@@ -581,6 +581,35 @@ describe("checkDependencies", () => {
     expect(issues[0].code).toBe("VERSION_MISMATCH");
     expect(issues[0].message).toContain("^0.27.2");
   });
+
+  it("matches PyPI names written with the import spelling (#3)", () => {
+    writeFileSync(join(tmpDir, "pyproject.toml"), [
+      "[project]",
+      'name = "svc"',
+      "dependencies = [",
+      '    "sentence-transformers>=3.0.0",',
+      '    "tree-sitter>=0.23.0",',
+      "]",
+      "",
+    ].join("\n"));
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "sentence_transformers" }),
+      claim({ kind: "dependency", value: "Tree.Sitter" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("keeps npm names exact — `lodash.debounce` is not `lodash-debounce`", () => {
+    writeFileSync(
+      join(tmpDir, "package.json"),
+      JSON.stringify({ dependencies: { "lodash.debounce": "^4.0.8" } })
+    );
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "lodash-debounce" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe("DEPENDENCY_MISSING");
+  });
 });
 
 // ── Cross-file Checker ──
