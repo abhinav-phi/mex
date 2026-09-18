@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import type { RepositoryWikiPort } from "../../../wiki/application-adapter.js";
 import type {
   TeamCommandIo,
   TeamMutationFlags,
@@ -11,6 +12,7 @@ import {
   runInboxMutation,
   runInboxProposalList,
   runInboxProposalShow,
+  runInboxTarget,
   type InboxProposalListFlags,
 } from "./commands.js";
 import type { InboxMutationCommandName } from "./request-file.js";
@@ -19,13 +21,23 @@ import { runInboxContract, type InboxContractFlags } from "./contract.js";
 
 export interface InboxCommandBuilderOptions {
   service: TeamInboxSpecCliServiceFactory;
+  targetService?: () => Pick<RepositoryWikiPort, "readInboxTarget"> | Promise<Pick<RepositoryWikiPort, "readInboxTarget">>;
   io: TeamCommandIo;
 }
 
 /** Build, but do not register, the governed `mex inbox` product tree. */
 export function buildInboxCommand(options: InboxCommandBuilderOptions): Command {
   const inbox = new Command("inbox")
-    .description("Read and explicitly review local drafts and canonical Spec proposals");
+    .description("Propose and review additions or corrections to project knowledge");
+
+  inbox.command("target")
+    .description("Resolve an existing knowledge record and exact revision for a correction")
+    .argument("<entity-id>")
+    .option("--json", "Emit the schema v1 Team envelope")
+    .action(async (id: string, flags: TeamOutputFlags) => runInboxTarget(
+      options.targetService ?? (() => { throw new Error("Inbox target reader is unavailable."); }),
+      id, flags, options.io,
+    ));
 
   inbox.command("contract")
     .description("Resolve the bounded versioned Inbox JSON Schema catalog")
@@ -61,7 +73,7 @@ export function buildInboxCommand(options: InboxCommandBuilderOptions): Command 
     .argument("<proposal-id>")
     .option("--json", "Emit the schema v1 Team envelope")
     .action(async (id: string, flags: TeamOutputFlags) => runInboxProposalShow(options.service, id, flags, options.io));
-  addMutation(proposal, "approve", "Preview or apply approval and the exact Spec write", "inbox.proposal.approve", options);
+  addMutation(proposal, "approve", "Preview or apply approval and the exact knowledge write", "inbox.proposal.approve", options);
   addMutation(proposal, "reject", "Preview or apply proposal rejection", "inbox.proposal.reject", options);
   addMutation(proposal, "withdraw", "Preview or apply proposal withdrawal", "inbox.proposal.withdraw", options);
   addMutation(proposal, "mark-stale", "Preview or apply a proven stale transition", "inbox.proposal.mark-stale", options);

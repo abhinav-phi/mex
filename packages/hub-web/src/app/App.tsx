@@ -1,7 +1,8 @@
-import { lazy } from "react";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
-import { HubApiError, type HubApi } from "../api/client";
-import { HubApiProvider, useCapabilities, useSession } from "../api/context";
+import { lazy, Suspense } from "react";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { HubApiError, isSetupCapabilityUnavailable, type HubApi } from "../api/client";
+import { HubApiProvider, useCapabilities, useHubApi, useSession } from "../api/context";
 import { StatePanel } from "../components/ui";
 import { Button } from "../components/primitives/button";
 import styles from "../styles/app.module.css";
@@ -10,7 +11,7 @@ import { DesktopRequired, HubLayout } from "./HubLayout";
 const HomePage = lazy(async () => ({ default: (await import("../pages/HomePage")).HomePage }));
 const SearchPage = lazy(async () => ({ default: (await import("../pages/SearchPage")).SearchPage }));
 const CodePage = lazy(async () => ({ default: (await import("../pages/SearchPage")).CodePage }));
-const KnowledgePage = lazy(async () => ({ default: (await import("../pages/KnowledgePage")).KnowledgePage }));
+const KnowledgePage = lazy(async () => ({ default: (await import("../pages/ContextPage")).ContextPage }));
 const KnowledgeDetailPage = lazy(async () => ({ default: (await import("../pages/KnowledgePage")).KnowledgeDetailPage }));
 const SymbolPage = lazy(async () => ({ default: (await import("../pages/SymbolPage")).SymbolPage }));
 const RoadmapPage = lazy(async () => ({ default: (await import("../pages/CapabilityPage")).RoadmapPage }));
@@ -23,11 +24,19 @@ const InboxPage = lazy(async () => ({ default: (await import("../pages/InboxPage
 const RelayPage = lazy(async () => ({ default: (await import("../pages/RelayPage")).RelayPage }));
 const JobsPage = lazy(async () => ({ default: (await import("../pages/JobsPage")).JobsPage }));
 const HealthPage = lazy(async () => ({ default: (await import("../pages/HealthPage")).HealthPage }));
+const SettingsPage = lazy(async () => ({ default: (await import("../pages/SettingsPage")).SettingsPage }));
+const SetupLayout = lazy(async () => ({ default: (await import("../pages/SetupPage")).SetupLayout }));
 
 function SessionBoundary() {
   const session = useSession();
   const capabilities = useCapabilities();
-
+  const api = useHubApi();
+  const setupStatus = useQuery({
+    queryKey: ["setup", "status"],
+    queryFn: () => api.getSetupStatus!(),
+    retry: false,
+    enabled: session.isSuccess && typeof api.getSetupStatus === "function",
+  });
   if (session.isPending) {
     return <div className={styles.fullPageState}><StatePanel state="loading" title="Opening Project Hub" detail="Verifying this process-local session." /></div>;
   }
@@ -42,6 +51,33 @@ function SessionBoundary() {
           detail="Close this tab and run `mex hub` again. A fresh one-use link will create a new local session."
         />
       </div>
+    );
+  }
+
+  if (
+    typeof api.getSetupStatus === "function"
+    && setupStatus.isPending
+    && setupStatus.fetchStatus === "fetching"
+  ) {
+    return (
+      <div className={styles.fullPageState}>
+        <StatePanel
+          state="loading"
+          title="Checking MEX setup"
+          detail="Inspecting whether this checkout still needs the setup wizard."
+        />
+      </div>
+    );
+  }
+
+  // A successful setup response means this process still owns the wizard.
+  // Readiness can change after an external commit; only an explicit setup run
+  // promotes the listener, after which this endpoint becomes unavailable.
+  if (setupStatus.isSuccess) {
+    return (
+      <Suspense fallback={<div className={styles.fullPageState}><StatePanel state="loading" title="Opening setup" detail="Loading the MEX setup wizard." /></div>}>
+        <SetupLayout session={session.data} />
+      </Suspense>
     );
   }
 
@@ -79,6 +115,28 @@ function SessionBoundary() {
     );
   }
 
+  if (setupStatus.isError && !isSetupCapabilityUnavailable(setupStatus.error)) {
+    return (
+      <div className={styles.fullPageState}>
+        <StatePanel
+          state="error"
+          title="Setup status could not be loaded"
+          detail="The Hub could not inspect this checkout. Try the check again before continuing."
+          action={(
+            <Button
+              size="sm"
+              type="button"
+              variant="outline"
+              onClick={() => void setupStatus.refetch()}
+            >
+              Try again
+            </Button>
+          )}
+        />
+      </div>
+    );
+  }
+
   return <HubLayout capabilities={capabilities.data} session={session.data} />;
 }
 
@@ -103,6 +161,8 @@ export function AppRoutes() {
         <Route path="activity" element={<ActivityPage />} />
         <Route path="jobs" element={<JobsPage />} />
         <Route path="health" element={<HealthPage />} />
+        <Route path="settings" element={<SettingsPage />} />
+        <Route path="setup" element={<Navigate to="/" replace />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { MexPortError } from "../../team/contracts/shared.js";
 import { TeamLocalState } from "../../team/local-state/index.js";
+import { boundedHubDuration, emitHubTelemetry, type HubTelemetrySink } from "../telemetry.js";
 import {
   HUB_JOB_KINDS,
   HUB_JOB_PROGRESS_PHASES,
@@ -28,6 +29,7 @@ interface ActiveExecution {
   shutdownRequested: boolean;
   failureRequested: boolean;
   settled: boolean;
+  terminalReported: boolean;
   promise?: Promise<void>;
 }
 
@@ -51,6 +53,7 @@ export interface HubJobManagerOptions {
   processId?: number;
   leaseToken?: string;
   shutdownTimeoutMs?: number;
+  telemetry?: HubTelemetrySink;
 }
 
 export interface HubJobService {
@@ -77,6 +80,7 @@ export class HubJobManager implements HubJobService {
   private readonly processId: number;
   private readonly leaseToken: string;
   private readonly shutdownTimeoutMs: number;
+  private readonly telemetry?: HubTelemetrySink;
   private readonly executions = new Map<string, ActiveExecution>();
   private readonly listeners = new Map<string, Set<HubJobListener>>();
   private lifecycle: ManagerLifecycle = "new";
@@ -84,6 +88,7 @@ export class HubJobManager implements HubJobService {
 
   constructor(options: HubJobManagerOptions) {
     this.localState = options.localState;
+    this.telemetry = options.telemetry;
     this.executors = Object.freeze({ ...(options.executors ?? {}) });
     this.now = options.now ?? (() => new Date().toISOString());
     this.generateId = options.generateId ?? generateHubJobId;
@@ -166,6 +171,7 @@ export class HubJobManager implements HubJobService {
       shutdownRequested: false,
       failureRequested: false,
       settled: false,
+      terminalReported: false,
     };
     this.executions.set(queued.id, execution);
     execution.promise = Promise.resolve()
@@ -600,6 +606,18 @@ export class HubJobManager implements HubJobService {
   }
 
   private publish(job: HubJobSnapshot, type: HubJobEventType): void {
+    const execution = this.executions.get(job.id);
+    if (type === "terminal" && isTerminal(job) && execution
+      && execution.generation === job.generation && !execution.terminalReported) {
+      execution.terminalReported = true;
+      emitHubTelemetry(this.telemetry, "hub.job_completed", {
+        job_kind: job.kind,
+        // Orderly shutdown and user cancellation both interrupt active work.
+        // Historical startup reconciliation is deliberately not reported.
+        outcome: job.state === "succeeded" ? "success" : job.state === "failed" ? "failure" : "cancelled",
+        duration_ms: boundedHubDuration(Date.parse(job.finishedAt!) - Date.parse(job.startedAt ?? job.createdAt)),
+      });
+    }
     const listeners = this.listeners.get(job.id);
     if (!listeners) return;
     for (const listener of [...listeners]) callListener(listener, { type, job });

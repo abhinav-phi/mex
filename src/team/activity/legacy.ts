@@ -67,6 +67,7 @@ export function readLegacyTimeline(projectRoot: string): LegacyTimelineReadResul
   const entries: LegacyTimelineEntry[] = [];
   const seenRows = new Map<string, number>();
   let byteOffset = 0;
+  let precedingCrlfCount = 0;
   let lineNumber = 1;
   let truncated = false;
 
@@ -84,6 +85,10 @@ export function readLegacyTimeline(projectRoot: string): LegacyTimelineReadResul
     const newline = bytes.indexOf(0x0a, byteOffset);
     const end = newline === -1 ? bytes.length : newline;
     const rawBytes = bytes.subarray(byteOffset, end);
+    // IDs retain the historical LF offsets across checkout conversion. Scan
+    // positions and safety limits still account for every byte on disk.
+    const logicalByteOffset = byteOffset - precedingCrlfCount;
+    if (newline !== -1 && rawBytes.at(-1) === 0x0d) precedingCrlfCount += 1;
     const rawLine = stripTrailingCarriageReturn(rawBytes).toString("utf8");
 
     if (rawLine.trim() !== "") {
@@ -125,7 +130,7 @@ export function readLegacyTimeline(projectRoot: string): LegacyTimelineReadResul
         }
         entries.push({
           source: "legacy",
-          id: `legacy_${sha256(`${LEGACY_ACTIVITY_PATH}\0${byteOffset}\0${rawLine}`)}`,
+          id: `legacy_${sha256(`${LEGACY_ACTIVITY_PATH}\0${logicalByteOffset}\0${rawLine}`)}`,
           timestamp: parsed.timestamp,
           actor: null,
           repoState: null,

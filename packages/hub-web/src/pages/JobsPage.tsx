@@ -49,7 +49,7 @@ import {
 import styles from "../styles/jobs.module.css";
 
 const operations: Array<{ kind: JobKind; label: string; detail: string }> = [
-  { kind: "graph_refresh", label: "Refresh graph", detail: "Index the bounded repository delta" },
+  { kind: "graph_refresh", label: "Refresh graph", detail: "Check for changes and update the code graph" },
   { kind: "graph_rebuild", label: "Rebuild graph", detail: "Replace the derived graph safely" },
   { kind: "wiki_refresh", label: "Refresh Wiki", detail: "Update structured project memory" },
   { kind: "wiki_rebuild", label: "Rebuild Wiki", detail: "Recreate the derived Wiki index" },
@@ -118,16 +118,20 @@ function JobStateIcon({ state }: { state: JobState }) {
 }
 
 function JobProgressView({ job }: { job: JobSummary }) {
-  const value = percentage(job.progress);
+  // Graph's durable counts describe parsed files, not overall job completion.
+  const graph = isGraphJob(job.kind);
+  const value = graph && job.phase !== "parse" ? null : percentage(job.progress);
   const phase = graphPhaseIndex(job.phase) >= 0 ? sentenceCase(job.phase) : job.phase;
   return (
     <div className={styles.progressBlock}>
       <div>
         <span>{phase}</span>
-        <span>{value === null ? (job.progress ? `${job.progress.completed} complete · total unknown` : "Total unknown") : `${value}%`}</span>
+        <span>{graph && job.progress
+          ? `${job.progress.completed}${job.progress.total === undefined ? "" : ` / ${job.progress.total}`} files parsed`
+          : value === null ? (job.progress ? `${job.progress.completed} complete · total unknown` : "Total unknown") : `${value}%`}</span>
       </div>
       {value === null ? null : (
-        <ProgressPrimitive aria-label={`${value}% complete`} className={styles.progressTrack} value={value} />
+        <ProgressPrimitive aria-label={`${value}% ${graph ? "of files parsed" : "complete"}`} className={styles.progressTrack} value={value} />
       )}
     </div>
   );

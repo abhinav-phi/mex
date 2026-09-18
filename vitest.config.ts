@@ -1,6 +1,16 @@
 import { defineConfig, configDefaults } from "vitest/config";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const contractsSrc = resolve(dirname(fileURLToPath(import.meta.url)), "packages/hub-contracts/src");
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      "@mex/hub-contracts/contact": resolve(contractsSrc, "contact.ts"),
+      "@mex/hub-contracts/setup": resolve(contractsSrc, "setup.ts"),
+    },
+  },
   test: {
     // `.demo/` is a reference clone of the grad-capital demo (code-graph port
     // source, spec §0). It is gitignored and its own tests depend on packages we
@@ -13,6 +23,7 @@ export default defineConfig({
       // `npm run eval:compare:test`, so Vitest must not collect the same files.
       "evaluate/compare/test/**",
       "evaluate/graph/test/**",
+      "scripts/benchmark-telemetry.test.js",
       // The Hub web workspace supplies its own jsdom/CSS configuration and the
       // browser suite is collected by Playwright, not the root Node test run.
       "packages/hub-web/**",

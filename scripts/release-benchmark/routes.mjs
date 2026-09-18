@@ -1,5 +1,5 @@
 /**
- * One benchmark identity for every route registered by Hub AppRoutes.
+ * One benchmark identity for every operational workbench in Hub AppRoutes.
  *
  * Several routes intentionally share one lazy module. They still receive
  * separate measurements and budgets: this is a per-route contract, not a
@@ -8,7 +8,7 @@
 export const RELEASE_ROUTE_MANIFEST_HINTS = Object.freeze({
   home: Object.freeze(["HomePage", "hub-contracts/dist/overview"]),
   search: Object.freeze(["SearchPage"]),
-  knowledge: Object.freeze(["KnowledgePage"]),
+  knowledge: Object.freeze(["ContextPage"]),
   knowledgeDetail: Object.freeze(["KnowledgePage"]),
   code: Object.freeze(["SearchPage"]),
   codeSymbol: Object.freeze(["SymbolPage"]),
@@ -23,10 +23,16 @@ export const RELEASE_ROUTE_MANIFEST_HINTS = Object.freeze({
   activity: Object.freeze(["ActivityPage"]),
   jobs: Object.freeze(["JobsPage"]),
   health: Object.freeze(["HealthPage"]),
+  settings: Object.freeze(["SettingsPage"]),
   notFound: Object.freeze(["CapabilityPage"]),
 });
 
 export const RELEASE_ROUTE_KEYS = Object.freeze(Object.keys(RELEASE_ROUTE_MANIFEST_HINTS));
+
+// In a completed project, /setup only replaces the URL with Home. The setup
+// wizard is a separate lazy application boundary and has its own asset checks.
+export const RELEASE_ROUTE_REDIRECTS = Object.freeze({ setup: "/" });
+
 export const RELEASE_ROUTE_PATTERNS = Object.freeze({
   home: "(index)",
   search: "search",
@@ -45,6 +51,7 @@ export const RELEASE_ROUTE_PATTERNS = Object.freeze({
   activity: "activity",
   jobs: "jobs",
   health: "health",
+  settings: "settings",
   notFound: "*",
 });
 
@@ -70,6 +77,7 @@ export function releaseWorkbenchPaths({ knowledgeEntityId, specEntityId, codeSym
     activity: "/activity",
     jobs: "/jobs",
     health: "/health",
+    settings: "/settings",
     notFound: "/release-benchmark-not-found",
   };
 }

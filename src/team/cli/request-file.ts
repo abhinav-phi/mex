@@ -42,6 +42,7 @@ export type TeamIdentityActivityMutationCommandName = Extract<
   | "member.add"
   | "member.update"
   | "member.deactivate"
+  | "member.reactivate"
   | "member.select"
   | "activity.record"
 >;
@@ -267,6 +268,7 @@ function assertAction(
       return;
     }
     case "member.deactivate":
+    case "member.reactivate":
     case "member.select":
       exactKeys(action, ["kind", "memberId"], [], kind);
       memberId(action.memberId);

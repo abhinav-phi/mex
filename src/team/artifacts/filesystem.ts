@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import {
   closeSync,
   constants,
+  fchmodSync,
   fstatSync,
   fsyncSync,
   linkSync,
@@ -42,6 +43,9 @@ export interface ContainedArtifactRead {
   canonicalPath: string;
 }
 
+/** Only known canonical Team records opt into checkout-neutral bytes. */
+export type ArtifactByteMode = "canonical" | "exact";
+
 /** Resolve a caller-supplied root once so repositories cannot follow a later symlink swap. */
 export function canonicalizeProjectRoot(projectRoot: string): string {
   let canonicalRoot: string;
@@ -50,26 +54,27 @@ export function canonicalizeProjectRoot(projectRoot: string): string {
   } catch {
     throw artifactError("NOT_FOUND", "Repository not found", "The project root does not exist.");
   }
-  if (!statSync(canonicalRoot).isDirectory()) {
+  if (!statSync(canonicalRoot, { bigint: true }).isDirectory()) {
     throw artifactError("PATH_OUTSIDE_PROJECT", "Unsafe project root", "The project root is not a directory.");
   }
   return canonicalRoot;
 }
 
-/** Read one regular artifact without following its final path through a symlink. */
+/** Read exact regular-file bytes without following the final path through a symlink. */
 export function readContainedArtifact(
   projectRoot: string,
   path: RepoRelativePath,
   maxBytes: number,
+  byteMode: ArtifactByteMode = "exact",
 ): ContainedArtifactRead {
   const { canonicalRoot, lexicalPath } = resolveArtifactPath(projectRoot, path);
   let descriptor: number | undefined;
   try {
     assertSafeExistingComponents(canonicalRoot, path, true);
     descriptor = openSync(lexicalPath, constants.O_RDONLY | NO_FOLLOW);
-    const before = fstatSync(descriptor);
+    const before = fstatSync(descriptor, { bigint: true });
     if (!before.isFile()) throw unsafePath(path, "Artifact is not a regular file.");
-    if (before.size > maxBytes) {
+    if (before.size > BigInt(maxBytes)) {
       throw artifactError(
         "VALIDATION_FAILED",
         "Artifact is too large",
@@ -85,8 +90,8 @@ export function readContainedArtifact(
         path,
       );
     });
-    const after = fstatSync(descriptor);
-    if (!sameIdentity(before, after) || before.size !== after.size || bytes.byteLength !== after.size) {
+    const after = fstatSync(descriptor, { bigint: true });
+    if (!sameIdentity(before, after) || before.size !== after.size || BigInt(bytes.byteLength) !== after.size) {
       throw artifactError(
         "REVISION_CONFLICT",
         "Artifact changed during read",
@@ -95,7 +100,7 @@ export function readContainedArtifact(
       );
     }
 
-    const pathStat = lstatSync(lexicalPath);
+    const pathStat = lstatSync(lexicalPath, { bigint: true });
     if (pathStat.isSymbolicLink() || !pathStat.isFile() || !sameIdentity(after, pathStat)) {
       throw artifactError(
         "REVISION_CONFLICT",
@@ -106,7 +111,7 @@ export function readContainedArtifact(
     }
     const canonicalPath = realpathSync(lexicalPath);
     assertContained(canonicalRoot, canonicalPath, path);
-    const canonicalStat = statSync(canonicalPath);
+    const canonicalStat = statSync(canonicalPath, { bigint: true });
     if (!sameIdentity(after, canonicalStat)) {
       throw artifactError(
         "REVISION_CONFLICT",
@@ -115,11 +120,10 @@ export function readContainedArtifact(
         path,
       );
     }
-    // Git's checkout conversion is undone here, at the one boundary every
-    // canonical artifact is read through, so that parsing, the canonical-form
-    // assertion and the revision hash all see the bytes the author committed.
-    const canonicalBytes = undoCheckoutLineEndings(bytes);
-    return { bytes: canonicalBytes, revision: revisionOf(canonicalBytes), canonicalPath };
+    // A caller that owns a canonical Team codec may opt into its LF identity.
+    // Wiki snapshots, local receipts, and other files retain their exact bytes.
+    const revisionBytes = byteMode === "exact" ? bytes : canonicalCheckoutBytes(bytes);
+    return { bytes: revisionBytes, revision: revisionOf(revisionBytes), canonicalPath };
   } catch (error) {
     if (isNotFound(error)) {
       throw artifactError("NOT_FOUND", "Artifact not found", `Artifact ${path} does not exist.`, path);
@@ -134,9 +138,10 @@ export function tryReadContainedArtifact(
   projectRoot: string,
   path: RepoRelativePath,
   maxBytes: number,
+  byteMode: ArtifactByteMode = "exact",
 ): ContainedArtifactRead | null {
   try {
-    return readContainedArtifact(projectRoot, path, maxBytes);
+    return readContainedArtifact(projectRoot, path, maxBytes, byteMode);
   } catch (error) {
     if (isMexCode(error, "NOT_FOUND")) return null;
     throw error;
@@ -148,12 +153,16 @@ export function atomicCreateArtifact(
   projectRoot: string,
   path: RepoRelativePath,
   bytes: string | Uint8Array,
+  mode: 0o600 | 0o644 = 0o644,
 ): Revision {
+  if (mode !== 0o600 && mode !== 0o644) {
+    throw artifactError("INVALID_REQUEST", "Invalid artifact mode", "Artifact mode must be owner-only or standard readable.");
+  }
   const { canonicalRoot, lexicalPath } = resolveArtifactPath(projectRoot, path);
   const parentPath = ensureSafeDirectory(canonicalRoot, dirname(path) as RepoRelativePath);
   assertTargetAbsentOrRegular(lexicalPath, path, true);
   const payload = asBytes(bytes);
-  const temporaryPath = stageFile(parentPath, basename(path), payload);
+  const temporaryPath = stageFile(parentPath, basename(path), payload, mode);
 
   try {
     assertSafeExistingComponents(canonicalRoot, dirname(path) as RepoRelativePath, false);
@@ -178,13 +187,14 @@ export function atomicCreateArtifact(
   }
 }
 
-/** Atomically replace a regular artifact after an exact-byte optimistic check. */
+/** Atomically replace a regular artifact after an optimistic check in the selected byte mode. */
 export function atomicReplaceArtifact(
   projectRoot: string,
   path: RepoRelativePath,
   expectedRevision: Revision,
   bytes: string | Uint8Array,
   maxExistingBytes: number,
+  byteMode: ArtifactByteMode = "exact",
 ): Revision {
   const { canonicalRoot, lexicalPath } = resolveArtifactPath(projectRoot, path);
   const parentRelative = dirname(path) as RepoRelativePath;
@@ -211,13 +221,13 @@ export function atomicReplaceArtifact(
     lockOwned = true;
     lockIdentity = lock.identity;
 
-    assertExpectedRevision(projectRoot, path, expectedRevision, maxExistingBytes);
+    assertExpectedRevision(projectRoot, path, expectedRevision, maxExistingBytes, byteMode);
     const payload = asBytes(bytes);
     temporaryPath = stageFile(parentPath, basename(path), payload);
 
     // Revalidate after all potentially expensive serialization/staging work.
     assertSafeExistingComponents(canonicalRoot, parentRelative, false);
-    assertExpectedRevision(projectRoot, path, expectedRevision, maxExistingBytes);
+    assertExpectedRevision(projectRoot, path, expectedRevision, maxExistingBytes, byteMode);
     assertTargetAbsentOrRegular(lexicalPath, path, false);
     renameSync(temporaryPath, lexicalPath);
     temporaryPath = undefined;
@@ -240,7 +250,7 @@ export function assertContainedArtifactDirectory(
     current = resolve(current, segment);
     let stat;
     try {
-      stat = lstatSync(current);
+      stat = lstatSync(current, { bigint: true });
     } catch (error) {
       if (isNotFound(error)) return null;
       throw error;
@@ -319,8 +329,8 @@ function artifactLockOwner(canonicalRoot: string, directoryPath: string): Artifa
     pid: process.pid,
     token: randomBytes(32).toString("hex"),
     acquiredAt: new Date().toISOString(),
-    root: persistedFileIdentity(statSync(canonicalRoot)),
-    directory: persistedFileIdentity(lstatSync(directoryPath)),
+    root: persistedFileIdentity(statSync(canonicalRoot, { bigint: true })),
+    directory: persistedFileIdentity(lstatSync(directoryPath, { bigint: true })),
   };
 }
 
@@ -419,7 +429,7 @@ function createArtifactLockFile(
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW,
       0o600,
     );
-    identity = identityOf(fstatSync(descriptor));
+    identity = identityOf(fstatSync(descriptor, { bigint: true }));
     const bytes = `${JSON.stringify(metadata)}\n`;
     if (Buffer.byteLength(bytes, "utf8") > MAX_ARTIFACT_LOCK_BYTES) {
       throw new Error("Generated artifact lock metadata exceeds its byte limit.");
@@ -444,27 +454,27 @@ function readArtifactLockFile(
 ): ObservedArtifactLock {
   let descriptor: number | undefined;
   try {
-    const pathBefore = lstatSync(path);
+    const pathBefore = lstatSync(path, { bigint: true });
     if (pathBefore.isSymbolicLink() || !pathBefore.isFile()) {
       throw unsafePath(directory, `Artifact lock ${lockName} is not a regular file.`);
     }
     descriptor = openSync(path, constants.O_RDONLY | NO_FOLLOW);
-    const before = fstatSync(descriptor);
+    const before = fstatSync(descriptor, { bigint: true });
     if (!before.isFile() || !sameIdentity(before, pathBefore)) {
       throw unsafePath(directory, `Artifact lock ${lockName} changed during inspection.`);
     }
-    if (before.size < 1 || before.size > MAX_ARTIFACT_LOCK_BYTES) {
+    if (before.size < 1n || before.size > BigInt(MAX_ARTIFACT_LOCK_BYTES)) {
       throw unknownArtifactLock(lockName, directory, "has invalid bounded metadata");
     }
     const bytes = readDescriptorBounded(descriptor, MAX_ARTIFACT_LOCK_BYTES, () => {
       throw unknownArtifactLock(lockName, directory, "exceeds the metadata byte limit");
     });
-    const after = fstatSync(descriptor);
-    const pathAfter = lstatSync(path);
+    const after = fstatSync(descriptor, { bigint: true });
+    const pathAfter = lstatSync(path, { bigint: true });
     if (
       !sameIdentity(before, after)
       || before.size !== after.size
-      || bytes.byteLength !== after.size
+      || BigInt(bytes.byteLength) !== after.size
       || pathAfter.isSymbolicLink()
       || !pathAfter.isFile()
       || !sameIdentity(after, pathAfter)
@@ -477,8 +487,8 @@ function readArtifactLockFile(
       );
     }
     const metadata = parseArtifactLockMetadata(bytes, lockName, directory);
-    const expectedRoot = persistedFileIdentity(statSync(canonicalRoot));
-    const expectedDirectory = persistedFileIdentity(lstatSync(directoryPath));
+    const expectedRoot = persistedFileIdentity(statSync(canonicalRoot, { bigint: true }));
+    const expectedDirectory = persistedFileIdentity(lstatSync(directoryPath, { bigint: true }));
     if (
       !samePersistedIdentity(metadata.root, expectedRoot)
       || !samePersistedIdentity(metadata.directory, expectedDirectory)
@@ -602,7 +612,7 @@ function recoverAbandonedArtifactLockMarker(
   directory: RepoRelativePath,
 ): void {
   try {
-    lstatSync(recoveryPath);
+    lstatSync(recoveryPath, { bigint: true });
   } catch (error) {
     if (isNotFound(error)) return;
     throw error;
@@ -655,10 +665,11 @@ function assertExpectedRevision(
   path: RepoRelativePath,
   expectedRevision: Revision,
   maxBytes: number,
+  byteMode: ArtifactByteMode = "exact",
 ): void {
   let current: ContainedArtifactRead;
   try {
-    current = readContainedArtifact(projectRoot, path, maxBytes);
+    current = readContainedArtifact(projectRoot, path, maxBytes, byteMode);
   } catch (error) {
     if (isMexCode(error, "NOT_FOUND")) {
       throw artifactError(
@@ -700,7 +711,7 @@ function readDescriptorBounded(
   return Buffer.concat(chunks, total);
 }
 
-function stageFile(parentPath: string, targetName: string, bytes: Uint8Array): string {
+function stageFile(parentPath: string, targetName: string, bytes: Uint8Array, mode: 0o600 | 0o644 = 0o644): string {
   const temporaryPath = resolve(
     parentPath,
     `.${targetName}.mex-tmp-${process.pid}-${randomBytes(8).toString("hex")}`,
@@ -710,8 +721,9 @@ function stageFile(parentPath: string, targetName: string, bytes: Uint8Array): s
     descriptor = openSync(
       temporaryPath,
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW,
-      0o644,
+      mode,
     );
+    if (mode === 0o600) fchmodSync(descriptor, mode);
     writeFileSync(descriptor, bytes);
     fsyncSync(descriptor);
     return temporaryPath;
@@ -733,7 +745,7 @@ function ensureSafeDirectory(canonicalRoot: string, path: RepoRelativePath): str
     } catch (error) {
       if (!isAlreadyExists(error)) throw error;
     }
-    const stat = lstatSync(current);
+    const stat = lstatSync(current, { bigint: true });
     if (stat.isSymbolicLink() || !stat.isDirectory()) {
       throw unsafePath(path, `Path component ${segment} is not a regular directory.`);
     }
@@ -752,7 +764,7 @@ function assertSafeExistingComponents(
   const segments = path.split("/");
   for (let index = 0; index < segments.length; index += 1) {
     current = resolve(current, segments[index]!);
-    const stat = lstatSync(current);
+    const stat = lstatSync(current, { bigint: true });
     if (stat.isSymbolicLink()) {
       throw unsafePath(path, `Path component ${segments[index]} must not be a symbolic link.`);
     }
@@ -773,7 +785,7 @@ function assertTargetAbsentOrRegular(
   mustBeAbsent: boolean,
 ): void {
   try {
-    const stat = lstatSync(target);
+    const stat = lstatSync(target, { bigint: true });
     if (stat.isSymbolicLink() || !stat.isFile()) {
       throw unsafePath(path, "Artifact target is not a regular file.");
     }
@@ -829,15 +841,15 @@ function assertContained(root: string, candidate: string, path: RepoRelativePath
 }
 
 function sameIdentity(
-  left: { dev: number | bigint; ino: number | bigint },
-  right: { dev: number | bigint; ino: number | bigint },
+  left: FileIdentity,
+  right: FileIdentity,
 ): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
 interface FileIdentity {
-  dev: number | bigint;
-  ino: number | bigint;
+  dev: bigint;
+  ino: bigint;
 }
 
 function identityOf(value: FileIdentity): FileIdentity {
@@ -846,7 +858,7 @@ function identityOf(value: FileIdentity): FileIdentity {
 
 function unlinkOwnedLock(path: string, expected: FileIdentity): void {
   try {
-    const current = lstatSync(path);
+    const current = lstatSync(path, { bigint: true });
     if (current.isFile() && !current.isSymbolicLink() && sameIdentity(current, expected)) {
       unlinkSync(path);
       fsyncDirectory(dirname(path));
@@ -888,56 +900,22 @@ const CARRIAGE_RETURN = 0x0d;
 const LINE_FEED = 0x0a;
 
 /**
- * Undo Git's checkout line-ending conversion on a canonical artifact.
+ * Undo Git checkout conversion only at an explicitly selected boundary.
  *
- * ## Why this exists
- *
- * Every `.mex/**` artifact is a byte-exact canonical document: it is written
- * with `\n`, its parser refuses any `\r`, and its revision is the SHA-256 of
- * its bytes. Git does not honour any of that. `core.autocrlf` defaults to true
- * on Windows, so a repository authored on macOS or Linux is checked out with
- * CRLF, and the result is a working tree that Git reports as **clean** while
- * every artifact in it fails to parse:
- *
- *     mex member list  →  VALIDATION_FAILED: Artifact must use LF line endings.
- *
- * Measured on a real cross-platform repository: the Hub started, and Members,
- * Activity and the Inbox were all empty or in error, because the Mac author's
- * artifacts could not be read at all on the Windows clone.
- *
- * ## Why a `.gitattributes` is not the fix on its own
- *
- * The obvious answer is `.mex/** text eol=lf`, and it is worth shipping — but
- * it is prevention, not a fix, and it does not reach the repositories that
- * already exist. The repository this was diagnosed on **already had that exact
- * line**, and was still entirely CRLF on disk: an attribute added after a
- * checkout does not rewrite the working tree, and because Git normalizes on
- * comparison, `git status` stays clean and nothing ever tells the user. A tool
- * that only works when every clone was made in the right order is not portable.
- *
- * ## Why normalizing here does not weaken the canonical guarantee
- *
- * The same reasoning as the scaffold-identity check: **Git's line-ending
- * conversion is a working-tree presentation, not a change to the content.** The
- * canonical form is a property of the committed artifact, and undoing the
- * conversion at the read boundary is what lets every platform see that one
- * canonical form. What mex writes is unchanged — still `\n`, still canonical —
- * and the parsers still reject genuinely non-canonical input, including a lone
- * `\r`, which Git never produces and which this deliberately leaves alone.
- *
- * It also removes a divergence that was there before any parse: `revisionOf` is
- * the hash of the exact bytes, so the same artifact hashed to **different
- * revisions on Windows and macOS**. Revisions travel between machines inside
- * other artifacts. They now agree.
- *
- * Byte-level on purpose: `0x0D` and `0x0A` cannot occur inside a multi-byte
- * UTF-8 sequence, so this is safe to do before decoding, and it runs before the
- * artifact is measured against its size bound rather than after.
+ * Canonical Team records are serialized as LF. Accept a uniform CRLF checkout
+ * at those explicit codec boundaries and the tracked-config comparison only.
+ * Mixed terminators and lone CR bytes remain unchanged for strict validation;
+ * arbitrary local files and Wiki byte revisions must not use this transform.
+ * Does not rewrite disk bytes or relax the original on-disk size bound.
  */
-function undoCheckoutLineEndings(bytes: Uint8Array): Uint8Array {
+export function canonicalCheckoutBytes(bytes: Uint8Array): Uint8Array {
   let converted = 0;
-  for (let index = 0; index + 1 < bytes.length; index += 1) {
-    if (bytes[index] === CARRIAGE_RETURN && bytes[index + 1] === LINE_FEED) converted += 1;
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (bytes[index] === CARRIAGE_RETURN && bytes[index + 1] !== LINE_FEED) return bytes;
+    if (bytes[index] === LINE_FEED) {
+      if (index === 0 || bytes[index - 1] !== CARRIAGE_RETURN) return bytes;
+      converted += 1;
+    }
   }
   if (converted === 0) return bytes;
   const canonical = new Uint8Array(bytes.length - converted);

@@ -16,6 +16,7 @@ export interface StartHubNodeServerOptions {
 export interface RunningHubNodeServer {
   readonly origin: string;
   readonly port: number;
+  replaceApp(next: Hono<any>): void;
   close(): Promise<void>;
 }
 
@@ -30,7 +31,8 @@ export function startHubNodeServer(
 
   return new Promise((resolve, reject) => {
     let settled = false;
-    const listener = getRequestListener(options.app.fetch, {
+    let app = options.app;
+    const listener = getRequestListener((request) => app.fetch(request), {
       hostname: LOOPBACK_HOST,
       autoCleanupIncoming: true,
     });
@@ -67,6 +69,9 @@ export function startHubNodeServer(
       resolve({
         origin: `http://${LOOPBACK_HOST}:${address.port}`,
         port: address.port,
+        replaceApp(next) {
+          app = next;
+        },
         close: () => closeServer(server),
       });
     });

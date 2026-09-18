@@ -154,7 +154,7 @@ class CanonicalWorkflowRepository<TArtifact, TStored, TCreate extends { id?: str
 
   async get(id: string): Promise<TArtifact | null> {
     const path = this.#codec.path(id);
-    const stored = tryReadContainedArtifact(this.#projectRoot, path, WORKFLOW_ARTIFACT_MAX_BYTES);
+    const stored = tryReadContainedArtifact(this.#projectRoot, path, WORKFLOW_ARTIFACT_MAX_BYTES, "canonical");
     return stored === null ? null : this.#codec.parse(stored.bytes, path);
   }
 
@@ -175,7 +175,7 @@ class CanonicalWorkflowRepository<TArtifact, TStored, TCreate extends { id?: str
 
     for (let index = 0; index < paths.length; index += 1) {
       const path = paths[index]!;
-      const stored = readContainedArtifact(this.#projectRoot, path, WORKFLOW_ARTIFACT_MAX_BYTES);
+      const stored = readContainedArtifact(this.#projectRoot, path, WORKFLOW_ARTIFACT_MAX_BYTES, "canonical");
       corpusBytes += stored.bytes.byteLength;
       if (corpusBytes > WORKFLOW_REPOSITORY_LIMITS.maxCorpusBytes) {
         throw artifactError(
@@ -245,7 +245,7 @@ class CanonicalWorkflowRepository<TArtifact, TStored, TCreate extends { id?: str
     if (this.#codec.revisionOf(current) !== expectedRevision) {
       throw artifactError("REVISION_CONFLICT", "Workflow artifact revision conflict", `Artifact ${id} no longer matches the expected revision.`, this.#codec.sourcePathOf(current));
     }
-    const read = readContainedArtifact(this.#projectRoot, this.#codec.sourcePathOf(current), WORKFLOW_ARTIFACT_MAX_BYTES);
+    const read = readContainedArtifact(this.#projectRoot, this.#codec.sourcePathOf(current), WORKFLOW_ARTIFACT_MAX_BYTES, "canonical");
     if (read.revision !== expectedRevision) {
       throw artifactError("REVISION_CONFLICT", "Workflow artifact changed during preview", `Artifact ${id} changed while its preview was prepared.`, this.#codec.sourcePathOf(current));
     }
@@ -289,6 +289,7 @@ class CanonicalWorkflowRepository<TArtifact, TStored, TCreate extends { id?: str
           plan.beforeRevision,
           plan.document,
           WORKFLOW_ARTIFACT_MAX_BYTES,
+          "canonical",
         );
       }
       return { previewRevision: plan.previewRevision, artifact: candidate, change: plan.change };
@@ -425,6 +426,7 @@ class CanonicalWorkflowRepository<TArtifact, TStored, TCreate extends { id?: str
           this.#projectRoot,
           path,
           WORKFLOW_ARTIFACT_MAX_BYTES,
+          "canonical",
         ).bytes.byteLength;
         if (projectedCorpusBytes > WORKFLOW_REPOSITORY_LIMITS.maxCorpusBytes) {
           throw artifactError(

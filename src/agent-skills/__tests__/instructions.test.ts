@@ -18,12 +18,20 @@ describe("managed MEX instruction blocks", () => {
       expect(block).toContain(
         "At the start of every session, read `.mex/AGENTS.md` and `.mex/ROUTER.md`",
       );
-      expect(block).toContain("durable governed Spec proposals");
+      expect(block).toContain("explicit contributions to project knowledge");
       expect(block).toContain("durable team handoffs");
       expect(block).toContain("Invoke them automatically when intent clearly matches");
-      expect(block).toContain("explicit invocation remains available");
+      expect(block).toContain("ordinary GROW upkeep remains available without Inbox");
+      expect(block).toContain("mex logging --json");
+      expect(block).toContain("`significant`");
+      expect(block).toContain("`checkpoints`");
+      expect(block).toContain("`manual`");
+      expect(block).toContain("Honor explicit user log requests in every mode");
+      expect(block).toContain("never suppress mandatory workflow Activity or recovery audit records");
+      expect(block).toContain('mex timeline --query "subject phrase" --file src/example.ts --limit 10 --json');
+      expect(block).toContain("historical evidence, not accepted current knowledge");
       expect(block).toContain(
-        "MEX context used: <specific records/files/entities consulted>.",
+        "mention MEX and the relevant finding naturally in your explanation",
       );
       expect(block).toContain("unless the retrieved data actually provides it");
       expect(block).toContain("local draft is checkout-only and nothing is shared");

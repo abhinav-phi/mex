@@ -30,6 +30,7 @@ const WASM_GRAMMAR_FILES: Partial<Record<Language, string>> = {
   jsx: "tree-sitter-javascript.wasm",
   python: "tree-sitter-python.wasm",
   rust: "tree-sitter-rust.wasm",
+  csharp: "tree-sitter-c-sharp.wasm",
 };
 let grammarHashCache: string | null = null;
 
@@ -63,6 +64,7 @@ const EXTENSION_MAP: Record<string, Language> = {
   ".jsx": "jsx",
   ".py": "python",
   ".rs": "rust",
+  ".cs": "csharp",
 };
 
 /** Glob pattern for every extension registered above. */
@@ -90,10 +92,13 @@ export async function initRuntime(): Promise<void> {
  * documented WASM-heap race when grammars load concurrently on Node.
  */
 export async function loadGrammars(languages: Language[]): Promise<void> {
-  await initRuntime();
   const toLoad = [...new Set(languages)].filter(
     (lang) => lang in WASM_GRAMMAR_FILES && !languageCache.has(lang),
   );
+  // Successful compiler-only extraction has no tree-sitter work. In a fresh
+  // candidate process, initializing its WASM runtime here would be wasted.
+  if (toLoad.length === 0) return;
+  await initRuntime();
   for (const lang of toLoad) {
     const wasmFile = WASM_GRAMMAR_FILES[lang]!;
     const grammar = await WasmLanguage.load(grammarWasmPath(wasmFile));

@@ -27,6 +27,7 @@ const lazyWorkbenchSources = [
   "src/pages/ActivityPage.tsx",
   "src/pages/JobsPage.tsx",
   "src/pages/HealthPage.tsx",
+  "src/pages/SetupPage.tsx",
 ];
 const entryKey = Object.keys(manifest).find((key) => manifest[key].isEntry);
 if (!entryKey) throw new Error("The production Hub manifest has no application entry.");
@@ -55,6 +56,19 @@ if (!homeEntry || workbenchEntries.some((entry) => entry !== homeEntry && entry.
   throw new Error("The production Hub Home workbench is not isolated in its own lazy chunk.");
 }
 const homeChunks = staticImportClosure(homeEntry.key);
+const teamAccessDialogKey = Object.keys(manifest).find((candidate) => (
+  candidate === "src/pages/TeamAccessDialog.tsx"
+  || manifest[candidate].src === "src/pages/TeamAccessDialog.tsx"
+));
+if (
+  !teamAccessDialogKey
+  || !manifest[teamAccessDialogKey].isDynamicEntry
+  || !(manifest[homeEntry.key].dynamicImports ?? []).includes(teamAccessDialogKey)
+  || homeChunks.has(teamAccessDialogKey)
+  || initialChunks.has(teamAccessDialogKey)
+) {
+  throw new Error("The team-access dialog is not isolated behind its explicit open-on-demand boundary.");
+}
 for (const entry of workbenchEntries) {
   if (entry !== homeEntry && homeChunks.has(entry.key)) {
     throw new Error(`The production Hub Home workbench eagerly imports ${entry.source}.`);
@@ -71,6 +85,25 @@ if (!overviewRuntimeKey || !manifest[overviewRuntimeKey].isDynamicEntry) {
 }
 if (initialChunks.has(overviewRuntimeKey)) {
   throw new Error("The Overview aggregate validator leaked into the application shell.");
+}
+const setupRuntimeKey = Object.keys(manifest).find((candidate) => {
+  const record = manifest[candidate] ?? {};
+  return record.name === "setup" || [candidate, record.src].some((value) => (
+    typeof value === "string" && /(?:^|\/)hub-contracts\/dist\/setup\.js$/u.test(value)
+  ));
+});
+if (!setupRuntimeKey || !manifest[setupRuntimeKey].isDynamicEntry) {
+  throw new Error("The production Hub manifest has no lazy Setup contract.");
+}
+if (initialChunks.has(setupRuntimeKey) || homeChunks.has(setupRuntimeKey)) {
+  throw new Error("The Setup contract leaked into the application shell or Home workbench.");
+}
+const contactRuntimeKey = Object.keys(manifest).find((candidate) => (
+  (manifest[candidate].src ?? candidate) === "../hub-contracts/dist/contact.js"
+));
+if (!contactRuntimeKey || !manifest[contactRuntimeKey].isDynamicEntry
+  || initialChunks.has(contactRuntimeKey) || staticImportClosure(contactRuntimeKey).has(setupRuntimeKey)) {
+  throw new Error("Contact preferences must load independently of setup and the initial shell.");
 }
 const relayEntry = workbenchEntries.find((entry) => entry.source === "src/pages/RelayPage.tsx");
 const relayComposerKey = Object.keys(manifest).find((candidate) => (

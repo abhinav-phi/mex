@@ -1,5 +1,44 @@
 # Inbox-Governed Spec Authoring Contract
 
+> **0.8.1 extension:** Inbox also accepts explicit contributions to existing
+> project knowledge. The additive contract below supersedes the Spec-only
+> product scope; the original Spec format and its safety rules remain supported.
+
+## 0.8.1 knowledge contributions
+
+Inbox is the deliberate proposal/review path into canonical Wiki knowledge.
+It adds no knowledge category and does not require routine GROW or ordinary
+non-Spec Wiki upkeep to go through review.
+
+- `knowledge.create` accepts `entityKind` (architecture, component, convention,
+  decision, pattern, guide), title, body, optional summary/topics, and status
+  (`in_flight` or `promoted`). MEX mints the ID and path: patterns use
+  `patterns/<id>.md`; other kinds use `context/<kind>-<id>.md`.
+- `knowledge.update` accepts one exact `target` (id, kind, optional title) and a
+  nonempty `patch` of title, summary, or body. A target can be an existing
+  document or section. The existing dependency revision rules apply.
+- Knowledge creates have no relation editor. The closed legacy Spec relation
+  rules below still apply to existing Spec workflows.
+- New knowledge requests use `mex.team.inbox.knowledge-change.v1`; existing
+  `mex.team.inbox.spec-change.v1` bytes are not migrated. The compatibility-named
+  private types, receipt domain, and `spec-entity` minted-ID receipt purpose are
+  retained for both create families. These are implementation tokens, not UI
+  categories.
+- Approval carries a proposal source link and captured evidence into knowledge;
+  corrections append sources while retaining prior attribution and grounding.
+  Publication-time author and reviewer remain distinct in proposal history.
+- The Inbox skill searches existing Wiki records before creating a duplicate.
+  `mex inbox target <entity-id> --json` provides a bounded immutable projection
+  of target text and exact `version.contentHash`/`semanticRevision` values.
+- Local drafts are checkout-only. Publishing creates proposal Markdown in the
+  working tree. Approval writes canonical knowledge and review/audit artifacts.
+  Commit/push/pull remain the Git sharing steps.
+
+Existing bounds, exact preview/apply, containment, stale/repair, recovery, and
+legacy Spec guards below continue to apply. The default Hub composer now uses
+knowledge contributions, while older Spec drafts and proposals retain their
+original review path.
+
 Status: Checkpoints E1-E4 implemented; pinned calibration applied and enforcing CI required
 
 This brief freezes the minimum product boundary for checkout-local Inbox drafts,

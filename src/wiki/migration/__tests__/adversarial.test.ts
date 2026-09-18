@@ -45,6 +45,26 @@ function snapshot(root: string): Map<string, string> {
 
 const FRONT = (extra = "") => `---\nname: architecture\ndescription: "x"\n${extra}---\n\n`;
 
+describe("unknown context file classification", () => {
+  it("keeps ambiguous file bytes and legacy metadata unchanged on preview, apply, and repeat", () => {
+    const path = "context/security.md";
+    const text = FRONT("last_updated: 2020-01-01\nedges: []\n")
+      + "# Security procedures\n\n## Account recovery\n\nFollow the recorded recovery process.\n";
+    const root = scaffoldOf({ [path]: text });
+    const preview = planMigration({ scaffoldRoot: root });
+    expect(preview.planned).toEqual([]);
+    expect(preview.abstentions).toEqual([{ file: path, target: null, reason: expect.stringContaining("does not establish architecture") }]);
+    expect(readFileSync(join(root, path), "utf8")).toBe(text);
+    for (let run = 0; run < 2; run += 1) {
+      const report = migrateScaffold({ scaffoldRoot: root });
+      expect(report.idsGenerated).toEqual([]);
+      expect(report.filesUnchanged).toContain(path);
+      expect(report.abstentions).toEqual(preview.abstentions);
+      expect(readFileSync(join(root, path), "utf8")).toBe(text);
+    }
+  });
+});
+
 describe("tier 3 — merge conflict markers", () => {
   it("migrates without truncating the body, and writes no entity inside the region", () => {
     const text =
@@ -283,10 +303,7 @@ describe("a dry run over the adversarial set", () => {
 
   it("writes nothing and reports every abstention", () => {
     const root = scaffoldOf({
-      // A whole-file abstention needs a path no rule reaches. `context/stack.md`
-      // used to be one and is not any more: a direct child of `context/` now
-      // takes the directory default. One segment deeper is still nobody's
-      // convention but the author's, so migration still declines it.
+      "context/stack.md": FRONT() + "# Stack\n\nProse.\n",
       "context/nested/deeper.md": FRONT() + "# Deeper\n\nProse.\n",
       "context/architecture.md":
         FRONT() + "# Architecture\n\nIntro.\n\n## Thin\n\nOne line.\n",

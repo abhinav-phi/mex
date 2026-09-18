@@ -12,12 +12,12 @@ edges:
     condition: "when connecting team state to Hub, Wiki, or graph consumers"
   - target: "context/conventions.md"
     condition: "when changing canonical serialization or validation"
-last_updated: 2026-09-03
+last_updated: 2026-09-08
 mex:
   id: mx_01M1M0CJMRWZY5TZCEBSFJPAHT
   type: pattern
   status: promoted
-  revision: 4
+  revision: 8
   title: local-first-team-state
   grounds_to:
     - node: function:ecf1fb45ac2910d02bc78f6f761c0145
@@ -109,6 +109,53 @@ under `.mex/local/`. When present, the legacy decision-event JSONL stays byte-fo
 - Canonical handoff identity comparisons use stable Member IDs. Display names,
   Git aliases, and serialized actor objects are snapshots for review, not
   authorization keys.
+- An additive Inbox payload must preserve legacy materialization bytes: changing
+  old approval serialization can invalidate an already signed preview or its
+  interrupted-write recovery. New contribution attribution must also use stable
+  object-field order because receipt decoding may reorder JSON keys before
+  canonical YAML is rendered.
+- Inbox proposals are review artifacts, not a Wiki knowledge category. Apply
+  corrections to existing entities and append proposal/evidence sources while
+  retaining original producer attribution and grounding baselines. Routine
+  non-Spec Wiki/GROW upkeep does not require Inbox.
+- A stable Wiki read can represent an already stale index. Target discovery for
+  a correction must require fresh status in the same immutable observation as
+  the returned text and revisions; a separate earlier status check is not enough.
+- An open-to-team Relay audience must remain a rule, not a snapshot of today's
+  Members. Check current active identity at Take; preserve omitted audience as
+  legacy named intent. A recipient-free local draft must never silently broaden
+  named publication. Reactivation restores the same Member ID and revalidates
+  alias uniqueness without rewriting prior actors or selecting that Member.
+- A CLI shortcut that internally previews and applies still needs exact restart
+  authority. Local draft publication and journal intent are separate transactions:
+  persist the complete signed preview privately before apply, reuse it for an
+  interrupted same-operation retry, and remove only its exact bytes after success.
+  Bound pending count and bytes; never replace a conflicting receipt, silently
+  evict pending operations, or put draft content into the metadata-only journal.
+- Generic file reads and replacements default to exact bytes. Only known
+  canonical Team codecs opt into uniform CRLF-to-LF conversion; Wiki files,
+  operation ledgers, and local receipts retain exact revisions. Compare tracked
+  config with checkout conversion applied only to that comparison, then recheck
+  its exact revision. Reading an absent preference must not initialize state.
+- Preserve legacy Timeline IDs using logical LF offsets while scanning and
+  bounding actual bytes. Otherwise changing the shared reader silently changes
+  historical IDs after the first CRLF line.
+- Inbox may display escaped carriage returns in a Wiki diff, but must also
+  escape literal backslashes so the display is unambiguous. Only the signed
+  presentation changes; executable Wiki bytes and revisions stay exact.
+- Keep filesystem identity at full width from the first stat through the final
+  recheck: converting an already rounded number back to bigint cannot restore
+  it. Lock owner JSON can retain decimal strings. Capture the newly opened lock
+  identity before writing its owner, and verify the current leaf before cleanup
+  even when initialization or the protected operation failed.
+- Optional agent logging is advisory and separate from mandatory workflow
+  Activity. Read the current policy dynamically instead of rewriting agent
+  instructions on every preference change. Retrieve bounded historical notes
+  by subject or recorded file, and report incomplete history honestly.
+- Capture new Wiki creation provenance from explicit operation authority, while
+  retaining supplied attribution. Keep the capture opt-in at ordinary authoring
+  boundaries so legacy signed Team/Spec plans and recovery bytes stay stable;
+  adopting older prose must not claim its importer wrote it.
 
 ## Verify
 

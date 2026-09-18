@@ -177,10 +177,14 @@ export function resolveReferences(
     if (!candidates || candidates.length === 0) continue;
 
     const allowedKinds = TARGET_KINDS[ref.referenceKind] ?? [];
-    const filtered =
-      allowedKinds.length === 0
-        ? candidates.filter((n) => n.id !== ref.fromNodeId)
-        : candidates.filter((n) => allowedKinds.includes(n.kind) && n.id !== ref.fromNodeId);
+    // A recursive C# call is still a candidate for itself. Removing it can
+    // turn an unresolved overload set into a false, confident sibling edge.
+    const allowSelf = ref.language === "csharp"
+      && (ref.referenceKind === "calls" || ref.referenceKind === "function_ref");
+    const filtered = candidates.filter((node) =>
+      (allowedKinds.length === 0 || allowedKinds.includes(node.kind))
+      && (allowSelf || node.id !== ref.fromNodeId),
+    );
     if (filtered.length === 0) continue;
 
     const provenFiles = new Set([
@@ -229,16 +233,29 @@ function pickBest(
   ref: UnresolvedRefRecord,
   importedFiles: Set<string> | undefined,
 ): GraphNode | null {
+  const receiver = ref.receiver ?? ref.referenceName.split(".").slice(0, -1).join(".");
+  // A C# qualifier may name an object, namespace, type, or alias. Syntax alone
+  // cannot bind it to a same-named lexical symbol, including in heritage and
+  // construction references. Only `this` calls have a proven lexical receiver.
+  if (ref.language === "csharp") {
+    const isThisCall = receiver.trim() === "this"
+      && (ref.referenceKind === "calls" || ref.referenceKind === "function_ref");
+    const isQualified = receiver.trim() !== "" || ref.referenceName.includes("::");
+    if (isQualified && !isThisCall) return null;
+  }
+
   const sameFile = candidates.filter((n) => n.filePath === fromNode.filePath);
   if (sameFile.length > 0) {
     // `this`/`super` and unqualified names may bind only inside the lexical
     // container. Never pick the first same-named method in the file.
-    const receiver = ref.receiver ?? ref.referenceName.split(".").slice(0, -1).join(".");
-    const lexical = sameFile.filter((node) =>
-      node.containerId === fromNode.containerId
-      || node.containerId === fromNode.id
-      || (receiver === "this" && node.containerId === fromNode.containerId),
-    );
+    const lexical = sameFile.filter((node) => {
+      // `this.M()` names a member, never a local function named M in the
+      // calling method. Nested/local functions have no proven type receiver.
+      if (ref.language === "csharp" && receiver === "this") {
+        return node.kind === "method" && node.containerId === fromNode.containerId;
+      }
+      return node.containerId === fromNode.containerId || node.containerId === fromNode.id;
+    });
     if (lexical.length === 1) return lexical[0]!;
     if (lexical.length > 1) return null;
     const moduleLevel = sameFile.filter((node) => !node.containerId);

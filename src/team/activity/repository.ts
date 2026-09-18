@@ -484,6 +484,7 @@ export class ActivityRepository {
             this.projectRoot,
             sourcePath,
             ACTIVITY_ARTIFACT_MAX_BYTES,
+            "canonical",
           );
           corpusBytes += read.bytes.byteLength;
           if (corpusBytes > ACTIVITY_REPOSITORY_LIMITS.maxCorpusBytes) {
@@ -563,6 +564,7 @@ export class ActivityRepository {
       this.projectRoot,
       preview.sourcePath,
       ACTIVITY_ARTIFACT_MAX_BYTES,
+      "canonical",
     );
     if (existing !== null) {
       if (existing.revision !== preview.revision) {
@@ -607,6 +609,7 @@ export class ActivityRepository {
       this.projectRoot,
       preview.sourcePath,
       ACTIVITY_ARTIFACT_MAX_BYTES,
+      "canonical",
     );
     if (existing !== null) {
       if (existing.revision !== preview.revision) {
@@ -634,6 +637,7 @@ export class ActivityRepository {
         this.projectRoot,
         preview.sourcePath,
         ACTIVITY_ARTIFACT_MAX_BYTES,
+        "canonical",
       );
       if (raced === null || raced.revision !== preview.revision) throw error;
       return parseActivityArtifact(raced.bytes, preview.sourcePath);

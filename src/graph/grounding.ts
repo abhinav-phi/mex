@@ -22,7 +22,7 @@
 //   Tier-1 hit + body unchanged      -> clean (no issue)
 //   Tier-1 hit + body_hash moved     -> WARNING  (GROUNDING_DRIFT)
 //   Tier-1 miss -> reconcile:
-//        MOVED     -> clean, rebind grounds_to (no issue)
+//        MOVED     -> rebind identity; WARNING if the accepted body hash differs
 //        AMBIGUOUS -> WARNING  (GROUNDING_AMBIGUOUS) + candidate id
 //        GONE      -> ERROR    (GROUNDING_GONE)
 

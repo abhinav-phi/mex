@@ -113,14 +113,15 @@ describe("Relay contract resolver CLI", () => {
         action: {
           kind: "relay.draft.save",
           draft: {
-            recipients: [{ kind: "member", memberId: MEMBER_ID }],
+            audience: "team",
+            recipients: [],
             summary: expect.any(String),
           },
         },
       },
     });
     expect(Object.keys((envelope.data.requestFile.examples[0]!.request as any).action.draft).sort())
-      .toEqual(["recipients", "summary"]);
+      .toEqual(["audience", "recipients", "summary"]);
     const exampleEvidence = envelope.data.requestFile.examples.flatMap((example) => {
       const draft = (example.request as any)?.action?.draft;
       return Array.isArray(draft?.evidence) ? draft.evidence : [];
@@ -175,8 +176,12 @@ describe("Relay contract resolver CLI", () => {
         }),
       }),
     ]));
+    const teamPublish = { ...publish, expectedRevisions: [localExpectation] };
+    expect(validateRequest(teamPublish), JSON.stringify(validateRequest.errors)).toBe(true);
+    writeFileSync(publishPath, JSON.stringify(teamPublish));
+    expect(readRelayCommandFile(publishPath, "relay.publish")).toEqual(teamPublish);
     const invalidPublishTopologies = [
-      [localExpectation],
+      [],
       [
         ...publish.expectedRevisions,
         {
@@ -709,6 +714,12 @@ describe("Relay contract resolver CLI", () => {
       .toBeLessThan(Buffer.byteLength(full[0]!, "utf8"));
 
     const data = (JSON.parse(focused[0]!) as any).data;
+    const validateContent = new Ajv2020({ strict: true }).compile(data.localSave.contentFile.schema);
+    expect(validateContent({ summary: "Continue tomorrow." })).toBe(true);
+    expect(validateContent({ summary: "For Sam once resolved.", audience: "members", recipients: [] })).toBe(true);
+    expect(validateContent({ summary: "Conflicting audience.", audience: "team", recipients: [{ kind: "member", memberId: MEMBER_ID }] })).toBe(false);
+    expect(validateContent({ summary: "No caller authority.", actor: { kind: "unknown" } })).toBe(false);
+    expect(validateContent({ summary: "Invalid audience.", audience: "everyone" })).toBe(false);
     const validate = new Ajv2020({ strict: true }).compile(data.requestFile.schema);
     const save = structuredClone(data.requestFile.examples[0].request);
     expect(validate(save), JSON.stringify(validate.errors)).toBe(true);

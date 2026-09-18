@@ -187,6 +187,7 @@ describe("Team CLI commands", () => {
       "add",
       "update",
       "deactivate",
+      "reactivate",
       "select",
     ]);
     expect(activity.commands.map((command) => command.name())).toEqual([

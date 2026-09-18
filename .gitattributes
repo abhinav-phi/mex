@@ -17,3 +17,6 @@ test/fixtures/wiki/malformed/merge-conflict.md -diff
 # It lives outside test/fixtures/wiki/ so the P2a oracle's "every fixture is
 # claimed by an expectation" meta-test keeps meaning exactly what it says.
 test/fixtures/wiki-migration/** -text
+
+# Capabilities goldens pin the CLI's exact LF JSON output on every platform.
+test/fixtures/capabilities/*.json text eol=lf

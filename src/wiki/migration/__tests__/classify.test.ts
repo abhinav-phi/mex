@@ -159,56 +159,29 @@ describe("classification over the corpus", () => {
     expect(nested[0]?.reason).toContain("stays with the section that contains it");
   });
 
-  it("gives a context file no filename rule covers one file-level entity, by directory", () => {
-    // This test used to assert the opposite, and that is the point of it. The
-    // classifier matched `patterns/` by directory and `context/` by exact
-    // filename against five names, so a file `mex setup` itself writes —
-    // `context/stack.md` is in `templates/context/` and absent from
-    // CONTEXT_ROLES — abstained, and so did every context file whose author
-    // chose a name mex's templates do not ship. The suite asserted the gap
-    // rather than catching it.
-    const result = classified("context/stack.md");
-    expect(result.abstentions).toEqual([]);
-    expect(result.candidates.map((candidate) => candidate.target)).toEqual([{ at: "file" }]);
-    expect(result.candidates[0]?.type).toBe("architecture");
-    // The rule string has to be honest that this was decided by the folder and
-    // not by the name, because that is the difference a reviewer of a dry run
-    // needs in order to tell a default from a determination.
-    expect(result.candidates[0]?.rule).toContain("by directory rather than by name");
-    expect(roleFor("context/stack.md")).not.toBeNull();
+  it.each(["context/stack.md", "context/glossary.md", "context/security.md"])("abstains on %s rather than deriving architecture from its directory", (path) => {
+    const result = classified(path);
+    expect(result.candidates).toEqual([]);
+    expect(result.abstentions).toEqual([{ file: path, target: null, reason: expect.stringContaining("Add explicit Wiki entity metadata") }]);
+    expect(roleFor(path)).toBeNull();
   });
 
-  it("leaves the sections of such a file as prose, rather than calling them components", () => {
-    // `patterns/` works as a directory rule because the directory names the
-    // type. `context/` holds five different types across its five named files,
-    // so the folder says "this describes the system" and says nothing at all
-    // about what a `##` inside it is. Minting a `component` for every depth-2
-    // heading of a glossary is a much larger claim than minting one entity for
-    // the document, and it is the file-level entity alone that unorphans the
-    // file's `edges`.
-    const result = classified("context/glossary.md");
-    expect(result.candidates.map((candidate) => candidate.target.at)).toEqual(["file"]);
-    expect(result.abstentions).toEqual([]);
-  });
-
-  it("keeps the five named context rules ahead of the directory default", () => {
-    // The default must not swallow a rule that was determined by name: a risk
-    // register still gets no file-level entity, and a decisions file is still
-    // depth-3 and conditional.
+  it("preserves the explicit named context rules", () => {
     expect(roleFor("context/risks.md")?.fileType).toBeNull();
     expect(roleFor("context/risks.md")?.sectionType).toBe("risk");
     expect(roleFor("context/conventions.md")?.fileType).toBe("convention");
-    expect(classified("context/risks.md").candidates.every((c) => c.target.at === "heading")).toBe(true);
+    expect(classified("context/risks.md").candidates.every((candidate) => candidate.target.at === "heading")).toBe(true);
   });
 
-  it("stops at the direct children of `context/`, and says so by abstaining below them", () => {
-    // The structural fact is `mex setup` writes `context/<name>.md` — one
-    // segment. A tree under `context/sub/` is somebody's own convention, which
-    // mex did not write and cannot read.
-    expect(roleFor("context/nested/thing.md")).toBeNull();
-    expect(roleFor("context/thing.md")).not.toBeNull();
-    // And a path that merely starts with the letters is not in the directory.
-    expect(roleFor("contextual/thing.md")).toBeNull();
+  it("does not infer a type for unknown direct or nested context paths", () => {
+    for (const path of ["context/nested/thing.md", "context/thing.md", "contextual/thing.md"]) {
+      expect(roleFor(path)).toBeNull();
+    }
+  });
+
+  it("preserves authored metadata on an otherwise unknown context path", () => {
+    const file = inline(`---\nmex:\n  id: mx_01K4FAM7W8N9R3T5Y6Q2ZBCHJD\n  type: guide\n  status: promoted\n  revision: 2\n  title: Security runbook\n---\n\nOperational guidance.\n`, "context/security.md");
+    expect(classifyFile(file)).toMatchObject({ candidates: [], abstentions: [], skipped: true, skipReason: "already carries entity metadata" });
   });
 
   it("keeps navigation and generated files ahead of both directory rules", () => {
@@ -245,18 +218,11 @@ describe("classification over the corpus", () => {
     const setup = 6 + 1;
     const risks = 6; // a register is a list, not one claim
     const patterns = 6; // one file-level entity each
-    // The eight context files no *filename* rule covers, one entity each by the
-    // directory default. They were eight whole-file abstentions before, which
-    // is what left this corpus's edges with nothing to belong to.
-    const contextDefaults = 8;
     expect(candidates.length).toBe(
-      architecture + conventions + decisions + setup + risks + patterns + contextDefaults,
+      architecture + conventions + decisions + setup + risks + patterns,
     );
-    // No file is abstained on as a whole any more. Every remaining abstention
-    // is a *section* one: a thin heading, a nested subsection, or a decision-log
-    // entry with no decision in it.
-    expect(abstentions.filter((entry) => entry.target === null).length).toBe(0);
-    expect(abstentions.every((entry) => entry.target !== null)).toBe(true);
+    expect(abstentions.filter((entry) => entry.target === null)).toHaveLength(8);
+    expect(abstentions.some((entry) => entry.target !== null)).toBe(true);
     expect(abstentions.length).toBeGreaterThan(8);
     expect(all.filter((entry) => entry.skipped).length).toBe(6);
   });

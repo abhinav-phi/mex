@@ -13,12 +13,12 @@ edges:
     condition: "when changing Hub routes, sessions, safe projections, SSE, or jobs"
   - target: "context/architecture.md"
     condition: "when reviewing the current Graph-to-Hub architecture and boundaries"
-last_updated: 2026-09-06
+last_updated: 2026-09-09
 mex:
   id: mx_01M1M0CJKZF3ABC1PQREMA2HYR
   type: pattern
   status: promoted
-  revision: 4
+  revision: 5
   title: fresh-graph-hub-integration
   grounds_to:
     - node: function:9099fdd7e5562f7507cc7e80a6d67f1e
@@ -57,7 +57,9 @@ or make Wiki availability appear real.
 1. Bind one package-private repository adapter through
    [`createRepositoryGraphPort()`](mex://function:9099fdd7e5562f7507cc7e80a6d67f1e).
    Implement the frozen `GraphPort` by calling Lane A modules directly; do not add a package-
-   root export, raw SQLite callback, command escape hatch, or subprocess.
+   root export, raw SQLite callback, or public CLI subprocess. Production Hub
+   maintenance selects Lane A's private candidate process; read paths retain
+   their existing immutable-session contract.
 2. Route every graph-derived response through the complete freshness handshake:
    inspect a stable `fresh` graph, adopt one inode-bound immutable SQLite
    session, read graph facts and hash-matched contained source, build the whole
@@ -86,6 +88,10 @@ or make Wiki availability appear real.
    counts, retain the Hub generation/lease checks, and let Lane A's cross-process
    maintenance lock arbitrate Hub and CLI writers. Rebuild requires the browser
    confirmation step; neither operation runs during an ordinary read.
+   The parent owns the lease, candidate validation, publication and rollback.
+   The private child only constructs the candidate. Wait for process closure
+   before cleanup, terminate disconnected/cancelled children, and use a parent
+   lifeline independent of the busy compiler thread. Keep the public API fixed.
 9. Derive Wiki availability independently from the registered adapter and its
    current health. Keep unavailable states honest, and never fill Graph or Wiki
    gaps with production fixtures.
@@ -107,6 +113,14 @@ or make Wiki availability appear real.
   repair control.
 - Job progress messages can contain paths or source details. Persist phase and
   numeric counts only; discard the message.
+- Graph counts describe parsed files. Keep persisted progress monotonic, label
+  those counts explicitly, and show a numeric bar only during parsing. The
+  final validation/publication phases do not inherit a 100% completion claim.
+- Process isolation releases the child's working set when it exits; it is not
+  a peak RAM quota. Parent status inspections, copies and final publication
+  still include synchronous work. Measure actual HTTP/cancel latency as well
+  as aggregate resources. Fatal parent death stops the writer via its lifeline
+  but may leave private temporary artifacts; do not delete by a guessed prefix.
 - Successful graph maintenance invalidates cached Search, Code, Health, Jobs,
   Home, Overview, and capability queries. It does not authorize automatic
   maintenance later.

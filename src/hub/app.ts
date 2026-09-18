@@ -1,4 +1,11 @@
 import {
+  AgentLoggingPolicySchema,
+  AgentLoggingUpdateRequestSchema,
+  type AgentLoggingPolicy,
+  type AgentLoggingUpdateRequest,
+  HubOnboardingCompleteRequestSchema,
+  HubOnboardingStateSchema,
+  type HubOnboardingState,
   ActivityRequestSchema,
   ActivityResponseSchema,
   BootstrapRequestSchema,
@@ -70,6 +77,8 @@ import {
   WikiEntityListResponseSchema,
   WikiRelationsRequestSchema,
   WikiRelationsResponseSchema,
+  WikiGraphResponseSchema,
+  WikiGroundedCodeResponseSchema,
   type HealthResponse,
   type CodeWorkspaceRequest,
   type CodeWorkspaceResponse,
@@ -126,8 +135,39 @@ import {
   type WikiEntityListResponse,
   type WikiRelationsRequest,
   type WikiRelationsResponse,
+  type WikiGraphResponse,
+  type WikiGroundedCodeResponse,
 } from "@mex/hub-contracts";
 import { OverviewResponseSchema } from "@mex/hub-contracts/overview";
+import {
+  SetupRunSchema,
+  SetupInstallationSchema,
+  ContactPreferenceSchema,
+  ContactPreferenceRequestSchema,
+  SetupContactRequestSchema,
+  SetupContactResponseSchema,
+  type SetupInstallation,
+  SetupStartRequestSchema,
+  SetupCancelRequestSchema,
+  SetupStatusSchema,
+  SetupTranscriptBatchSchema,
+  SetupCommitPreviewRequestSchema,
+  SetupCommitPreviewSchema,
+  SetupCommitRequestSchema,
+  SetupCommitResponseSchema,
+  SetupCommitDiffRequestSchema,
+  SetupCommitDiffSchema,
+  type SetupRun,
+  type SetupStartRequest,
+  type SetupStatus,
+  type SetupTranscriptBatch,
+  type SetupCommitPreview,
+  type SetupCommitDiff,
+  type SetupCommitDiffRequest,
+  type SetupCommitRequest,
+  type SetupCommitResponse,
+} from "@mex/hub-contracts/setup";
+import { readContactPreference, rememberContactPreference, submitSetupContact } from "../setup/contact.js";
 import { Hono, type Context } from "hono";
 import { getCookie, generateCookie } from "hono/cookie";
 import { streamSSE } from "hono/streaming";
@@ -143,6 +183,7 @@ import {
   validationFailed,
 } from "./http/errors.js";
 import { readBoundedJson, readStrictQuery } from "./http/request.js";
+import { HUB_PAGE_EVENT_BODY_BYTES, HubPageViewSchema, HubTelemetry, type HubTelemetrySink } from "./telemetry.js";
 import {
   type HubSession,
   HubSessionManager,
@@ -180,7 +221,27 @@ export interface HubJobService {
   subscribe(id: string, listener: (event: HubJobEvent) => void): () => void;
 }
 
+/** Process-local setup wizard seam. Present only while Hub is in setup mode. */
+export interface HubSetupService {
+  status(): SetupStatus | Promise<SetupStatus>;
+  snapshot(): SetupRun;
+  start(request: SetupStartRequest): SetupRun;
+  cancel(): SetupRun;
+  subscribe(listener: (run: SetupRun) => void): () => void;
+  readTranscript?(runId: string, after: number): SetupTranscriptBatch;
+  subscribeTranscript?(listener: () => void): () => void;
+  previewCommit?(): Promise<SetupCommitPreview>;
+  commitDiff?(request: SetupCommitDiffRequest): SetupCommitDiff | Promise<SetupCommitDiff>;
+  commitSetup?(request: SetupCommitRequest): Promise<SetupCommitResponse>;
+  installation?(): SetupInstallation;
+  installGlobally?(): Promise<SetupInstallation>;
+}
+
 export interface HubReadServices {
+  loggingPolicy?(): Promise<AgentLoggingPolicy> | AgentLoggingPolicy;
+  setLoggingPolicy?(request: AgentLoggingUpdateRequest): Promise<AgentLoggingPolicy> | AgentLoggingPolicy;
+  onboardingState?(): Promise<HubOnboardingState> | HubOnboardingState;
+  completeOnboarding?(): Promise<HubOnboardingState> | HubOnboardingState;
   capabilities(): Promise<HubCapabilities> | HubCapabilities;
   home(): Promise<HomeResponse> | HomeResponse;
   overview?(): Promise<OverviewResponse> | OverviewResponse;
@@ -238,6 +299,8 @@ export interface HubReadServices {
   wikiEntities?(
     request: WikiEntityListRequest,
   ): Promise<WikiEntityListResponse> | WikiEntityListResponse;
+  wikiGraph?(): Promise<WikiGraphResponse> | WikiGraphResponse;
+  wikiGroundedCode?(entityId: string): Promise<WikiGroundedCodeResponse> | WikiGroundedCodeResponse;
   wikiEntity?(
     entityId: string,
   ): Promise<WikiEntityDetailResponse> | WikiEntityDetailResponse;
@@ -268,15 +331,18 @@ export interface CreateHubAppOptions {
   readonly security: HubSessionManager;
   readonly services: HubReadServices;
   readonly jobs?: HubJobService;
+  readonly setup?: HubSetupService;
   readonly assets?: HubAssetManifest;
   readonly requestId?: () => string;
   readonly now?: () => number;
+  readonly telemetry?: HubTelemetrySink;
 }
 
 export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment> {
   const app = new Hono<HubEnvironment>();
   const requestId = options.requestId ?? createRequestId;
   const now = options.now ?? Date.now;
+  const telemetry = new HubTelemetry(options.telemetry, now);
   const subscribers = new SseSubscriberTracker();
 
   app.onError((error, context) => {
@@ -353,6 +419,15 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
       expiresAt: context.get("session").expiresAt,
     },
   ));
+
+  app.post("/api/v1/telemetry/page", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    const request = parseInput(HubPageViewSchema, await readBoundedJson(context.req.raw, HUB_PAGE_EVENT_BODY_BYTES));
+    telemetry.pageViewed(request.page);
+    // Accepted locally is not a delivery promise. Opt-out and rate-limited
+    // events take the same quiet path without queuing or persisting anything.
+    return new Response(null, { status: 204 });
+  });
 
   app.get("/api/v1/capabilities", async () => resourceResponse(
     HubCapabilitiesSchema,
@@ -467,7 +542,8 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     );
     const preview = options.services.previewInboxOperation;
     if (preview === undefined) throw unavailable("Inbox mutations are not connected in this build.");
-    return resourceResponse(InboxOperationPreviewResponseSchema, await preview(request));
+    return telemetry.action(request.action.kind, "preview", async () =>
+      resourceResponse(InboxOperationPreviewResponseSchema, await preview(request)));
   });
 
   app.post("/api/v1/inbox/operations/apply", async (context) => {
@@ -477,7 +553,11 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     );
     const apply = options.services.applyInboxOperation;
     if (apply === undefined) throw unavailable("Inbox mutations are not connected in this build.");
-    return resourceResponse(InboxOperationApplyResponseSchema, await apply(request));
+    const completed = await telemetry.action(request.request.action.kind, "apply", async () => {
+      const result = await apply(request);
+      return { result, response: resourceResponse(InboxOperationApplyResponseSchema, result) };
+    }, ({ result }) => result.idempotentReplay);
+    return completed.response;
   });
 
   app.get("/api/v1/relays/drafts", async (context) => {
@@ -524,7 +604,8 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     );
     const preview = options.services.previewRelayOperation;
     if (preview === undefined) throw unavailable("Relay mutations are not connected in this build.");
-    return resourceResponse(RelayOperationPreviewResponseSchema, await preview(request));
+    return telemetry.action(request.action.kind, "preview", async () =>
+      resourceResponse(RelayOperationPreviewResponseSchema, await preview(request)));
   });
 
   app.post("/api/v1/relays/operations/apply", async (context) => {
@@ -534,7 +615,11 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     );
     const apply = options.services.applyRelayOperation;
     if (apply === undefined) throw unavailable("Relay mutations are not connected in this build.");
-    return resourceResponse(RelayOperationApplyResponseSchema, await apply(request));
+    const completed = await telemetry.action(request.request.action.kind, "apply", async () => {
+      const result = await apply(request);
+      return { result, response: resourceResponse(RelayOperationApplyResponseSchema, result) };
+    }, ({ result }) => result.idempotentReplay);
+    return completed.response;
   });
 
   app.get("/api/v1/specs", async (context) => {
@@ -573,7 +658,8 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     if (preview === undefined) {
       throw unavailable("Member and Activity mutations are not connected in this build.");
     }
-    return resourceResponse(TeamOperationPreviewResponseSchema, await preview(request));
+    return telemetry.action(request.action.kind, "preview", async () =>
+      resourceResponse(TeamOperationPreviewResponseSchema, await preview(request)));
   });
 
   app.post("/api/v1/team/operations/apply", async (context) => {
@@ -585,7 +671,11 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     if (apply === undefined) {
       throw unavailable("Member and Activity mutations are not connected in this build.");
     }
-    return resourceResponse(TeamOperationApplyResponseSchema, await apply(request));
+    const completed = await telemetry.action(request.request.action.kind, "apply", async () => {
+      const result = await apply(request);
+      return { result, response: resourceResponse(TeamOperationApplyResponseSchema, result) };
+    }, ({ result }) => result.idempotentReplay);
+    return completed.response;
   });
 
   app.get("/api/v1/activity", async (context) => {
@@ -640,6 +730,19 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     );
   });
 
+  app.get("/api/v1/wiki/graph", async (context) => {
+    if (!options.services.wikiGraph) throw unavailable("Context graph reads are not connected in this build.");
+    graphInput(() => readStrictQuery(context.req.raw, []));
+    return resourceResponse(WikiGraphResponseSchema, await options.services.wikiGraph());
+  });
+
+  app.get("/api/v1/wiki/entities/:id/code", async (context) => {
+    if (!options.services.wikiGroundedCode) throw unavailable("Context code reads are not connected in this build.");
+    const entityId = graphInput(() => parseInput(WikiEntityIdSchema, context.req.param("id")));
+    graphInput(() => readStrictQuery(context.req.raw, []));
+    return resourceResponse(WikiGroundedCodeResponseSchema, await options.services.wikiGroundedCode(entityId));
+  });
+
   app.get("/api/v1/wiki/entities", async (context) => {
     if (!options.services.wikiEntities) throw unavailable("Wiki reads are not connected in this build.");
     const request = graphInput(() => parseInput(
@@ -690,10 +793,170 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     );
   });
 
+  app.get("/api/v1/settings/logging", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    if (!options.services.loggingPolicy) throw unavailable("Agent logging preferences are unavailable in this build.");
+    return resourceResponse(AgentLoggingPolicySchema, await options.services.loggingPolicy());
+  });
+
+  app.post("/api/v1/settings/logging", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    if (!options.services.setLoggingPolicy) throw unavailable("Agent logging preferences are unavailable in this build.");
+    const request = parseInput(AgentLoggingUpdateRequestSchema, await readBoundedJson(context.req.raw));
+    return telemetry.action("settings.logging.update", "direct", async () =>
+      resourceResponse(AgentLoggingPolicySchema, await options.services.setLoggingPolicy!(request)));
+  });
+
+  app.get("/api/v1/settings/onboarding", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    if (!options.services.onboardingState) throw unavailable("The Hub tour state is unavailable in this build.");
+    return resourceResponse(HubOnboardingStateSchema, await options.services.onboardingState());
+  });
+
+  app.post("/api/v1/settings/onboarding", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    if (!options.services.completeOnboarding) throw unavailable("The Hub tour state is unavailable in this build.");
+    parseInput(HubOnboardingCompleteRequestSchema, await readBoundedJson(context.req.raw));
+    return resourceResponse(HubOnboardingStateSchema, await options.services.completeOnboarding());
+  });
+
   app.get("/api/v1/health", async () => resourceResponse(
     HealthResponseSchema,
     await options.services.health(),
   ));
+
+  app.get("/api/v1/setup", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    return resourceResponse(SetupStatusSchema, await requireSetup(options.setup).status());
+  });
+
+  app.get("/api/v1/setup/run", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    return resourceResponse(SetupRunSchema, requireSetup(options.setup).snapshot());
+  });
+
+  app.get("/api/v1/setup/installation", (context) => {
+    readStrictQuery(context.req.raw, []);
+    const setup = requireSetup(options.setup);
+    if (!setup.installation) throw unavailable("Global installation is unavailable in this build.");
+    return resourceResponse(SetupInstallationSchema, setup.installation());
+  });
+
+  app.post("/api/v1/setup/installation", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    parseInput(SetupCancelRequestSchema, await readBoundedJson(context.req.raw));
+    const setup = requireSetup(options.setup);
+    if (!setup.installGlobally) throw unavailable("Global installation is unavailable in this build.");
+    return resourceResponse(SetupInstallationSchema, await setup.installGlobally(), 202);
+  });
+
+  app.get("/api/v1/contact", (context) => {
+    readStrictQuery(context.req.raw, []);
+    return resourceResponse(ContactPreferenceSchema, readContactPreference());
+  });
+
+  app.post("/api/v1/contact/preference", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    const request = parseInput(ContactPreferenceRequestSchema, await readBoundedJson(context.req.raw));
+    return resourceResponse(ContactPreferenceSchema, await rememberContactPreference(request));
+  });
+
+  app.post("/api/v1/contact", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    const request = parseInput(SetupContactRequestSchema, await readBoundedJson(context.req.raw));
+    return resourceResponse(SetupContactResponseSchema, await submitSetupContact(request, { signal: context.req.raw.signal }));
+  });
+
+  app.post("/api/v1/setup", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    const setup = requireSetup(options.setup);
+    const request = parseInput(SetupStartRequestSchema, await readBoundedJson(context.req.raw));
+    return telemetry.action("setup.start", "direct", async () =>
+      resourceResponse(SetupRunSchema, setup.start(request), 202));
+  });
+
+  app.post("/api/v1/setup/cancel", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    parseInput(SetupCancelRequestSchema, await readBoundedJson(context.req.raw));
+    return resourceResponse(SetupRunSchema, requireSetup(options.setup).cancel(), 202);
+  });
+
+  app.post("/api/v1/setup/commit/preview", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    parseInput(SetupCommitPreviewRequestSchema, await readBoundedJson(context.req.raw));
+    const setup = requireSetup(options.setup);
+    if (!setup.previewCommit) throw unavailable("Setup commit review is unavailable in this build.");
+    return resourceResponse(SetupCommitPreviewSchema, await setup.previewCommit());
+  });
+
+  app.post("/api/v1/setup/commit/diff", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    const request = parseInput(SetupCommitDiffRequestSchema, await readBoundedJson(context.req.raw));
+    const setup = requireSetup(options.setup);
+    if (!setup.commitDiff) throw unavailable("Setup commit review is unavailable in this build.");
+    return resourceResponse(SetupCommitDiffSchema, await setup.commitDiff(request));
+  });
+
+  app.post("/api/v1/setup/commit", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    const request = parseInput(SetupCommitRequestSchema, await readBoundedJson(context.req.raw));
+    const setup = requireSetup(options.setup);
+    if (!setup.commitSetup) throw unavailable("Setup commits are unavailable in this build.");
+    return resourceResponse(SetupCommitResponseSchema, await setup.commitSetup(request));
+  });
+
+  app.get("/api/v1/setup/events", async (context) => {
+    if (context.req.method === "HEAD") {
+      throw new HubHttpError(
+        405,
+        "INVALID_REQUEST",
+        "Method not allowed",
+        "Hub setup event streams require GET.",
+      );
+    }
+    readStrictQuery(context.req.raw, []);
+    const setup = requireSetup(options.setup);
+    const release = subscribers.reserve("setup");
+    try {
+      return createSetupEventStream(
+        context,
+        setup,
+        context.get("session").expiresAt,
+        now,
+        release,
+      );
+    } catch (error) {
+      release();
+      throw error;
+    }
+  });
+
+  app.get("/api/v1/setup/transcript/events", (context) => {
+    if (context.req.method === "HEAD") {
+      throw new HubHttpError(405, "INVALID_REQUEST", "Method not allowed", "Setup transcript streams require GET.");
+    }
+    const query = readStrictQuery(context.req.raw, ["run"]);
+    const runId = parseInput(SetupTranscriptBatchSchema.shape.runId, query.run);
+    const header = context.req.header("Last-Event-ID") ?? "0";
+    if (!/^(0|[1-9][0-9]{0,15})$/u.test(header) || !Number.isSafeInteger(Number(header))) {
+      throw invalidRequest("The setup transcript cursor is invalid.");
+    }
+    const after = Number(header);
+    const setup = requireSetup(options.setup);
+    if (!setup.readTranscript || !setup.subscribeTranscript) {
+      throw unavailable("Session output is unavailable in this Hub process.");
+    }
+    // Validate session ownership before sending SSE headers or reserving a slot.
+    setup.readTranscript(runId, after);
+    const release = subscribers.reserve("setup-transcript");
+    try {
+      return createSetupTranscriptStream(context, setup, runId, after,
+        context.get("session").expiresAt, now, release);
+    } catch (error) {
+      release();
+      throw error;
+    }
+  });
 
   app.get("/api/v1/jobs", async (context) => {
     const jobs = requireJobs(options.jobs);
@@ -714,8 +977,10 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
       JobStartRequestSchema,
       await readBoundedJson(context.req.raw),
     );
-    await options.services.assertJobStartAllowed?.(request.kind);
-    return resourceResponse(HubJobSnapshotSchema, await jobs.start(request), 202);
+    return telemetry.action("job.start", "direct", async () => {
+      await options.services.assertJobStartAllowed?.(request.kind);
+      return resourceResponse(HubJobSnapshotSchema, await jobs.start(request), 202);
+    });
   });
 
   app.get("/api/v1/jobs/:id", async (context) => {
@@ -730,7 +995,8 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     const jobs = requireJobs(options.jobs);
     const id = parseJobId(context.req.param("id"));
     parseInput(JobCancelRequestSchema, await readBoundedJson(context.req.raw));
-    return resourceResponse(HubJobSnapshotSchema, await jobs.cancel(id));
+    return telemetry.action("job.cancel", "direct", async () =>
+      resourceResponse(HubJobSnapshotSchema, await jobs.cancel(id)));
   });
 
   app.get("/api/v1/jobs/:id/events", async (context) => {
@@ -795,10 +1061,152 @@ function requireJobs(jobs: HubJobService | undefined): HubJobService {
   return jobs;
 }
 
+function requireSetup(setup: HubSetupService | undefined): HubSetupService {
+  if (setup === undefined) {
+    throw unavailable("Setup is not available in this Hub process.");
+  }
+  return setup;
+}
+
+const TERMINAL_SETUP_STATUSES = new Set(["succeeded", "failed", "paused", "idle", "cancelled"]);
+
+function createSetupEventStream(
+  context: Context<HubEnvironment>,
+  setup: HubSetupService,
+  sessionExpiresAt: string,
+  now: () => number,
+  releaseSubscriber: () => void,
+): Response {
+  const sessionDeadline = Date.parse(sessionExpiresAt);
+  return streamSSE(context, async (stream) => {
+    const queue: SetupRun[] = [];
+    let notify: (() => void) | null = null;
+    const enqueue = (run: SetupRun) => {
+      if (queue.length >= MAX_PENDING_SSE_EVENTS) queue.shift();
+      queue.push(run);
+      notify?.();
+      notify = null;
+    };
+    let unsubscribe: () => void = () => undefined;
+    try {
+      if (now() >= sessionDeadline) return;
+      unsubscribe = setup.subscribe(enqueue);
+      while (!context.req.raw.signal.aborted && now() < sessionDeadline) {
+        const event = queue.shift();
+        if (event !== undefined) {
+          if (now() >= sessionDeadline) break;
+          const parsed = SetupRunSchema.safeParse(event);
+          if (!parsed.success) {
+            throw new Error("The Hub setup runner emitted an invalid event.");
+          }
+          const terminal = TERMINAL_SETUP_STATUSES.has(parsed.data.status);
+          const eventData = JSON.stringify(parsed.data);
+          if (Buffer.byteLength(eventData, "utf8") > HUB_LIMITS.maxJsonResponseBytes) {
+            throw new Error("The Hub setup event exceeded its safe serialized size.");
+          }
+          await stream.writeSSE({
+            event: terminal ? "terminal" : "snapshot",
+            data: eventData,
+          });
+          if (terminal) break;
+          continue;
+        }
+
+        const outcome = await waitForEventOrHeartbeat(
+          context.req.raw.signal,
+          sessionDeadline,
+          now,
+          () => new Promise<void>((resolve) => {
+            notify = resolve;
+            if (queue.length > 0) {
+              notify();
+              notify = null;
+            }
+          }),
+        );
+        if (outcome === "expired" || outcome === "aborted") break;
+        if (outcome === "heartbeat") await stream.write(": heartbeat\n\n");
+      }
+    } finally {
+      notify = null;
+      unsubscribe();
+      releaseSubscriber();
+    }
+  });
+}
+
 function parseJobId(value: string): string {
   const parsed = HubJobSnapshotSchema.shape.id.safeParse(value);
   if (!parsed.success) throw invalidRequest("The Hub job ID is invalid.");
   return parsed.data;
+}
+
+function createSetupTranscriptStream(
+  context: Context<HubEnvironment>,
+  setup: HubSetupService,
+  runId: string,
+  after: number,
+  sessionExpiresAt: string,
+  now: () => number,
+  releaseSubscriber: () => void,
+): Response {
+  const deadline = Date.parse(sessionExpiresAt);
+  return streamSSE(context, async (stream) => {
+    let cursor = after;
+    let dirty = true;
+    let initial = true;
+    let notify: (() => void) | null = null;
+    let unsubscribe: () => void = () => undefined;
+    const wake = () => {
+      dirty = true;
+      notify?.();
+      notify = null;
+    };
+    stream.onAbort(wake);
+    // Expiry also interrupts a blocked write when a client stops reading.
+    const expiryTimer = setTimeout(() => stream.abort(), Math.max(0, deadline - now()));
+    expiryTimer.unref();
+    try {
+      if (now() >= deadline) return;
+      unsubscribe = setup.subscribeTranscript!(wake);
+      while (!stream.aborted && !context.req.raw.signal.aborted && now() < deadline) {
+        if (setup.snapshot().transcriptId !== runId) break;
+        if (dirty) {
+          dirty = false;
+          const batch = SetupTranscriptBatchSchema.parse(setup.readTranscript!(runId, cursor));
+          const data = JSON.stringify(batch);
+          if (Buffer.byteLength(data, "utf8") > HUB_LIMITS.maxJsonResponseBytes) {
+            throw new Error("The setup transcript exceeded its safe serialized size.");
+          }
+          if (initial || batch.entries.length > 0 || batch.done || batch.truncated) {
+            if (now() >= deadline) break;
+            await stream.writeSSE({ event: "transcript", id: String(batch.cursor), data });
+            cursor = batch.cursor;
+            initial = false;
+          }
+          if (batch.done) break;
+          if (batch.entries.length > 0) {
+            // Drain one bounded page at a time. A slow subscriber holds no
+            // backlog; eviction is reported if its cursor falls behind.
+            dirty = true;
+            continue;
+          }
+        }
+        const outcome = await waitForEventOrHeartbeat(context.req.raw.signal, deadline, now,
+          () => new Promise<void>((resolve) => {
+            notify = resolve;
+            if (dirty) { notify(); notify = null; }
+          }));
+        if (outcome === "expired" || outcome === "aborted") break;
+        if (outcome === "heartbeat") await stream.write(": heartbeat\n\n");
+      }
+    } finally {
+      clearTimeout(expiryTimer);
+      notify = null;
+      unsubscribe();
+      releaseSubscriber();
+    }
+  });
 }
 
 function createJobEventStream(
@@ -1003,7 +1411,7 @@ function serveAsset(context: Context, assets: HubAssetManifest | undefined): Res
 function applySecurityHeaders(response: Response, requestId: string, apiResponse: boolean): void {
   response.headers.set(
     "content-security-policy",
-    "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; "
+    "default-src 'self'; base-uri 'none'; connect-src 'self' https://api.web3forms.com; font-src 'self'; "
       + "form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; "
       + "object-src 'none'; script-src 'self'; style-src 'self'",
   );

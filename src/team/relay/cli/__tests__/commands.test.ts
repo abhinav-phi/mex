@@ -175,6 +175,61 @@ function io(): {
 }
 
 describe("Relay CLI adapter", () => {
+  it("saves sparse local content through one exact local preview/apply without looking up Members", async () => {
+    const root = fixture();
+    const path = join(root, "draft.json");
+    writeFileSync(path, JSON.stringify({ summary: "Continue the parser correction.", nextActions: ["Check the remaining fixture."] }));
+    const port = service();
+    const preview = vi.spyOn(port, "previewRelay").mockImplementation(async (command) => ({
+      ...previewFor(command),
+      preview: { valid: true, scope: "local", changes: [], diagnostics: [], localChanges: [{
+        namespace: "relay-draft", id: "draft-1", beforeRevision: null, afterRevision: REVISION, summary: "Save draft",
+      }] },
+    }));
+    const output = io();
+    await runRelayMutation(port, "relay.draft.save", undefined, { from: path, operationId: "quick-save-1", json: true }, output.value, { projectRoot: () => root });
+    expect(output.exits).toEqual([0]);
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({
+      operationId: "quick-save-1", expectedRevisions: [],
+      action: { kind: "relay.draft.save", draft: expect.objectContaining({ audience: "team", recipients: [], summary: "Continue the parser correction.", nextActions: ["Check the remaining fixture."] }) },
+    }));
+    expect(port.applyRelay).toHaveBeenCalledWith(await preview.mock.results[0]!.value);
+    expect(port.getRelayDraft).not.toHaveBeenCalled();
+    expect(port.listRelays).not.toHaveBeenCalled();
+    expect(JSON.parse(output.lines[0]!)).toMatchObject({ command: "relay.draft.save", mode: "apply", ok: true, data: { changes: [], events: [] } });
+  });
+
+  it("refuses canonical or invalid previews on the local save shortcut", async () => {
+    const root = fixture();
+    const path = join(root, "draft.json");
+    writeFileSync(path, JSON.stringify({ summary: "Save for later." }));
+    for (const scope of ["canonical", "mixed"] as const) {
+      const port = service();
+      vi.spyOn(port, "previewRelay").mockImplementation(async (command) => ({ ...previewFor(command), preview: { valid: true, scope, changes: [], localChanges: [], diagnostics: [] } }));
+      const output = io();
+      await runRelayMutation(port, "relay.draft.save", undefined, { from: path, json: true }, output.value, { projectRoot: () => root });
+      expect(output.exits[0]).not.toBe(0);
+      expect(port.applyRelay).not.toHaveBeenCalled();
+    }
+  });
+
+  it("rejects ambiguous flags, authority injection and unsafe content files before opening a service", async () => {
+    const root = fixture();
+    const path = join(root, "draft.json");
+    const link = join(root, "link.json");
+    writeFileSync(path, JSON.stringify({ summary: "Save for later.", actor: { kind: "unknown" } }));
+    symlinkSync(path, link);
+    const factory = vi.fn(async () => service());
+    for (const flags of [
+      { from: path }, { from: link }, { from: path, apply: path }, { operationId: "orphan" },
+    ]) {
+      const output = io();
+      await runRelayMutation(factory, "relay.draft.save", undefined, { ...flags, json: true }, output.value);
+      expect(output.exits[0]).not.toBe(0);
+    }
+    expect(factory).not.toHaveBeenCalled();
+  });
+
   it("locks every mutation command to its one governed action", async () => {
     const root = fixture();
     for (const [commandName, action, expectations] of mutationCases) {
@@ -237,7 +292,7 @@ describe("Relay CLI adapter", () => {
     const root = fixture();
     const valid = publishExpectations();
     const invalidTopologies = [
-      [valid[0]],
+      [],
       [
         ...valid,
         {

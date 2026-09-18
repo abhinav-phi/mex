@@ -26,6 +26,8 @@ MEX 将团队的架构、决策、需求和交接信息与代码放在一起。�
 
 </div>
 
+> 此译文的主要产品介绍仍对应 0.8.0。安装命令和升级指引已调整为 0.8.2；产品变更请参阅[英文 README](README.md)和 [0.8.2 发行说明](RELEASE_NOTES.md)。
+
 ---
 
 一位工程师知道某条约束为何存在，另一位掌握着调试过程中的来龙去脉。编程智能体发现了一个重要的边界情况，却留在了别人不会再读的会话里。下一位队友只好重新拼凑这些信息。
@@ -100,28 +102,19 @@ MEX 需要 **Node.js 22.5 或更高版本**，以及一个 Git 仓库。标准 n
 在仓库根目录运行：
 
 ```bash
-npx mex-agent@0.8.0 setup
+npx mex-agent@0.8.2 setup
 ```
 
-设置流程会保留现有指令、构建本地 Code Graph，并安装所选集成。它可以启动已选择且可用的 Claude Code 或 Codex CLI 来填充记忆；如果填充尚未完成，设置流程会打印提示词并暂停。填充完成后，它会采集代码关联信息、构建 Wiki 索引、验证结果，并输出 Git 提交检查点。所连接的智能体需要满足其自身的安装、账户和网络要求。
+此命令会在本地浏览器中打开设置向导。选择 AI 工具，构建脚手架和索引，并让可用的 Claude Code 或 Codex CLI 填充项目记忆。若智能体不可用或运行失败，可复制提示词，手动完成后继续。现有指令会保留；需要手动补充的集成指引不会阻止设置。
 
-然后检查生成的文件：
+在 Hub 中审阅确切的设置文件差异，点击 **Commit setup** 创建本地提交，也可以使用手动 Git 检查点。完成页面会说明如何开启新会话并验证项目记忆，还可选择安装当前版本的全局命令，或留下电子邮箱和可选姓名。联系信息通过内嵌 Web3Forms 服务发送，不写入仓库或使用遥测；本机只记录已提交或已跳过。点击 **Open Hub** 后进入完整 Hub 和首次使用导览。
 
-```bash
-git status --short
-```
-
-审阅并运行设置流程打印的、精确限定文件范围的 `git add` 命令。提交该设置检查点后，打开 Hub：
-
-```bash
-git commit -m "chore: initialize MEX"
-npx mex-agent@0.8.0 hub
-```
+若偏好终端或通过 SSH 操作，请运行 `npx mex-agent@0.8.2 setup --cli`。`setup --dry-run` 仍是只读终端预览；`--no-open` 只打印浏览器链接，`--port <n>` 指定本地端口。安装后，`mex` 打开 Hub 或设置，`mex tui` 打开终端面板。智能体仍需自行安装并满足账户和网络要求。
 
 ![准备好项目的三个步骤：运行设置、填充记忆，然后审阅并提交检查点，再打开 Hub。](docs/diagrams/readme/setup.svg)
 
 > [!NOTE]
-> 只有当前 `.mex/config.json` 已提交到 `HEAD` 时，Hub 才会启动。MEX 从不代为暂存、提交、推送或拉取。
+> 完整 Hub 需要当前 `.mex/config.json` 已提交到 `HEAD`。Hub 只会在你审阅并明确选择提交后创建本地设置提交，并保留无关的暂存内容。MEX 从不推送或拉取。
 
 通过团队常用的 Git 流程推送已审阅的设置提交，让队友获得相同的项目记忆和所选智能体指令。在 Hub 的 Team/Members 页面中添加参与者，并选择你的本地身份。明确审阅和应用这些操作；新的 Member 记录也需要提交和推送。你选择的当前成员身份仅保留在本地。
 
@@ -132,9 +125,9 @@ npx mex-agent@0.8.0 hub
 通过 Git 克隆或拉取团队的仓库和分支。如果 0.8 设置已完成并提交，在自己的检出目录中构建派生索引，然后打开 Hub：
 
 ```bash
-npx mex-agent@0.8.0 graph rebuild
-npx mex-agent@0.8.0 wiki rebuild-index
-npx mex-agent@0.8.0 hub
+npx mex-agent@0.8.2 graph rebuild
+npx mex-agent@0.8.2 wiki rebuild-index
+npx mex-agent@0.8.2 hub
 ```
 
 复用共享的项目记忆，不要仅为加入项目而重新生成。在 Team/Members 中检查实际生效的身份，并按需选择你已有的 Member 记录作为本地覆盖设置。如果尚无记录，请通过经过审阅的工作流明确创建一条，并共享其权威记录文件。Members 用于标明归属，不是登录或权限系统。
@@ -147,13 +140,13 @@ npx mex-agent@0.8.0 hub
 <summary><strong>更喜欢全局安装？</strong></summary>
 
 ```bash
-npm install -g mex-agent@0.8.0
+npm install -g mex-agent@0.8.2
 mex setup
 ```
 
 npm 包名为 `mex-agent`，安装后的命令为 `mex`。运行 `mex hub` 前，请先完成上面的审阅和提交检查点。
 
-设置结束时的交互式全局安装选项使用 npm 当前的 `latest` 版本。如果需要精确复现 0.8，请拒绝该选项，并使用上面固定版本的安装命令。
+浏览器和终端设置中的可选全局安装都会固定到当前运行的 MEX 版本。安装失败不会影响已完成的设置；可以重试或手动运行上面的命令。
 
 </details>
 
@@ -162,14 +155,14 @@ npm 包名为 `mex-agent`，安装后的命令为 `mex`。运行 `mex hub` 前�
 <summary><strong>想将 MEX 用于长期运行的运维智能体？</strong></summary>
 
 ```bash
-npx mex-agent@0.8.0 setup --mode agent-memory
+npx mex-agent@0.8.2 setup --mode agent-memory
 ```
 
 这个独立模板将 MEX 的路由与维护模型应用于家庭实验室、基础设施，以及长期运行的智能体工作空间。它增加了 `HEARTBEAT.md` 约定和清理规范；本 README 描述的 Code Graph、Wiki 和团队 Hub 流程属于默认的 `code-repo` 模式。
 
 </details>
 
-为便于阅读，示例使用 `mex`。你可以按上述方式全局安装，或将其替换为 `npx mex-agent@0.8.0`。
+为便于阅读，示例使用 `mex`。你可以按上述方式全局安装，或将其替换为 `npx mex-agent@0.8.2`。
 
 <a id="how-mex-works"></a>
 
@@ -357,12 +350,14 @@ Relay 是持久交接记录，不是聊天、实时通知、任务分配，也�
 如果使用全局安装，请升级 CLI 并刷新所选 Claude Code/Codex 技能副本：
 
 ```bash
-npm install -g mex-agent@0.8.0
+npm install -g mex-agent@0.8.2
 mex skills sync --dry-run
 mex skills sync
 ```
 
-同步技能后，开启新的智能体会话。仅升级软件包和技能，并不能让旧仓库立即满足 Hub 的运行条件。0.8 的实现可以在已填充的基础结构上重新运行设置并保留已编写的文件，但发行说明将 setup 描述为全新设置路径，而不是适用于所有情况的迁移保证。请先通过 dry run 评估达到完整就绪状态的路径，再实际应用：
+如果已完成 0.8.0 的设置，上述命令会更新受管理的技能和智能体指引；无需仅为升级软件包而重新运行 setup。请检查与本地修改的指引之间报告的冲突，然后开启新的智能体会话。
+
+仅升级软件包和技能，并不能让旧仓库或尚未完成设置的仓库立即满足 Hub 的运行条件。对于这些仓库，请先通过 dry run 检查 setup 的变更，再实际应用；setup 会保留现有编写的文件，其变更仍需审阅：
 
 ```bash
 mex setup --dry-run
@@ -376,7 +371,7 @@ mex capabilities --json
 已有的 Markdown 基础结构仍然有效，Graph 读取从不隐式迁移数据存储。兼容的 schema-v2 和完整的 schema-v3 存储可以通过显式修复升级；schema-v1、不完整、有歧义、格式错误或已损坏的存储则需要重建。请遵循 `mex graph status` 给出的具体操作。不要添加忽略整个 `.mex/` 的规则——这会隐藏团队本应共享的权威记忆文件。
 
 > [!WARNING]
-> 在交换 schema-v3 Relays 之前，请协调全团队升级到 0.8：早于 0.8 的程序无法解析该格式。Node 20 用户应继续使用 MEX 0.6.3，直到能够升级至 Node 22.5 或更高版本。
+> **共享新的面向团队开放的 Relay 之前，请先让全团队升级到 0.8.1**，因为这类 Relay 使用 schema-v4。已有的 schema-v1 至 schema-v3 Relay 仍受支持，指定接收人的交接仍使用 schema-v3。MEX 要求 Node 22.5 或更高版本，且[内置 SQLite 必须支持 FTS5](COMPATIBILITY.md#sqlite-fts5)。Node 20 用户应继续使用 MEX 0.6.3，直到能够换用受支持的 Node 构建版本。
 
 <a id="privacy-and-trust-model"></a>
 
@@ -384,17 +379,17 @@ mex capabilities --json
 
 MEX 不会将其权威记录、Graph、Wiki 索引、草稿、身份选择或 Hub 会话上传到 MEX 服务。它不提供自动的团队数据传输：共享依靠你执行的常规 Git 操作。Hub 绑定到回环地址，MEX 的本地检索层无需模型凭证。
 
-MEX 具有**使用假名标识的 CLI 使用遥测**，默认启用，除非你选择退出。符合条件的调用最多发送一个事件。MEX 允许发送的字段包括随机机器标识符、命令名、MEX 版本、操作系统、Node 版本，以及在已有身份可用时的基础结构标识符；PostHog SDK 还会添加其库名称和版本元数据。MEX 不会向载荷添加命令参数、文件路径、仓库名、文件内容或 IP 地址，但接收服务可以观察到常规传输元数据。
+MEX 具有**使用假名标识的 CLI 和 Hub 使用遥测**，默认启用，除非你选择退出。遥测记录命令名称和结果、Hub 的明确操作、页面类别及后台任务结果。两者共用一个随机安装 UUID，以衡量重复使用情况。如果配置可用，事件还会包含已有的 scaffold UUID，用于估算项目的共享使用情况，以及项目配置中选定的 AI 工具名称；这些信息不能识别当前调用命令的智能体，也不能确定团队人数。能访问项目配置的人可以将该 scaffold UUID 与项目关联。不会发送名称、仓库远程地址、参数值、路径、内容、搜索文本或联系方式。接收服务可以观察到常规传输元数据。事件使用有大小限制的本地队列；CLI 退出时只短暂等待，离线发送不会改变命令结果。
 
 通过以下命令检查或关闭遥测：
 
 ```bash
 mex telemetry inspect
 mex telemetry status
-mex config set telemetry off
+mex telemetry disable
 ```
 
-也可以通过 `MEX_TELEMETRY=0` 或 `DO_NOT_TRACK=1` 禁用。控制选项和精确载荷见[遥测政策](https://github.com/mex-memory/mex/blob/v0.8.0/TELEMETRY.md)。连接到 MEX 的编程智能体可能有自己的网络和遥测行为；这些由相应工具决定，而非 MEX。
+也可以通过 `MEX_TELEMETRY=0` 或 `DO_NOT_TRACK=1` 禁用。控制选项和精确载荷见[遥测政策](TELEMETRY.md)。连接到 MEX 的编程智能体可能有自己的网络和遥测行为；这些由相应工具决定，而非 MEX。
 
 <a id="what-mex-is-not"></a>
 

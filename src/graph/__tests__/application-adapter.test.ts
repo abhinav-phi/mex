@@ -7,7 +7,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { MexPortError } from "../../team/contracts/shared.js";
 import {
   createRepositoryGraphPort,
@@ -91,6 +91,24 @@ function expectPortCode(error: unknown, code: string): void {
 }
 
 describe("RepositoryGraphPort", () => {
+  it.each([undefined, "process"] as const)("forwards maintenance authority with execution mode %s", async (candidateExecution) => {
+    const root = temporaryRoot();
+    const refresh = vi.fn(async () => { throw new Error("injected stop"); });
+    const rebuild = vi.fn(async () => { throw new Error("injected stop"); });
+    const port = createRepositoryGraphPort(root, {
+      candidateExecution,
+      __internal: { refresh, rebuild },
+    });
+    const controller = new AbortController();
+    const onProgress = vi.fn();
+    const options = { signal: controller.signal, onProgress };
+    await expect(port.refresh(options)).rejects.toBeInstanceOf(MexPortError);
+    await expect(port.rebuild(options)).rejects.toBeInstanceOf(MexPortError);
+    const forwarded = candidateExecution ? { ...options, candidateExecution } : options;
+    expect(refresh).toHaveBeenCalledExactlyOnceWith(root, forwarded);
+    expect(rebuild).toHaveBeenCalledExactlyOnceWith(root, forwarded);
+  });
+
   it("maps a non-lossless repair state to sanitized rebuild guidance", async () => {
     const root = temporaryRoot();
     source(root, "src/service.ts", "export const service = true;\n");
@@ -406,6 +424,85 @@ describe("RepositoryGraphPort", () => {
     });
   }, 20_000);
 
+  it("projects at most 50 direct grounding symbols without source reads or alias substitution", async () => {
+    const { root, port: basePort } = await fixture();
+    const target = (await basePort.searchNodes({ query: "serviceTarget", limit: 1 })).items[0]!;
+    const caller = (await basePort.searchNodes({ query: "serviceCaller", limit: 1 })).items[0]!;
+    let loads = 0;
+    let lookups = 0;
+    let sourceReads = 0;
+    const port = createRepositoryGraphPort(root, {
+      __internal: {
+        loadFresh: async (...args) => {
+          loads += 1;
+          const loaded = await loadFreshGraphReadSession(...args);
+          if (!loaded.session) return loaded;
+          const originalGraph = loaded.session.graph;
+          const graph = new Proxy(originalGraph, {
+            get(targetGraph, property, receiver) {
+              if (property === "getNode") {
+                return (id: string) => {
+                  lookups += 1;
+                  const node = originalGraph.getNode(id === "function:alias" ? target.ref.symbolId : id);
+                  return node === null ? null : { ...node, signature: "x".repeat(5_000) };
+                };
+              }
+              return Reflect.get(targetGraph, property, receiver);
+            },
+          });
+          return {
+            ...loaded,
+            session: {
+              ...loaded.session,
+              graph,
+              readIndexedSource() {
+                sourceReads += 1;
+                throw new Error("Compact symbols must not request source bodies.");
+              },
+            },
+          };
+        },
+      },
+    });
+
+    const symbols = await port.withFreshGroundingSnapshot((snapshot) => {
+      const result = snapshot.getSymbols([
+        caller.ref.symbolId,
+        "function:missing",
+        target.ref.symbolId,
+        caller.ref.symbolId,
+        "function:alias",
+      ]);
+      expect(lookups).toBe(4);
+      expect(snapshot.getSymbols(Array.from({ length: 50 }, () => target.ref.symbolId))).toHaveLength(1);
+      expect(snapshot.getSymbols([])).toEqual([]);
+      const beforeInvalidRequests = lookups;
+      for (const ids of [
+        Array.from({ length: 51 }, () => target.ref.symbolId),
+        [target.ref.symbolId, "unsafe/id"],
+        null as unknown as readonly string[],
+      ]) {
+        expect(() => snapshot.getSymbols(ids)).toThrowError(MexPortError);
+        try {
+          snapshot.getSymbols(ids);
+        } catch (error) {
+          expectPortCode(error, "VALIDATION_FAILED");
+        }
+      }
+      expect(lookups).toBe(beforeInvalidRequests);
+      return result;
+    });
+
+    expect(loads).toBe(1);
+    expect(sourceReads).toBe(0);
+    expect(symbols.map((symbol) => symbol.ref.symbolId)).toEqual([caller.ref.symbolId, target.ref.symbolId]);
+    expect(symbols[0]).toEqual({ ...caller, signature: "x".repeat(4 * 1024) });
+    expect(symbols[1]).toEqual({ ...target, signature: "x".repeat(4 * 1024) });
+    expect(symbols.every((symbol) => !Object.hasOwn(symbol, "bodyHash")
+      && !Object.hasOwn(symbol, "fingerprint") && !Object.hasOwn(symbol, "docstring")
+      && !Object.hasOwn(symbol, "content"))).toBe(true);
+  }, 30_000);
+
   it("holds one fresh grounding snapshot through async work and discards it on source invalidation", async () => {
     const { root, port: basePort } = await fixture();
     const target = (await basePort.searchNodes({ query: "serviceTarget", limit: 1 })).items[0]!;
@@ -434,17 +531,20 @@ describe("RepositoryGraphPort", () => {
     const projection = await port.withFreshGroundingSnapshot(async (snapshot) => {
       escaped = snapshot;
       const node = snapshot.getNode(target.ref.symbolId);
+      const symbols = snapshot.getSymbols([target.ref.symbolId]);
       const fingerprint = snapshot.getFingerprint(target.ref.symbolId);
       await Promise.resolve();
       callbackSettled = true;
-      return { node, fingerprint };
+      return { node, symbols, fingerprint };
     });
     expect(projection.node).toMatchObject({
       id: target.ref.symbolId,
       filePath: "src/service.ts",
     });
     expect(projection.fingerprint).toEqual(expect.any(String));
+    expect(projection.symbols).toEqual([target]);
     expect(() => escaped!.getNode(target.ref.symbolId)).toThrowError(MexPortError);
+    expect(() => escaped!.getSymbols([target.ref.symbolId])).toThrowError(MexPortError);
     try {
       escaped!.getNode(target.ref.symbolId);
     } catch (error) {
@@ -454,7 +554,7 @@ describe("RepositoryGraphPort", () => {
 
     callbackSettled = false;
     await expect(port.withFreshGroundingSnapshot(async (snapshot) => {
-      const buffered = snapshot.getNode(target.ref.symbolId);
+      const buffered = snapshot.getSymbols([target.ref.symbolId]);
       source(root, "src/service.ts", "export const changedDuringGrounding = true;\n");
       await Promise.resolve();
       callbackSettled = true;
@@ -492,6 +592,14 @@ describe("RepositoryGraphPort", () => {
 
     await expect(port.withFreshGroundingSnapshot((snapshot) => {
       snapshot.getNode("function:1111111111111111");
+    })).rejects.toSatisfy((error) => {
+      expectPortCode(error, "OPERATION_INTERRUPTED");
+      expect((error as MexPortError).problem.detail).not.toContain(root);
+      expect((error as MexPortError).problem.detail).not.toContain("raw graph accessor failure");
+      return true;
+    });
+    await expect(port.withFreshGroundingSnapshot((snapshot) => {
+      snapshot.getSymbols(["function:1111111111111111"]);
     })).rejects.toSatisfy((error) => {
       expectPortCode(error, "OPERATION_INTERRUPTED");
       expect((error as MexPortError).problem.detail).not.toContain(root);

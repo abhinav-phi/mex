@@ -54,6 +54,7 @@ import { LANGUAGES, NODE_KINDS, type GraphNode } from "./types.js";
 const MAX_CURSOR_BYTES = 4 * 1024;
 const MAX_QUERY_CHARS = 256;
 const MAX_SYMBOL_ID_CHARS = 512;
+const MAX_GROUNDING_SYMBOLS = 50;
 const MAX_SEARCH_RESULTS = 500;
 const MAX_RELATION_RESULTS = 500;
 const MAX_SIGNATURE_CHARS = 4 * 1024;
@@ -154,6 +155,8 @@ export interface RepositoryGraphGroundingSnapshot {
   /** Exact immutable graph snapshot revision, for composite Wiki cursors. */
   readonly revision: string;
   getNode(nodeId: string): RepositoryGraphGroundedNode | null;
+  /** Up to 50 direct symbols, in request order without duplicates or source bodies. */
+  getSymbols(nodeIds: readonly string[]): readonly CodeSymbol[];
   getFingerprint(nodeId: string): string | null;
   reconcile(nodeId: string, committedFingerprint: string): Resolution | null;
   getBaselineSource(subject: GroundingSubject, nodeId: string): GroundingBaseline | null;
@@ -185,6 +188,8 @@ interface AdapterDependencies {
 
 export interface RepositoryGraphPortOptions {
   dbPath?: string;
+  /** Hub construction runs separately; ordinary readers and CLI keep their defaults. */
+  candidateExecution?: "process";
   /** @internal Deterministic dependency seams for adapter conformance tests. */
   __internal?: Partial<AdapterDependencies>;
 }
@@ -200,10 +205,12 @@ export class RepositoryGraphPort implements GraphPort {
   readonly #projectRoot: string;
   readonly #dbPath: string;
   readonly #deps: AdapterDependencies;
+  readonly #candidateExecution?: "process";
 
   constructor(projectRoot: string, options: RepositoryGraphPortOptions = {}) {
     this.#projectRoot = resolve(projectRoot);
     this.#dbPath = options.dbPath ?? resolve(this.#projectRoot, ".mex", "graph.db");
+    this.#candidateExecution = options.candidateExecution;
     this.#deps = {
       inspectStatus: options.__internal?.inspectStatus ?? inspectGraphStatus,
       loadFresh: options.__internal?.loadFresh ?? loadFreshGraphReadSession,
@@ -412,6 +419,23 @@ export class RepositoryGraphPort implements GraphPort {
       };
       const snapshot: RepositoryGraphGroundingSnapshot = {
         revision: context.revision,
+        getSymbols(nodeIds) {
+          assertActive();
+          if (!Array.isArray(nodeIds) || nodeIds.length > MAX_GROUNDING_SYMBOLS) {
+            throw invalid("A grounding symbol request accepts at most 50 node IDs.");
+          }
+          const ids = [...new Set(Array.from(nodeIds, validateSymbolId))];
+          try {
+            return ids.flatMap((id) => {
+              const node = context.session.graph.getNode(id);
+              // Graph point reads also follow aliases. Only the requested
+              // declaration belongs in this direct-symbol projection.
+              return node?.id === id ? [projectNode(node)] : [];
+            });
+          } catch {
+            throw interruptedRead("The graph grounding snapshot could not read symbols safely.");
+          }
+        },
         getNode(nodeId) {
           assertActive();
           try {
@@ -466,10 +490,13 @@ export class RepositoryGraphPort implements GraphPort {
     operation: "refresh" | "rebuild",
     options: GraphMaintenanceOptions,
   ): Promise<GraphRefreshResult> {
+    const executionOptions = this.#candidateExecution
+      ? { ...options, candidateExecution: this.#candidateExecution }
+      : options;
     try {
       return operation === "refresh"
-        ? await this.#deps.refresh(this.#projectRoot, options)
-        : await this.#deps.rebuild(this.#projectRoot, options);
+        ? await this.#deps.refresh(this.#projectRoot, executionOptions)
+        : await this.#deps.rebuild(this.#projectRoot, executionOptions);
     } catch (error) {
       throw translateMaintenanceError(error);
     }

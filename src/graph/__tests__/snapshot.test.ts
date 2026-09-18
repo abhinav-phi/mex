@@ -575,7 +575,7 @@ describe("graph snapshot provenance", () => {
     const dbPath = join(root, "graph.db");
     mkdirSync(join(root, "src"), { recursive: true });
     writeFileSync(sourcePath, "export function stableSnapshot(): number { return 7; }\n");
-    writeFileSync(packagePath, "{\"name\":\"before-staging\"}\n");
+    writeFileSync(packagePath, "{\"name\":\"before-staging\",\"type\":\"module\"}\n");
 
     const baseline = createGraphEngine({ rootDir: root, dbPath });
     await baseline.build();
@@ -591,7 +591,9 @@ describe("graph snapshot provenance", () => {
         read: (absolutePath) => {
           const source = readFileSync(absolutePath, "utf8");
           if (!changedConfig && absolutePath === sourcePath) {
-            writeFileSync(packagePath, "{\"name\":\"during-staging\"}\n");
+            // `type` decides how a specifier resolves, so this changes the
+            // build inputs rather than only the file's bytes.
+            writeFileSync(packagePath, "{\"name\":\"before-staging\",\"type\":\"commonjs\"}\n");
             changedConfig = true;
           }
           return source;
