@@ -1,7 +1,6 @@
 import { Command } from "commander";
 import type {
   TeamCommandIo,
-  TeamMutationFlags,
   TeamOutputFlags,
   TeamPageFlags,
 } from "../../cli/commands.js";
@@ -12,6 +11,7 @@ import {
   runRelayMutation,
   runRelayShow,
   type RelayListFlags,
+  type RelayMutationFlags,
 } from "./commands.js";
 import { runRelayContract, type RelayContractFlags } from "./contract.js";
 import type { RelayMutationCommandName } from "./request-file.js";
@@ -79,14 +79,18 @@ function addMutation(
   command: RelayMutationCommandName,
   options: RelayCommandBuilderOptions,
 ): void {
-  parent.command(name)
+  const mutation = parent.command(name)
     .description(description)
     .argument("[request-file]", "Caller-authored schema v1 Relay request for preview")
     .option("--apply <preview-envelope>", "Apply the exact complete JSON envelope emitted by preview")
     .option("--json", "Emit the schema v1 Team envelope")
-    .action(async (requestFile: string | undefined, flags: TeamMutationFlags) => {
+    .action(async (requestFile: string | undefined, flags: RelayMutationFlags) => {
       await runRelayMutation(options.service, command, requestFile, flags, options.io);
     });
+  if (command === "relay.draft.save") {
+    mutation.option("--from <draft-file>", "Create a local draft from sparse JSON content; internally preview and apply without publishing")
+      .option("--operation-id <id>", "Use a stable operation ID for --from");
+  }
 }
 
 function collect(value: string, previous: readonly string[] = []): readonly string[] {

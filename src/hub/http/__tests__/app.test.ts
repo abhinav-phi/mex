@@ -40,6 +40,7 @@ import {
 } from "../../app.js";
 import { HubSessionManager } from "../../security/session.js";
 import { HubAssetManifest } from "../../static/assets.js";
+import type { HubTelemetrySink } from "../../telemetry.js";
 
 const ORIGIN = "http://127.0.0.1:48123";
 const HOST = "127.0.0.1:48123";
@@ -58,6 +59,82 @@ const TEAM_NOW = "2026-08-27T04:05:06.000Z";
 const RELAY_DIRTY_PUBLICATION_WARNING = "MEX recorded that local changes existed when this Relay was published; it did not record their paths, diff, or contents.";
 
 describe("Project Hub HTTP application", () => {
+  it("accepts only authenticated bounded page categories and never treats reads as telemetry", async () => {
+    const telemetry = vi.fn();
+    const app = fixtureApp({ telemetry });
+    const path = `${ORIGIN}/api/v1/telemetry/page`;
+    expect((await app.request(path, mutation({ page: "home" }))).status).toBe(401);
+    const { cookie, csrfToken } = await authenticatedSession(app);
+    const headers = { ...mutationHeaders(), cookie, "x-mex-csrf": csrfToken };
+    for (const endpoint of ["session", "home", "health"]) {
+      expect((await app.request(`${ORIGIN}/api/v1/${endpoint}`, { headers })).status).toBe(200);
+    }
+    expect(telemetry).not.toHaveBeenCalled();
+    const post = (body: unknown, overrides: Record<string, string> = {}) => app.request(path, {
+      method: "POST", headers: { ...headers, ...overrides }, body: JSON.stringify(body),
+    });
+    expect((await post({ page: "home" }, { origin: "https://outside.example" })).status).toBe(403);
+    expect((await post({ page: "home" }, { "x-mex-csrf": "wrong" })).status).toBe(403);
+    expect((await post({ page: "home" }, { "content-type": "text/plain" })).status).toBe(400);
+    for (const body of [{ page: "/private/source.ts" }, { page: "home", url: "/secret" },
+      { page: "home", memberId: TEAM_MEMBER_ID }, { event: "hub.session_started" }, { page: null }]) {
+      expect((await post(body)).status).toBe(400);
+    }
+    expect((await app.request(path, { method: "POST", headers,
+      body: JSON.stringify({ page: "home" }) + " ".repeat(128) })).status).toBe(400);
+    expect((await app.request(`${path}?query=private`, {
+      method: "POST", headers, body: JSON.stringify({ page: "home" }),
+    })).status).toBe(400);
+    expect(telemetry).not.toHaveBeenCalled();
+    const accepted = await post({ page: "knowledge_detail" });
+    expect(accepted.status).toBe(204);
+    expect(await accepted.text()).toBe("");
+    expect(accepted.headers.get("cache-control")).toContain("no-store");
+    expect(telemetry.mock.calls).toEqual([["hub.page_viewed", { page: "knowledge_detail" }]]);
+  });
+
+  it.each(["team", "inbox", "relays"] as const)(
+    "projects validated %s actions, trusted replay outcomes, and failures without payload data",
+    async (family) => {
+      const telemetry = vi.fn();
+      const services = family === "team" ? teamReadServices() : family === "inbox" ? inboxReadServices() : relayReadServices();
+      const request = family === "team" ? teamPreviewRequest() : family === "inbox" ? inboxPreviewRequest() : relayPreviewRequest();
+      let replayed = false;
+      let fail = false;
+      const apply = async () => {
+        if (fail) throw new Error("private@example.test /Users/private/project");
+        const result = family === "team" ? teamApplyResult() : family === "inbox" ? inboxApplyResult() : relayApplyResult();
+        return { ...result, idempotentReplay: replayed };
+      };
+      const applyKey = family === "team" ? "applyTeamOperation" : family === "inbox" ? "applyInboxOperation" : "applyRelayOperation";
+      // The existing independently validated family fixtures supply each exact
+      // response shape; the wrapper changes only the trusted replay outcome.
+      const app = fixtureApp({ telemetry, services: { ...services, [applyKey]: apply } });
+      const { cookie, csrfToken } = await authenticatedSession(app);
+      const headers = { ...mutationHeaders(), cookie, "x-mex-csrf": csrfToken };
+      const post = (stage: string, body: unknown) => app.request(`${ORIGIN}/api/v1/${family}/operations/${stage}`, {
+        method: "POST", headers, body: JSON.stringify(body),
+      });
+      expect((await post("preview", { ...request, actor: "private" })).status).toBe(400);
+      expect(telemetry).not.toHaveBeenCalled();
+      const preview = await post("preview", request);
+      expect(preview.status).toBe(200);
+      const envelope = await preview.json();
+      expect((await post("apply", envelope)).status).toBe(200);
+      replayed = true;
+      expect((await post("apply", envelope)).status).toBe(200);
+      fail = true;
+      expect((await post("apply", envelope)).status).toBe(500);
+      expect(telemetry.mock.calls).toEqual([
+        ["hub.action_completed", { action: request.action.kind, stage: "preview", outcome: "success", duration_ms: expect.any(Number) }],
+        ["hub.action_completed", { action: request.action.kind, stage: "apply", outcome: "success", duration_ms: expect.any(Number), replayed: false }],
+        ["hub.action_completed", { action: request.action.kind, stage: "apply", outcome: "success", duration_ms: expect.any(Number), replayed: true }],
+        ["hub.action_completed", { action: request.action.kind, stage: "apply", outcome: "failure", duration_ms: expect.any(Number) }],
+      ]);
+      expect(JSON.stringify(telemetry.mock.calls)).not.toMatch(/private|Ada|@|member_|proposal_|receipt|operationId|revision|\.mex/);
+    },
+  );
+
   it("exchanges the bootstrap once and protects every ordinary API route", async () => {
     const app = fixtureApp();
     const unauthenticated = await app.request(`${ORIGIN}/api/v1/home`, {
@@ -1038,7 +1115,6 @@ describe("Project Hub HTTP application", () => {
     };
     for (const [label, expectedRevisions] of [
       ["missing local draft", [memberExpectation]],
-      ["missing recipient", [draftExpectation]],
       ["legacy Workstream dependency", [draftExpectation, memberExpectation, workstreamExpectation]],
       ["unrelated artifact", [draftExpectation, memberExpectation, {
         target: { kind: "artifact" as const, path: "README.md" },
@@ -1089,6 +1165,16 @@ describe("Project Hub HTTP application", () => {
         }],
       },
     });
+    previewRelayOperation.mockClear();
+
+    // Open-to-team publication has only a local draft expectation. Recipient
+    // requirements for named drafts are checked against the stored audience.
+    const teamPublish = { ...publishRequest, expectedRevisions: [draftExpectation] };
+    const teamPublishResponse = await app.request(`${ORIGIN}/api/v1/relays/operations/preview`, {
+      method: "POST", headers: mutationRequestHeaders, body: JSON.stringify(teamPublish),
+    });
+    expect(teamPublishResponse.status).toBe(200);
+    expect(previewRelayOperation).toHaveBeenCalledWith(teamPublish);
     previewRelayOperation.mockClear();
 
     const preview = await app.request(`${ORIGIN}/api/v1/relays/operations/preview`, {
@@ -1673,6 +1759,7 @@ function fixtureApp(overrides: {
   sessionTtlMs?: number;
   sessionCookieSuffix?: string;
   randomStart?: number;
+  telemetry?: HubTelemetrySink;
 } = {}) {
   let random = overrides.randomStart ?? 20;
   return createHubApp({
@@ -1690,6 +1777,7 @@ function fixtureApp(overrides: {
     }),
     services: overrides.services ?? readServices(),
     jobs: overrides.jobs,
+    telemetry: overrides.telemetry,
     assets: overrides.assets,
     requestId: () => "00000000-0000-4000-8000-000000000001",
     ...(overrides.now === undefined ? {} : { now: overrides.now }),

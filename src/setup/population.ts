@@ -34,12 +34,18 @@ export function selectSetupAgent(
   selectedTools: readonly AiTool[],
   isAvailable: (command: string) => boolean = isCliAvailable,
 ): SetupAgentTool | null {
+  for (const { tool, command } of setupAgentCandidates(selectedTools)) {
+    if (isAvailable(command)) return tool;
+  }
+  return null;
+}
+
+function* setupAgentCandidates(selectedTools: readonly AiTool[]): Generator<{ tool: SetupAgentTool; command: string }> {
   for (const tool of selectedTools) {
     if (tool !== "claude" && tool !== "codex") continue;
     const command = AI_TOOLS[tool].cli;
-    if (command !== null && isAvailable(command)) return tool;
+    if (command !== null) yield { tool, command };
   }
-  return null;
 }
 
 /** Launch first-time population with no sync timeout, from the project root. */
@@ -52,6 +58,49 @@ export function launchSetupPopulation(
   const tool = selectSetupAgent(selectedTools, dependencies.isAvailable);
   if (tool === null) return { tool: null, completed: false };
 
+  const session = createPopulationSession(prompt, projectRoot);
+  try {
+    const completed = (dependencies.run ?? runToolInteractive)(
+      tool, session.instruction, session.root, { timeoutMs: null },
+    );
+    return { tool, completed };
+  } finally {
+    session.cleanup();
+  }
+}
+
+/** Keep the same private prompt alive until the background agent has closed. */
+export async function launchSetupPopulationAsync(
+  selectedTools: readonly AiTool[],
+  prompt: string,
+  projectRoot: string,
+  dependencies: {
+    isAvailable: (command: string) => Promise<boolean>;
+    run: (tool: SetupAgentTool, instruction: string, cwd: string) => Promise<boolean>;
+  },
+): Promise<SetupPopulationLaunchResult> {
+  // Resolve availability asynchronously, but retain the exact CLI selection policy.
+  let tool: SetupAgentTool | null = null;
+  for (const candidate of setupAgentCandidates(selectedTools)) {
+    if (await dependencies.isAvailable(candidate.command)) {
+      tool = candidate.tool;
+      break;
+    }
+  }
+  if (tool === null) return { tool: null, completed: false };
+  const session = createPopulationSession(prompt, projectRoot);
+  try {
+    return { tool, completed: await dependencies.run(tool, session.instruction, session.root) };
+  } finally {
+    session.cleanup();
+  }
+}
+
+function createPopulationSession(prompt: string, projectRoot: string): {
+  root: string;
+  instruction: string;
+  cleanup: () => void;
+} {
   const root = resolve(projectRoot);
   const localDirectory = ensureLocalPopulationDirectory(root);
   let sessionDirectory: string;
@@ -69,15 +118,10 @@ export function launchSetupPopulation(
     writeFileSync(promptPath, prompt, { encoding: "utf8", flag: "wx", mode: 0o600 });
     const pointer = relative(root, promptPath).replaceAll("\\", "/");
     const instruction = `Read the full setup population prompt from \`${pointer}\`, then follow it exactly.`;
-    const completed = (dependencies.run ?? runToolInteractive)(
-      tool,
-      instruction,
-      root,
-      { timeoutMs: null },
-    );
-    return { tool, completed };
-  } finally {
+    return { root, instruction, cleanup: () => rmSync(sessionDirectory, { recursive: true, force: true }) };
+  } catch (error) {
     rmSync(sessionDirectory, { recursive: true, force: true });
+    throw error;
   }
 }
 

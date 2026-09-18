@@ -110,6 +110,104 @@ changes only confirmation allocation and provenance: `budgets.json`, sample
 counts, material thresholds, category floors, and calibration formulas remain
 byte-for-byte unchanged.
 
+The 0.8.1 Settings route is included in the route manifest, isolated asset
+closures, and per-profile browser heap measurement. Its readiness check waits
+for the loaded logging preference form and current selection, so a loading or
+unavailable page cannot satisfy measurement. Settings must remain outside the
+initial shell and Home closures. Only its additive asset limits may be copied
+from the final deterministic build using `ceil(bytes * 1.05)`.
+
+At the Phase 4 checkpoint, the three Settings heap budget leaves remained
+absent, so enforcement emitted `budget_missing` and blocked release. Initial
+PR #180 CI run
+[`34286120355`](https://github.com/mex-memory/mex/actions/runs/34286120355)
+then supplied the retained, schema-valid measurement report on Ubuntu 24.04,
+Linux x64, Node 22.22.0. Artifact `10079816681` measured PR head
+`6e12e6dd34a3bb11735ce3580aece8d37e2e8043` through synthetic merge commit
+`8c046500e2969463014e12dc5844abf76ae403ce`; the raw report SHA-256 was verified as
+`98007786b450eb7a6142d0ce43cf2bb6fc85c287d6e0a8837850318d5924fd04`.
+
+Only the three missing Settings heap leaves and calibration-status metadata
+are now added using the frozen `ceil(p95 * 1.15)` formula:
+
+| Profile | Measured Settings heap p95 | New limit |
+|---|---:|---:|
+| Small | 5,480,428 bytes | 6,302,493 bytes |
+| Medium | 5,482,104 bytes | 6,304,420 bytes |
+| Large | 5,486,028 bytes | 6,308,933 bytes |
+
+The [retained calibration evidence](settings-heap-calibration.json) records all
+five raw samples per profile, exact report identity, formula, and a hash of
+every unowned budget. Existing Graph and other runtime/asset limits, sample
+counts, material thresholds, and confirmation rules remain unchanged. Settings
+stays an additive optional schema field so historical reports remain valid.
+
+That first CI run still failed enforcement: the missing leaves produced an
+immediate hard failure and suppressed runtime confirmation. Its first-pass
+Graph maintenance crossings are unconfirmed, not a runtime pass or an
+established regression. A clean enforcing run on the corrected final head must
+apply the ordinary fresh-runner confirmation rule; calibration alone does not
+satisfy the release gate.
+
+### Accepted graph isolation timing tradeoff
+
+Corrected PR #180 run
+[`34288560611`](https://github.com/mex-memory/mex/actions/runs/34288560611)
+passed browser, Node 22/24, and Windows/macOS portability checks. Its two
+independently allocated pinned runners confirmed exactly five material Graph
+maintenance timing failures on PR head
+`4d6683eec1a0bdcafe99d7b431d84cde7f02864d`, synthetic merge
+`6d92bb04d757c8a00693ef679d1f4281669a9b57`. Repeated memory crossings remained
+advisory under the existing materiality/sample-support rules; no memory or
+other metric produced a final material failure.
+
+The product decision explicitly accepts disposable-worker startup latency for
+Hub responsiveness and compiler-memory release after each job. This is a real
+small-job regression. Only the five confirmed timing leaves are recalibrated
+from the first healthy corrected report using the existing `ceil(p95 * 1.15)`
+formula; the second allocation supplies independent confirmation.
+
+| Graph operation | Prior limit (ms) | First p95 (ms) | Confirmation p95 (ms) | New limit (ms) |
+|---|---:|---:|---:|---:|
+| Small refresh | 984 | 1420.610 | 1853.568 | 1634 |
+| Small rebuild | 496 | 1468.480 | 1608.501 | 1689 |
+| Medium refresh | 1237 | 1600.897 | 1714.770 | 1842 |
+| Medium rebuild | 743 | 1581.908 | 1550.249 | 1820 |
+| Large rebuild | 1229 | 1980.154 | 2074.786 | 2278 |
+
+The [calibration record](graph-maintenance-timing-calibration.json) retains
+runner identities, both raw-report hashes and samples, prior limits, and a hash
+guard for every unowned budget. Large refresh, all memory/asset/read/Wiki
+limits, fixtures, formulas, sample counts, and confirmation rules remain
+unchanged. The [local diagnostic](graph-isolation-diagnostic.json) attributes
+the fixed startup cost using identical optimized code and parent validation;
+its Mac timings are not calibration inputs. A clean enforcing CI run on the
+new calibrated head remains required before release.
+
+### Settings route JS for the Hub tour replay
+
+PR #195 adds a "Replay Hub tour" section to Settings. Pinned run
+[`34739467180`](https://github.com/mex-memory/mex/actions/runs/34739467180)
+on PR head `b5ee04302b841e3e97a450f596f903c78aa2b057`, synthetic merge
+`baca280d56be22fac57f84c6867127416acf59a8`, built the Settings route at 8,550
+JS bytes against the 8,035-byte limit. That deterministic asset violation was
+the run's only hard failure. It suppressed runtime classification, so the
+report's first-pass runtime crossings are unassessed, not confirmed.
+
+The product decision accepts the replay control in Settings. Only that leaf is
+recalibrated, using the existing `ceil(built bytes * 1.05)` formula:
+
+| Budget | Prior limit | Built bytes | New limit |
+|---|---:|---:|---:|
+| Settings route JS | 8,035 | 8,550 | 8,978 |
+
+The [calibration record](settings-route-js-calibration.json) retains the
+runner identity, raw-report hash, the three measured files, and a hash of every
+unowned budget. The test projection restores the prior limit, so the earlier
+Settings heap and Graph timing guards keep their original hashes. Initial,
+Home, and every other route limit stay unchanged. A clean enforcing CI run on
+the calibrated head remains required.
+
 ## Runner contract
 
 `npm run benchmark:release` builds the package and writes the bounded JSON
@@ -150,7 +248,7 @@ Each profile records:
 Every profile additionally records five Chromium heap samples after every
 registered Hub route: Home, Search, Knowledge browse/detail, Code search/symbol,
 Workstreams, Specs browse/detail, Inbox, Relay, the honest unavailable Playbooks
-route, Members, Activity, Jobs, Health, and the wildcard not-found route.
+route, Members, Activity, Jobs, Health, Settings, and the wildcard not-found route.
 Every browser context begins empty. Its request audit fails if a route contacts
 any origin other than the exact loopback Hub origin.
 
@@ -159,7 +257,7 @@ initial static import closure and the incremental JavaScript, CSS, and font
 bytes for every registered route. Fonts referenced from global CSS are counted
 as initial assets even when Vite does not attach them to a manifest entry.
 The initial shell and Home must not statically close over Code, Knowledge,
-Workstreams, Specs, Inbox, Relay, Members, Activity, or setup code, and the
+Workstreams, Specs, Inbox, Relay, Members, Activity, Settings, or setup code, and the
 largest JavaScript chunk is checked explicitly. The Activity route is a
 read-only workbench and has no nested manual-recorder chunk. Its source
 controls, default feed, and accessible shadcn Collapsible controls remain in

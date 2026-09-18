@@ -174,6 +174,16 @@ describe("grounding checker", () => {
     expect(grounding.node).toBe("new-id");
   });
 
+  it("reports changed accepted content after MOVED resolution before pointer persistence", () => {
+    const grounding = { node: "missing", fingerprint: serializeFingerprint(fingerprint(64)), bodyHash: "accepted-hash" };
+    const checker = createGroundingChecker(graph([node("new-id", "changed-hash")]), {
+      reconcile: () => ({ kind: "MOVED", nodeId: "new-id" }),
+    });
+    expect(checker({ grounds_to: [grounding] }, "/repo/.mex/context.md", "context.md", "/repo", "/repo/.mex"))
+      .toMatchObject([{ code: "GROUNDING_DRIFT", severity: "warning" }]);
+    expect(grounding.bodyHash).toBe("accepted-hash");
+  });
+
   it("handles inline anchor hit, MOVED, GONE, and AMBIGUOUS as warning-only navigation drift", () => {
     const root = mkdtempSync(join(tmpdir(), "mex-anchor-check-"));
     const file = join(root, "context.md");

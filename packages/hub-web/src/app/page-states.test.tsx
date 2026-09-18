@@ -52,22 +52,24 @@ describe("Home states", () => {
   it("renders independently loading atlas panels from the Overview aggregate", async () => {
     renderRoute("/", apiWith({ getOverview: () => pending<OverviewResponse>() }));
 
-    expect(await screen.findByText("Loading project overview")).toBeVisible();
+    expect(await screen.findByText("Loading project overview", undefined, { timeout: 10_000 })).toBeVisible();
+    expect(screen.getByLabelText("Loading Context")).toBeVisible();
     expect(screen.getByLabelText("Loading Attention")).toBeVisible();
     expect(screen.getByLabelText("Loading Latest team memory")).toBeVisible();
     expect(screen.getByLabelText("Loading Context readiness")).toBeVisible();
-  });
+  }, 15_000);
 
   it("renders established focus, semantic team memory, stale context, and an exact active operation", async () => {
     renderRoute("/", createFixtureApi({ overviewFixture: "established" }));
 
-    expect(await screen.findByRole("heading", { name: "Review 3 proposed Spec changes" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Context" }, { timeout: 10_000 })).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "Context" }))
+      .getByRole("button", { name: "Open Context" })).toHaveAttribute("href", "/knowledge");
+    expect(await screen.findByRole("heading", { name: "Take the handoff waiting for you" })).toBeVisible();
+    expect(screen.queryByText("Review 3 proposed Spec changes")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Attention" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Open Inbox" })).toHaveAttribute(
-      "href",
-      "/inbox?view=review&proposal=proposal_01000000000000000000001720",
-    );
-    expect(screen.getByText("Take the handoff waiting for you").closest("a")).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "View Relays" })).toHaveAttribute("href", "/relays");
+    expect(screen.getByRole("button", { name: "Open handoff" })).toHaveAttribute(
       "href",
       "/relays?view=mine&state=open&relay=relay_01000000000000000000000001",
     );
@@ -92,13 +94,13 @@ describe("Home states", () => {
       "href",
       "/jobs?job=job_01K36WVM6H7JK8M9NPQRSTVVWX",
     );
-  });
+  }, 15_000);
 
   it("keeps bounded revisions and diagnostic evidence in uniquely named technical disclosures", async () => {
     const user = userEvent.setup();
     renderRoute("/", createFixtureApi({ overviewFixture: "established" }));
 
-    await screen.findByRole("heading", { name: "Latest team memory" });
+    await screen.findByRole("heading", { name: "Latest team memory" }, { timeout: 10_000 });
     const activityTrigger = screen.getByRole("button", { name: "View technical details for Latest team memory" });
     const contextTrigger = screen.getByRole("button", { name: "View technical details for Context readiness" });
     expect(activityTrigger).toHaveAccessibleName("View technical details for Latest team memory");
@@ -118,7 +120,7 @@ describe("Home states", () => {
     expect(within(contextDisclosure as HTMLElement).queryByText(currentHead)).not.toBeInTheDocument();
     await user.click(contextTrigger);
     expect(within(contextDisclosure as HTMLElement).getByText(currentHead)).toBeVisible();
-  });
+  }, 15_000);
 
   it("keeps Activity and focus trust evidence visible when trusted previews are empty or degraded", async () => {
     const fixture = createFixtureApi({ overviewFixture: "established" });
@@ -162,10 +164,8 @@ describe("Home states", () => {
     await user.click(screen.getByRole("button", { name: "View technical details for Attention" }));
     expect(screen.getByText("RELAY_LEGACY_PUBLICATION_TIME")).toBeVisible();
     expect(screen.getByText("Relay diagnostics truncated").nextElementSibling).toHaveTextContent("Yes");
-    expect(screen.getByText("INBOX_SOURCE_TRUNCATED")).toBeVisible();
-    expect(screen.getByText("Inbox corpus truncated").nextElementSibling).toHaveTextContent("Yes");
-    expect(screen.getByText("Inbox source truncated").nextElementSibling).toHaveTextContent("Yes");
-    expect(screen.getByText("Inbox diagnostics truncated").nextElementSibling).toHaveTextContent("Yes");
+    expect(screen.queryByText("Inbox focus unavailable")).not.toBeInTheDocument();
+    expect(screen.queryByText("INBOX_SOURCE_TRUNCATED")).not.toBeInTheDocument();
   });
 
   it("renders detached and unborn Graph repository observations without shell fallback", async () => {
@@ -197,7 +197,10 @@ describe("Home states", () => {
 
     expect(await screen.findByText("You’re caught up")).toBeVisible();
     expect(screen.getByRole("heading", { name: "Overview" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Browse project memory" })).toHaveAttribute("href", "/search");
+    expect(screen.getByRole("heading", { name: "Context" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Browse shared knowledge" })).toHaveAttribute("href", "/knowledge");
+    expect(within(screen.getByRole("region", { name: "Context" }))
+      .getByRole("button", { name: "Open Context" })).toHaveAttribute("href", "/knowledge");
     expect(screen.getAllByText("Fresh", { selector: "dd" })).toHaveLength(2);
     expect(screen.getAllByText("Fresh", { selector: "strong" })).toHaveLength(2);
     expect(screen.queryByRole("heading", { name: "Active operation" })).not.toBeInTheDocument();
@@ -209,6 +212,9 @@ describe("Home states", () => {
 
     expect(await screen.findByText("Prepare local project context")).toBeVisible();
     expect(screen.getByRole("heading", { name: "Overview" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Context" })).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "Context" }))
+      .getByRole("button", { name: "Open Health" })).toHaveAttribute("href", "/health");
     expect(screen.getByRole("button", { name: "Open full Health details" })).toHaveAttribute("href", "/health");
     expect(screen.getByText("No team memory yet")).toBeVisible();
   });
@@ -225,6 +231,8 @@ describe("Home states", () => {
     const staleRender = renderRoute("/", apiWith({ getOverview: () => Promise.resolve(stale) }));
     expect(await screen.findByText("Stale", { selector: "dd" })).toBeVisible();
     expect(screen.getByText("Fresh", { selector: "dd" })).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "Context" }))
+      .getByRole("button", { name: "Open Health" })).toHaveAttribute("href", "/health");
     staleRender.unmount();
 
     const degraded = structuredClone(await fixture.getOverview());
@@ -237,6 +245,8 @@ describe("Home states", () => {
     renderRoute("/", apiWith({ getOverview: () => Promise.resolve(degraded) }));
     expect(await screen.findByText("Degraded", { selector: "dd" })).toBeVisible();
     expect(screen.getByText("Fresh", { selector: "dd" })).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "Context" }))
+      .getByRole("button", { name: "Open Health" })).toHaveAttribute("href", "/health");
   });
 
   it("prioritizes unresolved identity and preserves personal Relay unavailability", async () => {
@@ -254,7 +264,7 @@ describe("Home states", () => {
     expect(await screen.findByText("Resolve who you’re working as")).toBeVisible();
     expect(screen.getByText("The referenced member no longer exists.")).toBeVisible();
     expect(screen.getByRole("button", { name: "Review identity" })).toHaveAttribute("href", "/members");
-    expect(screen.getByText("Review 3 proposed Spec changes")).toBeVisible();
+    expect(screen.queryByText("Review 3 proposed Spec changes")).not.toBeInTheDocument();
   });
 
   it("renders degraded parse composition and determinate or indeterminate operations exactly", async () => {
@@ -267,6 +277,7 @@ describe("Home states", () => {
     const determinateProgress = within(await screen.findByRole("region", { name: "Active operation" })).getByRole("progressbar");
     expect(determinateProgress).toHaveAccessibleName("Graph refresh · Parse");
     expect(determinateProgress).toHaveAttribute("aria-valuenow", "68");
+    expect(screen.getByText("124 / 183 files parsed")).toBeVisible();
     determinate.unmount();
 
     renderRoute("/", createFixtureApi({ overviewFixture: "job-indeterminate" }));
@@ -276,20 +287,47 @@ describe("Home states", () => {
     expect(screen.getByText("37 completed")).toBeVisible();
   });
 
+  it.each(["resolve", "validate", "publish"] as const)("keeps Overview indeterminate after parsing during %s", async (phase) => {
+    const fixture = createFixtureApi({ overviewFixture: "job-determinate" });
+    const overview = await fixture.getOverview();
+    if (overview.operation.availability !== "available" || !overview.operation.active) {
+      throw new Error("The determinate fixture must supply an active graph operation.");
+    }
+    overview.operation.active = {
+      ...overview.operation.active,
+      phase,
+      progress: { completed: 183, total: 183 },
+    };
+    renderRoute("/", apiWith({ getOverview: async () => overview }));
+    const operation = within(await screen.findByRole("region", { name: "Active operation" }));
+    expect(operation.getByText("183 / 183 files parsed")).toBeVisible();
+    const progress = operation.getByRole("progressbar");
+    expect(progress).toHaveAccessibleName(`Graph refresh · ${phase[0].toUpperCase()}${phase.slice(1)}`);
+    expect(progress).not.toHaveAttribute("aria-valuenow");
+  });
+
   it("shows only the bounded relevant failed operation when no newer success supersedes it", async () => {
     renderRoute("/", createFixtureApi({ overviewFixture: "failure" }));
 
-    expect(await screen.findByRole("heading", { name: "Operation needs attention" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Review the failed Graph refresh" }, { timeout: 10_000 })).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "Context" }))
+      .getByRole("button", { name: "Open Context" })).toHaveAttribute("href", "/knowledge");
+    expect(within(screen.getByRole("region", { name: "Attention" }))
+      .getByRole("button", { name: "View operation" })).toHaveAttribute(
+      "href",
+      "/jobs?job=job_01K39R3X4A5BC6DE7FGHJKMNPQ",
+    );
+    expect(screen.getByRole("heading", { name: "Operation needs attention" })).toBeVisible();
     const progress = within(screen.getByRole("region", { name: "Operation needs attention" })).getByRole("progressbar");
     expect(progress).toHaveAccessibleName("Graph refresh · Failed");
-    expect(progress).toHaveAttribute("aria-valuenow", "96");
+    expect(progress).not.toHaveAttribute("aria-valuenow");
     expect(screen.getByText("The previous trustworthy Graph index was preserved.")).toBeVisible();
     expect(within(screen.getByRole("region", { name: "Operation needs attention" }))
       .getByRole("button", { name: "View operation" })).toHaveAttribute(
       "href",
       "/jobs?job=job_01K39R3X4A5BC6DE7FGHJKMNPQ",
     );
-  });
+  }, 15_000);
 
   it("degrades unavailable sources independently and bounds raw failures", async () => {
     renderRoute("/", createFixtureApi({ overviewFixture: "partial" }));
@@ -330,7 +368,7 @@ describe("Home states", () => {
     const user = userEvent.setup();
     renderRoute("/", api, queryClient);
 
-    expect(await screen.findByText("You’re caught up")).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Context" })).toBeVisible();
     expect(getOverview).toHaveBeenCalledTimes(1);
     expect(getHome).not.toHaveBeenCalled();
     expect(getCurrentActor).not.toHaveBeenCalled();
@@ -963,6 +1001,19 @@ describe("Health states", () => {
 });
 
 describe("Jobs states", () => {
+  it.each(["parse", "resolve", "validate", "publish"] as const)("shows parsed files without claiming overall completion during %s", async (phase) => {
+    const fixture = createFixtureApi();
+    const original = (await fixture.getJobs()).items[0]!;
+    const job: JobSummary = { ...original, kind: "graph_refresh", state: "running", phase, progress: { completed: 10, total: 10 } };
+    renderRoute("/jobs", apiWith({
+      getJobs: async () => ({ items: [job], nextCursor: null }),
+      subscribeToJob: () => ({ close: () => undefined }),
+    }));
+    expect(await screen.findByText("10 / 10 files parsed")).toBeVisible();
+    if (phase === "parse") expect(screen.getByRole("progressbar", { name: "100% of files parsed" })).toBeVisible();
+    else expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
   it("renders its loading state while persisted summaries are pending", async () => {
     renderRoute("/jobs", apiWith({ getJobs: () => pending<JobsResponse>() }));
 

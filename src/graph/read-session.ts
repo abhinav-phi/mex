@@ -6,10 +6,10 @@ import {
   lstatSync,
   openSync,
   readFileSync,
-  realpathSync,
   statSync,
 } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
+import { isSameResolvedPath, resolveRealPath } from "../paths.js";
 import type { GraphStatus } from "../team/contracts/graph.js";
 import { GRAPH_CORPUS_LIMITS, GraphCorpusLimitError } from "./corpus-policy.js";
 import { openGraphDatabase } from "./db/database.js";
@@ -23,6 +23,7 @@ import {
   type GraphSidecarProbe,
   type InternalGraphFreshObservationToken,
   type InternalGraphStatusInspection,
+  type GraphReadDegradation,
 } from "./status.js";
 import {
   GRAPH_SNAPSHOT_METADATA_KEY,
@@ -54,12 +55,27 @@ export interface GraphFreshnessRevalidation extends GraphReadValidation {
 /** @internal A stable database session bound to one successful freshness observation. */
 export interface InternalFreshGraphReadSession extends InternalGraphReadSession {
   graphStatus: GraphStatus;
+  /**
+   * The ways this store falls short of `fresh`, empty when it does not.
+   *
+   * It is bound exactly either way; these say what a reader must qualify when
+   * it reports the answer.
+   */
+  degradations: readonly GraphReadDegradation[];
+  /** Complete, sorted list of indexed paths that no longer match the tree. */
+  driftedSources: readonly string[];
   revalidateFreshness(): Promise<GraphFreshnessRevalidation>;
 }
 
 export interface InternalFreshGraphReadResult {
   graphStatus: GraphStatus;
   session: InternalFreshGraphReadSession | null;
+  /**
+   * True when config content drifted under an engine identity that still
+   * reproduces. A caller explaining a refusal uses this to avoid naming the
+   * one input the gate excused.
+   */
+  configDriftTolerated?: boolean;
 }
 
 interface ImmutableGraphReadHooks {
@@ -73,6 +89,21 @@ interface ImmutableGraphReadHooks {
 export interface LoadFreshGraphReadSessionOptions {
   dbPath?: string;
   loadSession?: boolean;
+  /**
+   * Also adopt a store whose only unproven input is config content, reported
+   * as `config-drifted`.
+   *
+   * Opt-in, because the caller — not this loader — owns the obligation to say
+   * so in its output. A consumer that cannot label a degraded answer must not
+   * receive one.
+   */
+  allowDegradedReads?: boolean;
+  /**
+   * Persisted-structure audit for both freshness inspections of this read.
+   * Omit for the full audit. Pass `"graph"` only when the caller's output never
+   * reads fingerprint or LSH rows; see `InspectGraphStatusOptions`.
+   */
+  structuralAudit?: "full" | "graph";
   inspectObservation?: typeof inspectGraphStatusWithFreshObservation;
   inspectSidecars?: typeof inspectGraphSidecars;
   afterStatusInspection?: (
@@ -340,18 +371,30 @@ export async function loadFreshGraphReadSession(
 ): Promise<InternalFreshGraphReadResult> {
   const dbPath = options.dbPath ?? resolve(projectRoot, ".mex", "graph.db");
   const inspectObservation = options.inspectObservation ?? inspectGraphStatusWithFreshObservation;
-  const inspection = await inspectObservation({ projectRoot, dbPath });
+  const audit = options.structuralAudit ? { structuralAudit: options.structuralAudit } : {};
+  const inspection = await inspectObservation({ projectRoot, dbPath, ...audit });
   await options.afterStatusInspection?.(inspection);
-  const { graphStatus, freshObservation } = inspection;
-  if (graphStatus.status !== "fresh" || options.loadSession === false) {
-    return { graphStatus, session: null };
+  const { graphStatus } = inspection;
+  const degraded = graphStatus.status !== "fresh"
+    && options.allowDegradedReads === true
+    && (inspection.degradedObservation ?? null) !== null
+      ? inspection.degradedObservation!
+      : null;
+  const degradations: readonly GraphReadDegradation[] = degraded?.degradations ?? [];
+  const driftedSources: readonly string[] = degraded?.driftedSources ?? [];
+  const configDriftTolerated = inspection.configDriftTolerated === true;
+  const withTolerance = (result: InternalFreshGraphReadResult): InternalFreshGraphReadResult =>
+    ({ ...result, configDriftTolerated });
+  const freshObservation = degraded ? degraded.token : inspection.freshObservation;
+  if ((graphStatus.status !== "fresh" && !degraded) || options.loadSession === false) {
+    return withTolerance({ graphStatus, session: null });
   }
   if (!freshObservation || sha256(freshObservation.snapshotRaw) !== freshObservation.snapshotHash) {
-    return unavailableFreshGraphReadResult(
+    return withTolerance(unavailableFreshGraphReadResult(
       graphStatus,
       "GRAPH_INDEX_READER_SNAPSHOT_CHANGED",
       "The fresh graph observation could not be bound to an exact snapshot; graph reads were skipped.",
-    );
+    ));
   }
 
   let base: InternalGraphReadSession | null = null;
@@ -372,21 +415,21 @@ export async function loadFreshGraphReadSession(
       || !indexedFiles
       || !snapshotMatchesIndexedFiles(snapshot, indexedFiles)) {
       base.close();
-      return unavailableFreshGraphReadResult(
+      return withTolerance(unavailableFreshGraphReadResult(
         graphStatus,
         "GRAPH_INDEX_READER_SNAPSHOT_CHANGED",
         "The graph snapshot changed while immutable readers were opening; graph reads were skipped.",
-      );
+      ));
     }
     const openedValidation = base.validate();
     if (!openedValidation.valid) {
       base.close();
-      return unavailableFreshGraphReadResult(
+      return withTolerance(unavailableFreshGraphReadResult(
         graphStatus,
         openedValidation.code ?? "GRAPH_INDEX_READER_OPEN_FAILED",
         openedValidation.message
           ?? "The graph changed or became unavailable while immutable readers were opening.",
-      );
+      ));
     }
 
     const guardedStatus: GraphStatus = { ...graphStatus, diagnostics: [...graphStatus.diagnostics] };
@@ -395,14 +438,45 @@ export async function loadFreshGraphReadSession(
     const session: InternalFreshGraphReadSession = {
       ...ownedBase,
       graphStatus: guardedStatus,
+      degradations,
+      driftedSources,
       validate: () => ownedBase.validate(),
       revalidateFreshness: async () => {
         const before = session.validate();
-        const finalInspection = await inspectObservation({ projectRoot, dbPath });
-        if (finalInspection.graphStatus.status !== "fresh" || !finalInspection.freshObservation) {
+        // The bound observation already passed the structural audit. Handing
+        // its identity back lets the final inspection skip re-auditing that
+        // exact file while still re-proving sources, Git, snapshot and sidecars.
+        const finalInspection = await inspectObservation({
+          projectRoot,
+          dbPath,
+          ...audit,
+          auditedDatabase: {
+            canonicalDbPath: freshObservation.canonicalDbPath,
+            databaseIdentity: freshObservation.databaseIdentity,
+          },
+        });
+        // Output is committed under the class it was labelled with. A store
+        // that changed class mid-read — drifted while being read as fresh, or
+        // repaired while being read as drifted — carries a label the buffered
+        // records no longer earn, so the response is discarded rather than
+        // relabelled after the fact.
+        const finalDegraded = finalInspection.degradedObservation ?? null;
+        const finalObservation = degradations.length > 0
+          ? (finalDegraded
+            && sameDegradations(finalDegraded.degradations, degradations)
+            // A file that drifted after the answer was assembled would make a
+            // returned fact describe a revision that no longer exists, so the
+            // exact set has to hold for the whole read, not just its kinds.
+            && sameStringSets(finalDegraded.driftedSources, driftedSources)
+              ? finalDegraded.token
+              : null)
+          : finalInspection.graphStatus.status === "fresh"
+            ? finalInspection.freshObservation
+            : null;
+        if (!finalObservation) {
           return { valid: false, graphStatus: finalInspection.graphStatus };
         }
-        if (!sameObservation(freshObservation, finalInspection.freshObservation)) {
+        if (!sameObservation(freshObservation, finalObservation)) {
           const changed = unavailableStatus(
             finalInspection.graphStatus,
             "GRAPH_INDEX_READER_SNAPSHOT_CHANGED",
@@ -422,11 +496,11 @@ export async function loadFreshGraphReadSession(
           : { ...after, graphStatus: guardedStatus };
       },
     };
-    return { graphStatus: guardedStatus, session };
+    return withTolerance({ graphStatus: guardedStatus, session });
   } catch (error) {
     base?.close();
     const coded = graphReadError(error);
-    return unavailableFreshGraphReadResult(graphStatus, coded.code, coded.message);
+    return withTolerance(unavailableFreshGraphReadResult(graphStatus, coded.code, coded.message));
   }
 }
 
@@ -484,12 +558,12 @@ function createIndexedSourceReader(
 /** Read one exact byte buffer through a contained, identity-stable file descriptor. */
 function readStableContainedSource(projectRoot: string, filePath: string): Buffer {
   const lexicalRoot = resolve(projectRoot);
-  const canonicalRoot = realpathSync(lexicalRoot);
+  const canonicalRoot = resolveRealPath(lexicalRoot);
   const absolutePath = resolve(lexicalRoot, filePath);
   if (!isContainedPath(lexicalRoot, absolutePath)) {
     throw new Error("Indexed source path escapes the project root.");
   }
-  const canonicalPath = realpathSync(absolutePath);
+  const canonicalPath = resolveRealPath(absolutePath);
   if (!isContainedPath(canonicalRoot, canonicalPath)) {
     throw new Error("Indexed source target escapes the project root.");
   }
@@ -511,10 +585,10 @@ function readStableContainedSource(projectRoot: string, filePath: string): Buffe
     }
     const bytes = readFileSync(fd);
     const after = fstatSync(fd);
-    const resolvedAfter = realpathSync(absolutePath);
+    const resolvedAfter = resolveRealPath(absolutePath);
     const pathAfter = lstatSync(resolvedAfter);
     if (!sameFileIdentity(opened, after)
-      || resolvedAfter !== canonicalPath
+      || !isSameResolvedPath(resolvedAfter, canonicalPath)
       || !pathAfter.isFile()
       || pathAfter.isSymbolicLink()
       || !sameFileIdentity(opened, pathAfter)) {
@@ -655,10 +729,10 @@ function bindDatabaseFile(dbPath: string, afterClose?: () => void): BoundDatabas
   };
   try {
     const opened = fstatSync(fd);
-    const resolvedAfter = realpathSync(dbPath);
+    const resolvedAfter = resolveRealPath(dbPath);
     const pathAfter = lstatSync(resolvedAfter);
     if (!opened.isFile()
-      || resolvedAfter !== dbPath
+      || !isSameResolvedPath(resolvedAfter, dbPath)
       || !pathAfter.isFile()
       || pathAfter.isSymbolicLink()
       || !sameFileIdentity(before, opened)
@@ -755,6 +829,18 @@ function snapshotMatchesIndexedFiles(
     && snapshot.parseHealth.ok === ok
     && snapshot.parseHealth.partial === partial
     && snapshot.parseHealth.failed === failed;
+}
+
+/** Order-independent equality; the producer sorts, this must not depend on it. */
+function sameDegradations(
+  left: readonly GraphReadDegradation[],
+  right: readonly GraphReadDegradation[],
+): boolean {
+  return left.length === right.length && left.every((entry) => right.includes(entry));
+}
+
+function sameStringSets(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((entry) => right.includes(entry));
 }
 
 function sameObservation(

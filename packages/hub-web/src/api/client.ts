@@ -1,4 +1,6 @@
 import {
+  AgentLoggingPolicySchema,
+  HubOnboardingStateSchema,
   ActivityResponseSchema,
   BootstrapResponseSchema,
   CodeKnowledgeResponseSchema,
@@ -31,6 +33,8 @@ import {
   TeamWorkstreamIdSchema,
   TeamWorkstreamListResponseSchema,
   TeamWorkstreamSchema,
+  WikiGraphResponseSchema,
+  WikiGroundedCodeResponseSchema,
   WikiBacklinksResponseSchema,
   WikiEntityDetailResponseSchema,
   WikiEntityIdSchema,
@@ -39,6 +43,27 @@ import {
 } from "@mex/hub-contracts";
 import { createFixtureApi } from "virtual:mex-hub-fixture-api";
 import type {
+  ContactPreference,
+  ContactPreferenceRequest,
+  SetupContactRequest,
+  SetupContactResponse,
+} from "@mex/hub-contracts/contact";
+import type {
+  SetupInstallation,
+  SetupRun,
+  SetupStartRequest,
+  SetupStatus,
+  SetupTranscriptBatch,
+  SetupCommitPreview,
+  SetupCommitDiff,
+  SetupCommitDiffRequest,
+  SetupCommitRequest,
+  SetupCommitResponse,
+} from "@mex/hub-contracts/setup";
+import type {
+  AgentLoggingPolicy,
+  AgentLoggingUpdateRequest,
+  HubOnboardingState,
   ActivityRequest,
   ActivityResponse,
   BootstrapResponse,
@@ -91,6 +116,8 @@ import type {
   TeamWorkstream,
   TeamWorkstreamListRequest,
   TeamWorkstreamListResponse,
+  WikiGraphResponse,
+  WikiGroundedCodeResponse,
   WikiBacklinksRequest,
   WikiBacklinksResponse,
   WikiEntityDetailResponse,
@@ -100,6 +127,7 @@ import type {
   WikiRelationsResponse,
 } from "./types";
 import type { RelayTransport } from "./relay-client";
+import { isHubTelemetryPage, type HubTelemetryPage } from "./telemetry";
 
 const API_ROOT = "/api/v1";
 
@@ -115,6 +143,11 @@ export class HubApiError extends Error {
     this.name = "HubApiError";
     this.problem = problem;
   }
+}
+
+export function isSetupCapabilityUnavailable(error: unknown): boolean {
+  return error instanceof HubApiError
+    && (error.problem.code === "CAPABILITY_UNAVAILABLE" || error.problem.code === "NOT_FOUND");
 }
 
 export interface JobSubscription {
@@ -155,9 +188,20 @@ export interface FixtureApiOptions {
   activityFixture?: ActivityFixtureVariant;
   memberFixture?: MemberFixtureVariant;
   overviewFixture?: OverviewFixtureVariant;
+  onboardingFixture?: "completed" | "first-run";
 }
 
 export interface HubApi {
+  getContactPreference?(): Promise<ContactPreference>;
+  rememberContactPreference?(request: ContactPreferenceRequest): Promise<ContactPreference>;
+  submitSetupContact?(request: SetupContactRequest): Promise<SetupContactResponse>;
+  getSetupInstallation?(): Promise<SetupInstallation>;
+  installSetupGlobally?(): Promise<SetupInstallation>;
+  recordPageView?(page: HubTelemetryPage): Promise<void>;
+  getLoggingPolicy(): Promise<AgentLoggingPolicy>;
+  setLoggingPolicy(request: AgentLoggingUpdateRequest): Promise<AgentLoggingPolicy>;
+  getOnboardingState(): Promise<HubOnboardingState>;
+  completeOnboarding(): Promise<HubOnboardingState>;
   bootstrap(token: string): Promise<BootstrapResponse>;
   getSession(): Promise<SessionResponse>;
   getCapabilities(): Promise<CapabilitiesResponse>;
@@ -187,6 +231,8 @@ export interface HubApi {
   getActivity(request: ActivityRequest): Promise<ActivityResponse>;
   search(request: SearchRequest): Promise<SearchResponse>;
   getCodeSymbol(id: string, request: CodeWorkspaceRequest): Promise<CodeWorkspaceResponse>;
+  wikiGraph(): Promise<WikiGraphResponse>;
+  getWikiGroundedCode(id: string): Promise<WikiGroundedCodeResponse>;
   listWikiEntities(request: WikiEntityListRequest): Promise<WikiEntityListResponse>;
   getWikiEntity(id: string): Promise<WikiEntityDetailResponse>;
   getWikiRelations(id: string, request: WikiRelationsRequest): Promise<WikiRelationsResponse>;
@@ -198,6 +244,15 @@ export interface HubApi {
   startJob(request: StartJobRequest): Promise<JobSummary>;
   cancelJob(id: string): Promise<JobSummary>;
   subscribeToJob(id: string, onSnapshot: (job: JobSummary) => void): JobSubscription;
+  getSetupStatus?(): Promise<SetupStatus>;
+  getSetupRun?(): Promise<SetupRun>;
+  startSetup?(request: SetupStartRequest): Promise<SetupRun>;
+  cancelSetup?(): Promise<SetupRun>;
+  subscribeToSetup?(onSnapshot: (run: SetupRun) => void, onDisconnect?: () => void): JobSubscription;
+  subscribeToSetupTranscript?(runId: string, onBatch: (batch: SetupTranscriptBatch) => void, onDisconnect?: () => void): JobSubscription;
+  previewSetupCommit?(): Promise<SetupCommitPreview>;
+  setupCommitDiff?(request: SetupCommitDiffRequest): Promise<SetupCommitDiff>;
+  commitSetup?(request: SetupCommitRequest): Promise<SetupCommitResponse>;
 }
 
 function fallbackProblem(status: number, detail?: string): ProblemDetails {
@@ -213,20 +268,24 @@ function fallbackProblem(status: number, detail?: string): ProblemDetails {
   };
 }
 
-async function parseBody<T>(response: Response, schema: Parser<T>): Promise<T> {
+async function readJsonBody(response: Response): Promise<unknown> {
   const contentType = response.headers.get("content-type") ?? "";
-  let body: unknown;
   try {
-    body = contentType.includes("json") ? await response.json() : undefined;
+    return contentType.includes("json") ? await response.json() : undefined;
   } catch {
-    body = undefined;
+    return undefined;
   }
+}
 
-  if (!response.ok) {
-    const problem = HubProblemDetailsSchema.safeParse(body);
-    throw new HubApiError(problem.success ? problem.data : fallbackProblem(response.status));
-  }
+function throwIfHttpProblem(response: Response, body: unknown): void {
+  if (response.ok) return;
+  const problem = HubProblemDetailsSchema.safeParse(body);
+  throw new HubApiError(problem.success ? problem.data : fallbackProblem(response.status));
+}
 
+async function parseBody<T>(response: Response, schema: Parser<T>): Promise<T> {
+  const body = await readJsonBody(response);
+  throwIfHttpProblem(response, body);
   const parsed = schema.safeParse(body);
   if (!parsed.success) {
     throw new HubApiError(fallbackProblem(500));
@@ -292,6 +351,8 @@ function assertSafeInboxProposalId(value: string): string {
 
 const loadRelayClient = () => import("./relay-client");
 const loadOverviewContract = () => import("@mex/hub-contracts/overview");
+const loadContactContract = () => import("@mex/hub-contracts/contact");
+const loadSetupContract = () => import("@mex/hub-contracts/setup");
 
 export function readBootstrapToken(hash = window.location.hash): string | null {
   if (!hash || hash === "#") return null;
@@ -309,32 +370,67 @@ export function clearBootstrapFragment(): void {
 
 export class HttpHubApi implements HubApi {
   #csrfToken: string | null = null;
+  #pageViewPending = false;
+
+  async recordPageView(page: HubTelemetryPage): Promise<void> {
+    if (!this.#csrfToken || this.#pageViewPending || !isHubTelemetryPage(page)) return;
+    this.#pageViewPending = true;
+    try {
+      await fetch(`${API_ROOT}/telemetry/page`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-MEX-CSRF": this.#csrfToken },
+        body: JSON.stringify({ page }),
+        credentials: "same-origin",
+        redirect: "error",
+        referrerPolicy: "no-referrer",
+        signal: AbortSignal.timeout(2_000),
+      });
+    } catch { /* A dropped local usage event must never disturb navigation. */ }
+    finally { this.#pageViewPending = false; }
+  }
   #relayTransport: RelayTransport = {
     request: (path, schema, init, mutation) => this.#request(path, schema, init, mutation),
     invalidIdentifier: (detail) => {
       throw new HubApiError(fallbackProblem(400, detail));
     },
   };
-  async #request<T>(
-    path: string,
-    schema: Parser<T>,
-    init: RequestInit = {},
-    mutation = false,
-  ): Promise<T> {
+  async #send(path: string, init: RequestInit = {}, mutation = false): Promise<Response> {
     const headers = new Headers(init.headers);
     headers.set("Accept", "application/json, application/problem+json");
     if (mutation) {
       headers.set("Content-Type", "application/json");
       if (this.#csrfToken) headers.set("X-MEX-CSRF", this.#csrfToken);
     }
-
-    const response = await fetch(`${API_ROOT}${path}`, {
+    return fetch(`${API_ROOT}${path}`, {
       ...init,
       headers,
       credentials: "same-origin",
       redirect: "error",
     });
-    return parseBody(response, schema);
+  }
+
+  async #request<T>(
+    path: string,
+    schema: Parser<T>,
+    init: RequestInit = {},
+    mutation = false,
+  ): Promise<T> {
+    return parseBody(await this.#send(path, init, mutation), schema);
+  }
+
+  async #requestWhenOk<T>(
+    path: string,
+    loadSchema: () => Promise<Parser<T>>,
+    init: RequestInit = {},
+    mutation = false,
+  ): Promise<T> {
+    const response = await this.#send(path, init, mutation);
+    const body = await readJsonBody(response);
+    throwIfHttpProblem(response, body);
+    const schema = await loadSchema();
+    const parsed = schema.safeParse(body);
+    if (!parsed.success) throw new HubApiError(fallbackProblem(500));
+    return parsed.data;
   }
 
   bootstrap(token: string): Promise<BootstrapResponse> {
@@ -550,6 +646,14 @@ export class HttpHubApi implements HubApi {
     );
   }
 
+  wikiGraph(): Promise<WikiGraphResponse> {
+    return this.#request("/wiki/graph", WikiGraphResponseSchema);
+  }
+
+  getWikiGroundedCode(id: string): Promise<WikiGroundedCodeResponse> {
+    return this.#request(`/wiki/entities/${encodeURIComponent(assertSafeWikiEntityId(id))}/code`, WikiGroundedCodeResponseSchema);
+  }
+
   listWikiEntities(request: WikiEntityListRequest): Promise<WikiEntityListResponse> {
     const params = new URLSearchParams({ limit: String(request.limit) });
     if (request.kind) params.set("kind", request.kind);
@@ -599,6 +703,24 @@ export class HttpHubApi implements HubApi {
 
   getHealth(): Promise<HealthResponse> {
     return this.#request("/health", HealthResponseSchema);
+  }
+
+  getLoggingPolicy(): Promise<AgentLoggingPolicy> {
+    return this.#request("/settings/logging", AgentLoggingPolicySchema);
+  }
+
+  setLoggingPolicy(request: AgentLoggingUpdateRequest): Promise<AgentLoggingPolicy> {
+    return this.#request("/settings/logging", AgentLoggingPolicySchema,
+      { method: "POST", body: JSON.stringify(request) }, true);
+  }
+
+  getOnboardingState(): Promise<HubOnboardingState> {
+    return this.#request("/settings/onboarding", HubOnboardingStateSchema);
+  }
+
+  completeOnboarding(): Promise<HubOnboardingState> {
+    return this.#request("/settings/onboarding", HubOnboardingStateSchema,
+      { method: "POST", body: JSON.stringify({ completed: true }) }, true);
   }
 
   getJobs(cursor?: string): Promise<JobsResponse> {
@@ -660,6 +782,155 @@ export class HttpHubApi implements HubApi {
     source.addEventListener("terminal", receive as EventListener);
     source.onmessage = receive;
     return { close: () => source.close() };
+  }
+
+  getSetupStatus(): Promise<SetupStatus> {
+    return this.#requestWhenOk("/setup", async () => (await loadSetupContract()).SetupStatusSchema);
+  }
+
+  getContactPreference(): Promise<ContactPreference> {
+    return this.#requestWhenOk("/contact", async () => (await loadContactContract()).ContactPreferenceSchema);
+  }
+
+  rememberContactPreference(request: ContactPreferenceRequest): Promise<ContactPreference> {
+    return this.#requestWhenOk("/contact/preference", async () => (await loadContactContract()).ContactPreferenceSchema,
+      { method: "POST", body: JSON.stringify(request) }, true);
+  }
+
+  submitSetupContact(request: SetupContactRequest): Promise<SetupContactResponse> {
+    return this.#requestWhenOk("/contact", async () => (await loadContactContract()).SetupContactResponseSchema,
+      { method: "POST", body: JSON.stringify(request) }, true);
+  }
+
+  getSetupInstallation(): Promise<SetupInstallation> {
+    return this.#requestWhenOk("/setup/installation", async () => (await loadSetupContract()).SetupInstallationSchema);
+  }
+
+  installSetupGlobally(): Promise<SetupInstallation> {
+    return this.#requestWhenOk("/setup/installation", async () => (await loadSetupContract()).SetupInstallationSchema,
+      { method: "POST", body: "{}" }, true);
+  }
+
+  getSetupRun(): Promise<SetupRun> {
+    return this.#requestWhenOk("/setup/run", async () => (await loadSetupContract()).SetupRunSchema);
+  }
+
+  startSetup(request: SetupStartRequest): Promise<SetupRun> {
+    return this.#requestWhenOk(
+      "/setup",
+      async () => (await loadSetupContract()).SetupRunSchema,
+      { method: "POST", body: JSON.stringify(request) },
+      true,
+    );
+  }
+
+  cancelSetup(): Promise<SetupRun> {
+    return this.#requestWhenOk(
+      "/setup/cancel",
+      async () => (await loadSetupContract()).SetupRunSchema,
+      { method: "POST", body: "{}" },
+      true,
+    );
+  }
+
+  previewSetupCommit(): Promise<SetupCommitPreview> {
+    return this.#requestWhenOk(
+      "/setup/commit/preview",
+      async () => (await loadSetupContract()).SetupCommitPreviewSchema,
+      { method: "POST", body: "{}" },
+      true,
+    );
+  }
+
+  setupCommitDiff(request: SetupCommitDiffRequest): Promise<SetupCommitDiff> {
+    return this.#requestWhenOk(
+      "/setup/commit/diff",
+      async () => (await loadSetupContract()).SetupCommitDiffSchema,
+      { method: "POST", body: JSON.stringify(request) },
+      true,
+    );
+  }
+
+  commitSetup(request: SetupCommitRequest): Promise<SetupCommitResponse> {
+    return this.#requestWhenOk(
+      "/setup/commit",
+      async () => (await loadSetupContract()).SetupCommitResponseSchema,
+      { method: "POST", body: JSON.stringify(request) },
+      true,
+    );
+  }
+
+  subscribeToSetup(onSnapshot: (run: SetupRun) => void, onDisconnect?: () => void): JobSubscription {
+    const source = new EventSource(`${API_ROOT}/setup/events`, { withCredentials: true });
+    const contract = loadSetupContract();
+    let closed = false;
+    const receive = (event: MessageEvent<string>) => {
+      void contract.then(({ SetupRunSchema }) => {
+        if (closed) return;
+        try {
+          const parsed = SetupRunSchema.safeParse(JSON.parse(event.data));
+          if (parsed.success) {
+            onSnapshot(parsed.data);
+            if (
+              event.type === "terminal"
+              || parsed.data.status === "succeeded"
+              || parsed.data.status === "failed"
+              || parsed.data.status === "cancelled"
+              || parsed.data.status === "paused"
+              || parsed.data.status === "idle"
+            ) {
+              closed = true;
+              source.close();
+            }
+          }
+        } catch {
+          // A malformed event cannot poison the current setup snapshot.
+        }
+      });
+    };
+    source.addEventListener("snapshot", receive as EventListener);
+    source.addEventListener("terminal", receive as EventListener);
+    source.onmessage = receive;
+    source.onerror = () => {
+      // Promotion can remove the endpoint before the first SSE connection.
+      // The view coalesces refreshes; retry errors must also recover a promotion
+      // that happened after an earlier refresh still reported a running job.
+      if (closed) return;
+      onDisconnect?.();
+    };
+    return { close: () => { closed = true; source.close(); } };
+  }
+
+  subscribeToSetupTranscript(runId: string, onBatch: (batch: SetupTranscriptBatch) => void, onDisconnect?: () => void): JobSubscription {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(runId)) {
+      throw new Error("Invalid setup session identifier.");
+    }
+    let closed = false;
+    let cursor = 0;
+    let source: EventSource | undefined;
+    // Open only once the lazy validator is ready; no event queue can grow while
+    // that module loads. Native reconnects retain this EventSource's event ID.
+    void loadSetupContract().then(({ SetupTranscriptBatchSchema }) => {
+      if (closed) return;
+      source = new EventSource(`${API_ROOT}/setup/transcript/events?run=${encodeURIComponent(runId)}`, { withCredentials: true });
+      source.addEventListener("transcript", ((event: MessageEvent<string>) => {
+        if (closed || typeof event.data !== "string" || event.data.length > 1_048_576) return;
+        try {
+          const parsed = SetupTranscriptBatchSchema.safeParse(JSON.parse(event.data));
+          if (!parsed.success || parsed.data.runId !== runId || parsed.data.cursor < cursor) return;
+          const batch = parsed.data;
+          if (batch.entries.some((entry, index) => entry.id > batch.cursor || (index > 0 && entry.id <= batch.entries[index - 1]!.id))) return;
+          const entries = batch.entries.filter((entry) => entry.id > cursor);
+          cursor = batch.cursor;
+          onBatch({ ...batch, entries });
+          if (batch.done) { closed = true; source?.close(); }
+        } catch {
+          // Malformed transcript data cannot replace the retained session.
+        }
+      }) as EventListener);
+      source.onerror = () => { if (!closed) onDisconnect?.(); };
+    }).catch(() => { if (!closed) onDisconnect?.(); });
+    return { close: () => { if (!closed) source?.close(); closed = true; } };
   }
 }
 

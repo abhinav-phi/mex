@@ -111,6 +111,7 @@ const CONFIG_FILE = "config.json";
 
 interface MexPersistedConfig {
   aiTools?: unknown;
+  setupMode?: unknown;
   wiki?: unknown;
   staleness?: unknown;
   watch?: unknown;
@@ -133,6 +134,21 @@ function loadAiTools(raw: MexPersistedConfig | null): AiTool[] {
 /** Read an existing setup tool selection without requiring a complete scaffold. */
 export function loadConfiguredAiTools(scaffoldRoot: string): AiTool[] {
   return loadAiTools(loadPersistedConfig(scaffoldRoot));
+}
+
+/** Distinguish an explicit empty selection from a setup that never chose tools. */
+export function hasConfiguredAiTools(scaffoldRoot: string): boolean {
+  return Array.isArray(loadPersistedConfig(scaffoldRoot)?.aiTools);
+}
+
+/** Read setup intent without initializing config; older projects use code-repo. */
+export function loadConfiguredSetupMode(scaffoldRoot: string): "code-repo" | "agent-memory" {
+  return loadPersistedConfig(scaffoldRoot)?.setupMode === "agent-memory" ? "agent-memory" : "code-repo";
+}
+
+/** Persist setup intent using the same atomic, key-preserving config writer. */
+export function saveConfiguredSetupMode(scaffoldRoot: string, mode: "code-repo" | "agent-memory"): void {
+  mergeIntoConfig(scaffoldRoot, { setupMode: mode });
 }
 
 function loadStalenessThresholds(scaffoldRoot: string, raw: MexPersistedConfig | null): StalenessThresholds | undefined {
@@ -294,13 +310,20 @@ function loadHeartbeatConfig(raw: MexPersistedConfig | null): HeartbeatConfig | 
   }
   const h = raw.heartbeat as Record<string, unknown>;
   const out: HeartbeatConfig = {};
-  const staleDays = readPositiveNumber(h.staleDays);
-  const memoryCleanupDays = readPositiveNumber(h.memoryCleanupDays);
-  const dailyMemoryRetentionDays = readPositiveNumber(h.dailyMemoryRetentionDays);
+  // Day-based heartbeat thresholds accept 0 ("stale as soon as older than
+  // today", #42) while still rejecting negatives and garbage.
+  const staleDays = readDayThreshold(h.staleDays);
+  const memoryCleanupDays = readDayThreshold(h.memoryCleanupDays);
+  const dailyMemoryRetentionDays = readDayThreshold(h.dailyMemoryRetentionDays);
   if (staleDays !== undefined) out.staleDays = staleDays;
   if (memoryCleanupDays !== undefined) out.memoryCleanupDays = memoryCleanupDays;
   if (dailyMemoryRetentionDays !== undefined) out.dailyMemoryRetentionDays = dailyMemoryRetentionDays;
   return Object.keys(out).length ? out : undefined;
+}
+
+function readDayThreshold(v: unknown): number | undefined {
+  if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
+  return undefined;
 }
 
 function readPositiveNumber(v: unknown): number | undefined {

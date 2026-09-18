@@ -220,7 +220,7 @@ describe("Hub Relay projections", () => {
     expect(JSON.stringify(page)).not.toContain("/Users/alice");
   });
 
-  it("projects standalone schema-v3 publication state and Workstream-free drafts", async () => {
+  it.each([3, 4] as const)("projects standalone schema-v%s publication state, audience and Workstream-free drafts", async (schemaVersion) => {
     const publishedRepoState = {
       branch: "feature/standalone-relay",
       head: null,
@@ -229,7 +229,8 @@ describe("Hub Relay projections", () => {
     } as const;
     const standalone: TeamRelayDetail = {
       ...relay(),
-      schemaVersion: 3,
+      schemaVersion,
+      ...(schemaVersion === 4 ? { audience: "team" as const, recipients: [] } : {}),
       workstream: null,
       summary: "Continue the standalone Relay rollout",
       publishedAt: NOW,
@@ -237,6 +238,7 @@ describe("Hub Relay projections", () => {
       diagnostics: [],
     };
     const draft: TeamRelayDraftDetail = {
+      ...(schemaVersion === 4 ? { audience: "team" as const } : {}),
       id: "relay-draft-standalone",
       revision: "7".repeat(64) as Revision,
       updatedAt: NOW,
@@ -245,6 +247,7 @@ describe("Hub Relay projections", () => {
       ),
       summary: "Prepare a standalone handoff",
       input: {
+        ...(schemaVersion === 4 ? { audience: "team" as const } : {}),
         recipients: standalone.recipients,
         summary: "Prepare a standalone handoff",
         completed: [],
@@ -285,7 +288,8 @@ describe("Hub Relay projections", () => {
     const detail = await services.relay?.(RELAY_ID);
     expect(RelayDetailSchema.safeParse(detail).success).toBe(true);
     expect(detail).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion,
+      ...(schemaVersion === 4 ? { audience: "team", recipients: [] } : {}),
       workstream: null,
       publishedAt: NOW,
       publishedRepoState,
@@ -294,7 +298,8 @@ describe("Hub Relay projections", () => {
     const page = await services.relays?.({ perspective: "all", limit: 25 });
     expect(RelayListResponseSchema.safeParse(page).success).toBe(true);
     expect(page?.items[0]).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion,
+      ...(schemaVersion === 4 ? { audience: "team", recipients: [] } : {}),
       workstream: null,
       publishedRepoState,
     });
@@ -304,6 +309,7 @@ describe("Hub Relay projections", () => {
     expect(wireDraft).toEqual(draft);
     expect(wireDraft).not.toHaveProperty("workstream");
     expect(wireDraft?.input).not.toHaveProperty("workstream");
+    await expect(services.home()).resolves.toMatchObject({ attention: { relays: { availability: "available", readyToTakeCount: 1 } } });
   });
 
   it("counts the exact My-open predicate and reports no-Member recovery as unavailable", async () => {
@@ -483,14 +489,15 @@ describe("Hub Relay projections", () => {
     });
   });
 
-  it("round-trips a non-email Git authority through the Relay-only signed envelope unchanged", async () => {
+  it.each([undefined, "members", "team"] as const)("round-trips Git authority and audience %s through the exact Relay envelope", async (audience) => {
     const draftId = "relay-draft-git-authority";
     const wireRequest: RelayOperationPreviewRequest = {
       operationId: "hub_relay_git_authority_round_trip",
       action: {
         kind: "relay.draft.save",
         draft: {
-          recipients: [{ kind: "member", memberId: MEMBER_ID, displayName: "Ada Lovelace" }],
+          ...(audience === undefined ? {} : { audience }),
+          recipients: audience === "team" ? [] : [{ kind: "member", memberId: MEMBER_ID, displayName: "Ada Lovelace" }],
           summary: "Preserve the configured Git authority bytes.",
           completed: [],
           inProgress: [],

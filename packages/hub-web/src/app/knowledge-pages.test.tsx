@@ -40,9 +40,9 @@ function renderRoute(route: string, api: HubApi = createFixtureApi()) {
 describe("Read-only Knowledge browse", () => {
   it("renders real summaries and loads an older page without replacing trusted rows", async () => {
     const user = userEvent.setup();
-    renderRoute("/knowledge");
+    renderRoute("/knowledge?view=list");
 
-    expect(await screen.findByRole("heading", { level: 1, name: "Knowledge" })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: "Context" })).toBeVisible();
     expect(await screen.findByText("Project Hub read boundaries")).toBeVisible();
     expect(screen.getByText("One snapshot per graph request")).toBeVisible();
     expect(screen.getByText("Some entries carry bounded diagnostics.")).toBeVisible();
@@ -54,26 +54,26 @@ describe("Read-only Knowledge browse", () => {
 
   it("keeps filters in URL history and makes text search an explicit independent mode", async () => {
     const user = userEvent.setup();
-    renderRoute("/knowledge");
+    renderRoute("/knowledge?view=list");
     await screen.findByText("Project Hub read boundaries");
 
     await user.selectOptions(screen.getByLabelText("Lifecycle"), "promoted");
     await user.click(screen.getByRole("button", { name: "Apply" }));
-    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/knowledge?lifecycle=promoted"));
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/knowledge?view=list&lifecycle=promoted"));
     const filteredSummary = await screen.findByText("Filtered Knowledge records");
     expect(filteredSummary.parentElement).toHaveFocus();
     expect(screen.queryByText("Review immutable activity")).not.toBeInTheDocument();
 
     await user.type(screen.getByRole("searchbox", { name: "Search titles, summaries, and bodies" }), "hub");
     await user.click(screen.getByRole("button", { name: "Apply" }));
-    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/knowledge?q=hub"));
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/knowledge?view=list&q=hub"));
     expect(screen.getByTestId("location")).not.toHaveTextContent("lifecycle");
     expect(await screen.findByText("Knowledge results for “hub”")).toBeVisible();
   });
 
   it("preserves a complete canonical topic ID through the URL-backed filter", async () => {
     const user = userEvent.setup();
-    renderRoute("/knowledge");
+    renderRoute("/knowledge?view=list");
     await screen.findByText("Project Hub read boundaries");
 
     const topic = screen.getByLabelText("Topic ID");
@@ -82,7 +82,7 @@ describe("Read-only Knowledge browse", () => {
     await user.click(screen.getByRole("button", { name: "Apply" }));
 
     await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent(
-      `/knowledge?topic=${GRAPH_TOPIC_ID}`,
+      `/knowledge?view=list&topic=${GRAPH_TOPIC_ID}`,
     ));
     expect(screen.getByText("Project Hub read boundaries")).toBeVisible();
     expect(screen.queryByText("One snapshot per graph request")).not.toBeInTheDocument();
@@ -94,7 +94,7 @@ describe("Read-only Knowledge browse", () => {
     const listWikiEntities = vi.fn((request: Parameters<HubApi["listWikiEntities"]>[0]) => (
       request.cursor ? Promise.reject(new Error("private path /tmp/wiki.sqlite")) : fixture.listWikiEntities(request)
     ));
-    renderRoute("/knowledge", apiWith({ listWikiEntities }));
+    renderRoute("/knowledge?view=list", apiWith({ listWikiEntities }));
 
     expect(await screen.findByText("Project Hub read boundaries")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Load more Knowledge" }));
@@ -112,13 +112,13 @@ describe("Read-only Knowledge browse", () => {
     const listWikiEntities = vi.fn((request: Parameters<HubApi["listWikiEntities"]>[0]) => (
       request.cursor ? olderPage : fixture.listWikiEntities(request)
     ));
-    renderRoute("/knowledge", apiWith({ listWikiEntities }));
+    renderRoute("/knowledge?view=list", apiWith({ listWikiEntities }));
 
     await screen.findByText("Project Hub read boundaries");
     await user.click(screen.getByRole("button", { name: "Load more Knowledge" }));
     await user.type(screen.getByLabelText("Kind"), "decision");
     await user.click(screen.getByRole("button", { name: "Apply" }));
-    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/knowledge?kind=decision"));
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/knowledge?view=list&kind=decision"));
     expect(await screen.findByText("One snapshot per graph request")).toBeVisible();
     expect(screen.queryByText("Project Hub read boundaries")).not.toBeInTheDocument();
 
@@ -133,14 +133,14 @@ describe("Read-only Knowledge browse", () => {
 
   it("distinguishes a successful filtered-empty read from an unavailable index", async () => {
     const user = userEvent.setup();
-    renderRoute("/knowledge");
+    renderRoute("/knowledge?view=list");
     await screen.findByText("Project Hub read boundaries");
 
     await user.type(screen.getByLabelText("Kind"), "nonexistent");
     await user.click(screen.getByRole("button", { name: "Apply" }));
 
     expect(await screen.findByRole("heading", { name: "No Knowledge matches these filters" })).toBeVisible();
-    expect(screen.getByTestId("location")).toHaveTextContent("/knowledge?kind=nonexistent");
+    expect(screen.getByTestId("location")).toHaveTextContent("/knowledge?view=list&kind=nonexistent");
   });
 
   it.each([
@@ -150,7 +150,7 @@ describe("Read-only Knowledge browse", () => {
     ["MIGRATION_REQUIRED", "Knowledge migration is required"],
   ] as const)("projects %s through the explicit Health boundary", async (code, title) => {
     const error = new HubApiError({ type: "about:blank", title, status: 409, code, detail: "Safe Wiki inspection failed.", requestId: `req_${code}` });
-    renderRoute("/knowledge", apiWith({ listWikiEntities: () => Promise.reject(error) }));
+    renderRoute("/knowledge?view=list", apiWith({ listWikiEntities: () => Promise.reject(error) }));
 
     expect(await screen.findByRole("heading", { name: title })).toBeVisible();
     expect(screen.getByRole("link", { name: "Open Wiki health" })).toHaveAttribute("href", "/health");
@@ -165,7 +165,7 @@ describe("Read-only Knowledge browse", () => {
       if (request.cursor && conflict) return { ...response, indexedRevision: "f".repeat(64) };
       return response;
     });
-    renderRoute("/knowledge", apiWith({ listWikiEntities }));
+    renderRoute("/knowledge?view=list", apiWith({ listWikiEntities }));
 
     await screen.findByText("Project Hub read boundaries");
     await user.click(screen.getByRole("button", { name: "Load more Knowledge" }));
@@ -186,7 +186,7 @@ describe("Read-only Knowledge browse", () => {
         wiki: { ...capabilities.wiki, read: { availability: "unavailable", reason: "Wiki migration must be reviewed manually." } },
       }),
     });
-    renderRoute("/knowledge", api);
+    renderRoute("/knowledge?view=list", api);
     expect(await screen.findByRole("heading", { name: "Knowledge unavailable" })).toBeVisible();
     expect(screen.getByText("Wiki migration must be reviewed manually.")).toBeVisible();
   });
@@ -201,8 +201,7 @@ describe("Read-only Knowledge browse", () => {
     expect(screen.getByRole("heading", { level: 2, name: `${title} is coming soon` })).toBeVisible();
     expect(screen.getByText(copy)).toBeVisible();
     expect(screen.getByText("Soon", { selector: '[data-slot="badge"][role="status"]' })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Coming Soon" })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("link", { name: `${title} Soon` })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("button", { name: "Coming Soon" })).not.toBeInTheDocument();
     expect(screen.queryByText("Read only")).not.toBeInTheDocument();
     expect(screen.queryByText("No data requested")).not.toBeInTheDocument();
   });

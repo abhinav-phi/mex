@@ -23,12 +23,12 @@ edges:
 # Broad overview: keep this empty unless a claim depends on a few specific symbols.
 # Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh:64:<hex>" }
 grounds_to: []
-last_updated: 2026-09-06
+last_updated: 2026-09-12
 mex:
   id: mx_01M1M0CJ5C5XQV0HM5VM787WQS
   type: architecture
   status: promoted
-  revision: 6
+  revision: 10
   title: architecture
   relations:
     - type: related_to
@@ -83,7 +83,7 @@ revision: 1
 - **Code Graph (`src/graph/`)** — deterministic extraction, versioned SQLite storage, immutable read sessions, provenance/freshness checks, retrieval, impact, and explicit refresh/rebuild recovery.
 - **Wiki (`src/wiki/`)** — treats repository Markdown as canonical, owns migration/validation/indexing, and exposes bounded query plus repository-adapter services.
 - **Team workflows (`src/team/`)** — canonical Members, Activity, Workstreams, Inbox, and Relay records plus signed preview/apply services and isolated checkout-local state.
-- **Project Hub (`src/hub/`, `packages/hub-contracts`, `packages/hub-web`)** — `runHubCommand()` composes the loopback server, private API contracts, repository adapters, durable local jobs, and route-lazy React workbench.
+- **Project Hub (`src/hub/`, `packages/hub-contracts`, `packages/hub-web`)** — `launchHub()` opens the loopback server. Incomplete checkouts get a setup-only process that shares the CLI setup phases through `runHeadlessSetup()`. Claude Code and Codex run as owned background children. Their structured streams supply activity timing and a separate read-only transcript of assistant messages with compact fixed tool labels; command details and tool results are dropped before transcript retention. Cursor-based SSE replays a bounded process-memory history without copying it into run snapshots. After code setup finishes and the committed scaffold identity passes the existing Team authority check, an explicit action promotes the same listener and session into the full Hub. The promoted dashboard then shows a first-run spotlight tour once per checkout. It overlays the live sidebar rather than replacing it, records completion in `.mex/local/hub-onboarding.json` through `/api/v1/settings/onboarding`, and does not run during setup. Existing committed code projects retain Health recovery for missing disposable indexes; Agent memory keeps its separate completion path.
 - **Drift and agent workflows (`src/drift/`, `src/sync/`, `src/agent-skills/`)** — check grounded knowledge, prepare bounded repair briefs, and install the governed Inbox/Relay integrations.
 
 <!-- mex:entity
@@ -94,12 +94,12 @@ revision: 1
 -->
 ## External Dependencies
 
-- **Git** — repository identity, revisions, sharing, and bounded read-only observations; product code never stages, commits, pushes, or pulls.
+- **Git** — repository identity, revisions, sharing, and bounded read-only observations. The setup-only Hub also offers an explicit, revision-bound diff review and local commit of scoped setup files, preserving unrelated staged work. Ordinary reads do not stage or commit; product code never pushes or pulls.
 - Claude Code or Codex may be launched for setup population; interactive sync
   can use Claude Code, Codex, or OpenCode, and prompt-only fallback works with
   any file-reading agent.
 - A local browser connects only to the loopback Project Hub and exchanges a one-use bootstrap token for a private session.
-- **posthog-node** — optional anonymous CLI telemetry; disabled for the development repository and by `DO_NOT_TRACK=1` or `MEX_TELEMETRY=0`.
+- **PostHog ingestion** — optional pseudonymous CLI/Hub events share one random installation UUID. A bounded read-only configuration snapshot can add the existing scaffold UUID for shared-project estimates and known configured AI-tool names; it never identifies the invoking agent or creates project identity. Names, remotes, paths, content, queries, and contact details remain excluded. A bounded per-user outbox and cancellable Node HTTP transport replace the SDK. Development checkouts and opt-out controls disable collection/delivery; see `TELEMETRY.md`.
 
 <!-- mex:entity
 id: mx_01M1M0CJ1E1X7BW1Q7PMGPVCRC

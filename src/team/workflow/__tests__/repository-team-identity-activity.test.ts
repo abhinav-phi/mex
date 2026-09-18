@@ -48,6 +48,46 @@ afterEach(() => {
 });
 
 describe("RepositoryTeamWorkflowPort identity and Activity contract", () => {
+  it("reactivates the exact inactive Member once and rejects a stale reviewed revision", async () => {
+    const root = temporaryRoot();
+    const git = fakeGit();
+    const repository = new MemberRepository(root);
+    const member = await repository.create({ id: MEMBER_IDS[0], displayName: "Ada", gitAliases: [{ name: "Ada", email: "ada@example.test" }], active: false });
+    const service = port(root, git, { eventIds: [EVENT_IDS[0], EVENT_IDS[1]] });
+    const command = (revision: string, operationId: string): TeamIdentityActivityCommand => ({ operationId, action: { kind: "member.reactivate", memberId: member.ref.id }, expectedRevisions: [{ target: { kind: "artifact", path: member.sourcePath }, revision }] });
+    const stale = await service.previewIdentityActivity(command(member.revision, "reactivate_stale"));
+    expect((await repository.get(member.ref.id))?.active).toBe(false);
+    const changed = await repository.update(member.ref.id, { displayName: "Ada Lovelace" }, member.revision);
+    await expect(service.applyIdentityActivity(stale)).rejects.toMatchObject({ problem: { code: "REVISION_CONFLICT" } });
+    expect(activityFiles(root)).toEqual([]);
+    const reviewed = await service.previewIdentityActivity(command(changed.revision, "reactivate_current"));
+    const applied = await port(root, git, { pid: 203 }).applyIdentityActivity(JSON.parse(JSON.stringify(reviewed)));
+    expect(applied).toMatchObject({ artifacts: [{ active: true, displayName: "Ada Lovelace", gitAliases: member.gitAliases }], events: [{ action: "member.reactivated" }] });
+    expect((await service.applyIdentityActivity(reviewed)).idempotentReplay).toBe(true);
+    expect(activityFiles(root)).toHaveLength(1);
+    const current = (await repository.get(member.ref.id))!;
+    await expect(service.previewIdentityActivity(command(current.revision, "reactivate_again"))).rejects.toMatchObject({ problem: { code: "VALIDATION_FAILED" } });
+  });
+
+  it("recovers reactivation of an externally deactivated local selection after canonical publication", async () => {
+    const root = temporaryRoot();
+    const git = fakeGit();
+    const repository = new MemberRepository(root);
+    const member = await repository.create({ id: MEMBER_IDS[0], displayName: "Ada", gitAliases: [], active: true });
+    const service = port(root, git, { eventIds: [EVENT_IDS[0]] });
+    const selection = await service.previewIdentityActivity({ operationId: "reactivate_selection", action: { kind: "member.select", memberId: member.ref.id }, expectedRevisions: [{ target: { kind: "artifact", path: member.sourcePath }, revision: member.revision }, { target: { kind: "local", namespace: "member-selection", id: "current" }, revision: null }] });
+    await service.applyIdentityActivity(selection);
+    const inactive = await repository.update(member.ref.id, { active: false }, member.revision);
+    const reviewed = await service.previewIdentityActivity({ operationId: "reactivate_selected_inactive", action: { kind: "member.reactivate", memberId: member.ref.id }, expectedRevisions: [{ target: { kind: "artifact", path: member.sourcePath }, revision: inactive.revision }] });
+    const crashing = port(root, git, { pid: 210, phaseHook(boundary) { if (boundary === "after-canonical-publication") throw new WorkflowPhaseInterruption(boundary); } });
+    await expect(crashing.applyIdentityActivity(reviewed)).rejects.toBeInstanceOf(WorkflowPhaseInterruption);
+    const restarted = port(root, git, { pid: 211 });
+    expect((await restarted.applyIdentityActivity(reviewed)).events).toMatchObject([{ action: "member.reactivated" }]);
+    expect((await restarted.getCurrentActor()).actor).toMatchObject({ kind: "member", memberId: member.ref.id });
+    expect((await restarted.applyIdentityActivity(reviewed)).idempotentReplay).toBe(true);
+    expect(activityFiles(root)).toHaveLength(1);
+  });
+
   it("prepares only the signer and applies the serialized envelope in a fresh service", async () => {
     const root = temporaryRoot();
     const git = fakeGit();

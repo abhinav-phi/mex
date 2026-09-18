@@ -211,7 +211,7 @@ function relayMatchesView(
     return relay.sender.kind === "member" && relay.sender.memberId === currentMemberId;
   }
   return relay.state === "published"
-    ? relay.recipients.some((recipient) => (
+    ? relay.audience === "team" || relay.recipients.some((recipient) => (
         recipient.kind === "member" && recipient.memberId === currentMemberId
       ))
     : relay.acknowledgedBy?.kind === "member"
@@ -341,7 +341,7 @@ function relayQueueDescription(
   if (view === "mine") return `From ${actorLabel(relay.sender)}`;
   if (view === "sent") {
     return relay.state === "published"
-      ? `For ${relay.recipients.map(actorLabel).join(", ")}`
+      ? relay.audience === "team" ? "Open to team" : `For ${relay.recipients.map(actorLabel).join(", ")}`
       : `Claimed by ${actorLabel(relay.acknowledgedBy)}`;
   }
   return relay.state === "published"
@@ -609,6 +609,7 @@ export function RelayPage() {
     capabilities?: CapabilitiesResponse;
   }>();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [membersRequested, setMembersRequested] = useState(false);
   const [composer, setComposer] = useState<RelayDraftDetail | null | undefined>(undefined);
   const [review, setReview] = useState<RelayReviewSource | null>(null);
   const [preparingPublish, setPreparingPublish] = useState<string | null>(null);
@@ -688,15 +689,15 @@ export function RelayPage() {
     queryFn: ({ pageParam }) => api.getMembers({ active: true, limit: 100, ...(pageParam ? { cursor: pageParam } : {}) }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage, pages) => boundedNextCursor(lastPage.nextCursor, pages.length),
-    enabled: Boolean(readAvailable && composer !== undefined),
+    enabled: Boolean(readAvailable && composer !== undefined && membersRequested),
     retry: false,
   });
   const memberPageCount = members.data?.pages.length ?? 0;
   useEffect(() => {
-    if (members.hasNextPage && !members.isFetchingNextPage && memberPageCount < MAX_WORKBENCH_PAGES) {
+    if (composer !== undefined && membersRequested && members.hasNextPage && !members.isFetchingNextPage && memberPageCount < MAX_WORKBENCH_PAGES) {
       void members.fetchNextPage();
     }
-  }, [memberPageCount, members.fetchNextPage, members.hasNextPage, members.isFetchingNextPage]);
+  }, [composer, membersRequested, memberPageCount, members.fetchNextPage, members.hasNextPage, members.isFetchingNextPage]);
   const activeMembers = useMemo(() => {
     const items = new Map<string, TeamMember>();
     for (const page of members.data?.pages ?? []) for (const member of page.items) items.set(member.id, member);
@@ -882,7 +883,7 @@ export function RelayPage() {
   ]);
 
   const rememberTrigger = (element: HTMLButtonElement) => { trigger.current = element; };
-  const openComposer = (draft: RelayDraftDetail | null, event: MouseEvent<HTMLButtonElement>) => { rememberTrigger(event.currentTarget); setComposer(draft); };
+  const openComposer = (draft: RelayDraftDetail | null, event: MouseEvent<HTMLButtonElement>) => { rememberTrigger(event.currentTarget); setMembersRequested(draft !== null && draft.input.audience !== "team"); setComposer(draft); };
   const startReview = (source: RelayReviewSource, element: HTMLButtonElement) => { rememberTrigger(element); setReview(source); };
   const onApplied = async (result: RelayOperationApplyResponse) => {
     const appliedKind = review?.kind ?? "save";
@@ -914,6 +915,9 @@ export function RelayPage() {
       setSelectNextAfterClose(true);
     } else if (appliedKind === "delete") {
       next.delete("draft");
+    } else {
+      const savedId = result.localChanges.find((change) => change.namespace === "relay-draft" && change.afterRevision !== null)?.id;
+      if (savedId) { next.set("view", "drafts"); next.set("draft", savedId); next.delete("relay"); }
     }
     setSearchParams(next, { replace: true });
     const canonicalNotice = appliedKind === "publish" || appliedKind === "acknowledge" || appliedKind === "close"
@@ -975,7 +979,7 @@ export function RelayPage() {
   const eligibleToTake = Boolean(
     selectedRelay?.state === "published"
     && currentMemberActive
-    && selectedRelay.recipients.some((recipient) => recipient.kind === "member" && recipient.memberId === currentMemberId),
+    && (selectedRelay.audience === "team" || selectedRelay.recipients.some((recipient) => recipient.kind === "member" && recipient.memberId === currentMemberId)),
   );
   const canAcknowledge = lifecycleAvailable && eligibleToTake;
   const canClose = Boolean(
@@ -1004,18 +1008,21 @@ export function RelayPage() {
             : lifecycleDependencies.isError
               ? "The sender or claimant could not be checked. Refresh before trying to close this handoff."
               : !senderActive
-                ? `${actorLabel(selectedRelay.sender)} is no longer an active team Member, so this handoff cannot be closed.`
+                ? `${actorLabel(selectedRelay.sender)} is no longer an active team Member. Reactivate the existing Member in Team to recover this handoff.`
                 : !ownerActive
-                  ? `${actorLabel(selectedRelay.acknowledgedBy)} is no longer an active team Member, so this handoff cannot be closed.`
+                  ? `${actorLabel(selectedRelay.acknowledgedBy)} is no longer an active team Member. Reactivate the existing Member in Team to recover this handoff.`
                   : lifecycleUnavailableReason;
 
   const publishAvailable = capabilities?.relays.publish.availability === "available";
-  const draftPublishReady = Boolean(currentMemberActive && publishAvailable);
+  const namedDraftMissingRecipients = draftDetail.data !== undefined && draftDetail.data.input.audience !== "team" && draftDetail.data.input.recipients.length === 0;
+  const draftPublishReady = Boolean(currentMemberActive && publishAvailable && !namedDraftMissingRecipients);
   const draftPublishRecovery = !currentMemberActive
     ? "Select an active current Member before publishing."
     : !publishAvailable
       ? capabilities?.relays.publish.reason ?? "Relay publication is unavailable in this Hub process."
-      : null;
+      : namedDraftMissingRecipients
+        ? "Choose named Members or open this handoff to the team before publishing."
+        : null;
   const draftMutationCapability: CapabilityStatus = capabilities?.relays.draftMutation ?? {
     availability: "unavailable",
     reason: "Local Relay draft changes are unavailable in this Hub process.",
@@ -1042,13 +1049,14 @@ export function RelayPage() {
           <CardDescription>Private handoff draft</CardDescription>
           <CardTitle><h2>{draftDetail.data.summary}</h2></CardTitle>
         </div>
-        <CardAction><Badge variant="secondary">On this device</Badge></CardAction>
+        <CardAction><Badge variant="secondary">Checkout-local draft</Badge></CardAction>
       </CardHeader>
       <CardContent className={styles.detailContent}>
         <dl className={styles.humanMeta}>
-          <div><dt>Recipients</dt><dd>{draftDetail.data.recipients.map(actorLabel).join(", ")}</dd></div>
+          <div><dt>Audience</dt><dd>{draftDetail.data.audience === "team" ? "Open to team" : draftDetail.data.recipients.map(actorLabel).join(", ") || "Named Members · choose before publishing"}</dd></div>
           <div><dt>Updated</dt><dd>{formatDate(draftDetail.data.updatedAt)}</dd></div>
         </dl>
+        <p className={styles.sharingState}>Saved only in this checkout. Nothing is shared until you publish and share through Git.</p>
         <div className={styles.actions} role="group" aria-label="Draft actions">
           <Button disabled={!draftPublishReady || preparingPublish === draftDetail.data.id} onClick={(event) => void publish(draftDetail.data, event)} size="sm">
             <Send data-icon="inline-start" /> {preparingPublish === draftDetail.data.id ? "Checking…" : "Publish handoff"}
@@ -1096,10 +1104,14 @@ export function RelayPage() {
       <CardContent className={styles.detailContent}>
         <dl className={styles.humanMeta}>
           <div><dt>Sender</dt><dd>{actorLabel(relayDetail.data.sender)}</dd></div>
-          <div><dt>Recipients</dt><dd>{relayDetail.data.recipients.map(actorLabel).join(", ")}</dd></div>
+          <div><dt>Audience</dt><dd>{relayDetail.data.audience === "team" ? "Open to team" : relayDetail.data.recipients.map(actorLabel).join(", ")}</dd></div>
           {relayDetail.data.acknowledgedBy ? <div><dt>Claimant</dt><dd>{actorLabel(relayDetail.data.acknowledgedBy)}</dd></div> : null}
           {relayRelevantTime(relayDetail.data) ? <div><dt>{relayDetail.data.state === "closed" ? "Closed" : relayDetail.data.state === "acknowledged" ? "Taken" : "Published"}</dt><dd>{relayRelevantTime(relayDetail.data)}</dd></div> : null}
         </dl>
+        <p className={styles.sharingState}><strong>Published working-tree artifact.</strong> Git distributes this handoff. MEX has not verified commit, push, or receipt by another teammate.</p>
+        {relayDetail.data.state === "published" ? <p className={styles.eligibility}>{relayDetail.data.audience === "team"
+          ? "Any active Member can take this handoff, including teammates who join later."
+          : "Only the named recipients can take this handoff, while their Member records are active."}</p> : null}
         {relayDetail.data.state === "published" ? (
           eligibleToTake ? (
             <div className={styles.actionPanel}>
@@ -1112,8 +1124,8 @@ export function RelayPage() {
             <div className={styles.actionExplanation}>
               <UserCheck aria-hidden="true" />
               <div>
-                <strong>This handoff is addressed to {relayDetail.data.recipients.map(actorLabel).join(", ")}.</strong>
-                <p>A listed recipient can take it after MEX resolves them to an active team identity. The first synchronized claim records one sole claimant.</p>
+                <strong>{relayDetail.data.audience === "team" ? "This handoff is open to the team." : `This handoff is addressed to ${relayDetail.data.recipients.map(actorLabel).join(", ")}.`}</strong>
+                <p>MEX must resolve an eligible, active team identity before taking it. The first synchronized claim records one sole claimant.</p>
                 {!currentMemberActive ? <Link to="/members">Open Members to choose your identity</Link> : null}
               </div>
             </div>
@@ -1300,6 +1312,7 @@ export function RelayPage() {
             onApplied={onApplied}
             onClose={() => setComposer(undefined)}
             onRetryMembers={() => void members.refetch()}
+            onAudienceChange={(audience) => setMembersRequested(audience === "members")}
           />
         </Suspense>
       ) : null}

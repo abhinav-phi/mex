@@ -35,6 +35,7 @@ import {
 } from "./hub.mjs";
 import { candidateRuntimeBudgets, evaluateRuntimeBudgets } from "./runtime-budgets.mjs";
 import { round, summarize } from "./statistics.mjs";
+import { PROCESS_MEASUREMENT } from "./process-tree.mjs";
 
 const scriptRoot = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(scriptRoot, "../..");
@@ -75,6 +76,8 @@ const report = {
   environment: environmentRecord(budgets.environment, enforceRuntime),
   configuration: {
     fixtureProfiles: RELEASE_FIXTURE_PROFILES,
+    processMeasurement: PROCESS_MEASUREMENT,
+    maintenanceObservation: "job-event-stream",
     samples: budgets.samples,
     runtimeBudgetsEnforced: enforceRuntime,
     assetBudgetsEnforced: true,
@@ -226,6 +229,7 @@ function summarizeProfile(input) {
   const maintenance = Object.fromEntries(Object.entries(input.maintenance).map(([kind, samples]) => [kind, {
     elapsedMs: summarize(samples.elapsedMs, input.timingSamples),
     peakRssBytes: summarize(samples.peakRssBytes, input.memorySamples),
+    cpuMs: summarize(samples.cpuMs, input.timingSamples),
   }]));
   const browserHeap = input.browser === null ? null : {
     routes: Object.fromEntries(Object.entries(input.browser.measurements).map(([route, values]) => [

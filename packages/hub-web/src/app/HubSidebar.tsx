@@ -24,13 +24,14 @@ import {
   type NavigationItem,
 } from "./navigation";
 import { SidebarTooltip } from "./SidebarTooltip";
+import { useHubOnboarding } from "./HubOnboarding";
 
 type ExpansionState = Record<NavigationGroupId, boolean>;
 
 const LOCALITY_EXPLANATION = "MEX runs on this device. Canonical team records are shared when committed and pushed; drafts and indexes remain local to this checkout.";
 
 const countLabels: Record<NavigationCountSource, (count: number) => string> = {
-  inbox: (count) => `${count} proposals awaiting team review.`,
+  inbox: (count) => `${count} proposals for team review.`,
   relays: (count) => `${count} open Relays for you.`,
   "active-jobs": (count) => `${count} active system operations.`,
 };
@@ -51,7 +52,6 @@ function initialExpansion(pathname: string): ExpansionState {
   }), {
     "project-memory": false,
     teamwork: false,
-    "coming-soon": false,
     system: false,
   });
 }
@@ -129,8 +129,6 @@ function NavigationLink({
         <Kbd aria-hidden="true">/</Kbd>
       ) : runtimeUnavailable ? (
         <Badge variant="outline">Unavailable</Badge>
-      ) : item.availability.kind === "coming-soon" ? (
-        <Badge variant="secondary">Soon</Badge>
       ) : item.countSource ? (
         countBadge(itemCount(home, item), item.countSource)
       ) : null}
@@ -146,6 +144,7 @@ function NavigationLink({
         launcher ? styles.searchLauncher : styles.navLink,
         isActive && (launcher ? styles.searchLauncherActive : styles.navLinkActive),
       )}
+      data-onboarding={item.id}
       to={item.path}
     >
       {contents}
@@ -173,6 +172,7 @@ function NavigationList({
       {items.map((item) => (
         <li key={item.id}>
           <NavigationLink capabilities={capabilities} home={home} item={item} />
+          {item.id === "team" ? <small className={styles.identityText}>{identityText(home)}</small> : null}
         </li>
       ))}
     </ul>
@@ -199,7 +199,7 @@ function DisclosureGroup({
   const count = groupCount(capabilities, group, home);
 
   return (
-    <section className={styles.navGroup} aria-labelledby={labelId}>
+    <section aria-labelledby={labelId} className={styles.navGroup} data-onboarding={`group-${group.id}`}>
       <h2 className={styles.groupHeading}>
         <Button
           aria-controls={contentId}
@@ -235,9 +235,14 @@ export function HubSidebar({
   home?: HomeResponse;
 }) {
   const location = useLocation();
+  const onboarding = useHubOnboarding();
   const [expanded, setExpanded] = useState<ExpansionState>(() => initialExpansion(location.pathname));
   const previousPath = useRef(location.pathname);
   const currentGroup = activeGroup(location.pathname);
+  const revealed: ExpansionState = {
+    ...expanded,
+    ...Object.fromEntries((onboarding?.revealGroups ?? []).map((id) => [id, true])),
+  };
   const launcher = navigationItemsForPlacement("launcher")[0];
   const topLevelItems = navigationItemsForPlacement("primary");
   const footerItems = navigationItemsForPlacement("footer");
@@ -259,9 +264,9 @@ export function HubSidebar({
   }
 
   return (
-    <aside className={styles.sidebar} aria-label="Project Hub navigation">
+    <aside aria-label="Project Hub navigation" className={styles.sidebar} data-onboarding="sidebar">
       <div className={styles.sidebarHeader}>
-        <div className={styles.brand}>
+        <div className={styles.brand} data-onboarding="brand">
           <span className={styles.brandMark} aria-hidden="true">
             <img alt="" height="32" src={mexMascot} width="32" />
           </span>
@@ -282,7 +287,7 @@ export function HubSidebar({
             <DisclosureGroup
               active={group.id === currentGroup}
               capabilities={capabilities}
-              expanded={expanded[group.id]}
+              expanded={revealed[group.id]}
               group={group}
               home={home}
               key={group.id}
@@ -307,7 +312,7 @@ export function HubSidebar({
             <DisclosureGroup
               active={group.id === currentGroup}
               capabilities={capabilities}
-              expanded={expanded[group.id]}
+              expanded={revealed[group.id]}
               group={group}
               home={home}
               key={group.id}
@@ -322,6 +327,7 @@ export function HubSidebar({
               aria-description={LOCALITY_EXPLANATION}
               aria-label="Runs locally. Shared records use Git."
               className={styles.locality}
+              data-onboarding="locality"
               role="note"
               tabIndex={0}
             >

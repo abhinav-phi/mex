@@ -438,6 +438,8 @@ export function buildTypeScriptExtraction(
   rootDir: string,
   candidateFiles?: readonly string[],
   options: CompilerExtractionOptions = {},
+  /** Internal construction observer; no source identity crosses this seam. */
+  onFileCaptured?: (completed: number) => void,
 ): CompilerExtractionResult {
   const root = resolve(rootDir);
   const inputs = new CompilerInputLedger(root, options);
@@ -524,6 +526,7 @@ export function buildTypeScriptExtraction(
         bindings,
         captured: captureReferences(context, bindings),
       });
+      onFileCaptured?.(capturedByFile.size);
     }
   };
 

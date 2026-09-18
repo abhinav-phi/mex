@@ -12,12 +12,12 @@ edges:
     condition: "when changing the graph data plane or its consumers"
   - target: "context/conventions.md"
     condition: "when verifying a graph implementation change"
-last_updated: 2026-09-07
+last_updated: 2026-09-09
 mex:
   id: mx_01M1M0CJP81C590FCKTSN5HA3Q
   type: pattern
   status: promoted
-  revision: 3
+  revision: 4
   title: safe-graph-snapshot-evolution
   grounds_to:
     - node: function:57e8797d70bfb28e3f0bb1d6e065a84b
@@ -82,6 +82,17 @@ only to explicit maintenance workflows.
 10. Normalize evaluator provenance field-by-field. Exclude only explicitly
     operational snapshot fields; malformed or future snapshot shapes must fail
     closed instead of disappearing from the semantic graph hash.
+11. Use `upsertFingerprintsInOwnedTransaction(db, entries)` only where the caller
+    owns complete publication rollback and lets every failure reach it. Keep
+    `FingerprintStore.upsert` and `upsertMany` independently atomic even if an
+    enclosing caller catches a failure and continues. Preserve duplicate
+    last-entry behavior, stable references, aliases, constraints, and untouched
+    rows. Graph publication never accepts a new Markdown grounding baseline.
+12. Reuse only a fixed, owned set of synchronous storage statements on their
+    original connection. Keep dynamic queries and caller-owned iterators
+    independent; a generic global SQL cache can reuse an active iterator or
+    retain closed databases. Fingerprint point reads use weak connection
+    ownership; GraphStore hot statements belong to the store instance.
 
 ## Gotchas
 
@@ -128,9 +139,70 @@ only to explicit maintenance workflows.
   enter the corpus policy hash, or changing it leaves a stale index silently
   describing files that are no longer in the corpus. Hash to the existing
   constant when nothing is configured, so existing indexes stay valid.
+- A freshness input is not one kind of thing. Engine identity — schema,
+  compiler, extractor, resolver, grammar, corpus policy — says the store was
+  written by code that is gone, and must fail closed. Config content says the
+  build inputs moved under a store that still describes its source exactly.
+  Folding both into one hash means the second is served the punishment of the
+  first, and a dependency bump takes every structural read with it.
+- Prove identity by reconstruction, not by a new stored field. Re-folding the
+  current inputs with a store's recorded config hash classifies stores written
+  before the check existed — which are exactly the stores that need it — and
+  covers inputs no snapshot records at all.
+- Separate the race check from the freshness check inside one validation. Two
+  observations disagreeing with each other is a race; either of them disagreeing
+  with the stored snapshot is the question the caller already answered. Mixing
+  them reports a race that did not happen and refuses a read that was safe.
+- A degraded answer must say which half of itself is degraded. Definitions,
+  containment and verified source bytes survive a config change; anything
+  reached by following an edge does not. Labelling everything is honest but
+  wastes a trustworthy answer; labelling nothing is a lie.
+- Commit output under the class it was labelled with. If the store changes class
+  between opening and output, discard the response rather than relabelling it —
+  the records were built under a claim they no longer earn.
+- Do not unify two gates by giving both the stricter one. Scope tolerates
+  drifted source because it re-admits a moved file as text-only evidence; the
+  targeted commands cannot, because they return exact node coordinates. One
+  vocabulary and one classifier is the unification; one tolerance is a
+  regression wearing its clothes.
+- `degraded` is not `unusable`, and conflating them costs a repository its
+  graph twice over. A candidate whose only fault is a file the policy skipped
+  must publish, or the skip path produces a candidate the publish gate throws
+  away; a store with a partial parse must read, or one unparseable file answers
+  nothing. Enumerate which shortfalls are known, bounded and reportable, and
+  admit exactly those.
+- Adding a diagnostic code is half the change. Every allowlist that enumerates
+  codes — publication, repair, refusal ranking — has to learn it in the same
+  commit, or the new code silently means "refuse".
+- Serving around a gap requires the gap's *complete* extent. Excluding drifted
+  files is only safe while the drifted list is exhaustive, so bind it to the
+  ceiling that truncates the list and refuse past it. A partial exclusion set is
+  worse than refusing outright.
+- Distinguish out-of-date from incomplete when labelling. Drifted config makes
+  resolved edges untrustworthy; an unfinished parse makes the answer smaller
+  while everything in it stays true. One label for both teaches the reader to
+  ignore the label.
+- Hash a config input by what it changes, not by its bytes — and fail towards
+  over-invalidation. A version bump or a reindent invalidating an index is
+  noise; a resolution-affecting field missing from the projection is a stale
+  index reading as current with no label at all.
+- A re-resolved path comparison is a name check, not an identity check. On a
+  case-insensitive volume the same file can come back spelled differently — a
+  path routed through the TypeScript compiler host arrives lowercased — and a
+  byte comparison then rejects a file whose device, inode, size and timestamps
+  all match.
 - Wall-clock status timings vary by machine and process-start overhead. Keep
   the benchmark non-gating, record its environment, and protect correctness
   with deterministic race, non-mutation, and bounded-work tests.
+- An active outer transaction does not establish rollback ownership. Omitting
+  the nested fingerprint savepoint is safe only for the explicit full-publisher
+  path. A failed multi-value bucket statement may have written a partial prefix;
+  standalone writes must restore the entire batch before returning an error.
+- Construction in a child process does not transfer the parent's maintenance
+  lease or publication authority. Wait for child `close` before candidate or
+  workspace cleanup and recheck directory identity, including full-width
+  device/inode values. A parent-lifetime pipe can stop a busy child after parent
+  death; it cannot run cleanup in a parent killed by `SIGKILL`.
 
 ## Verify
 
@@ -145,6 +217,11 @@ only to explicit maintenance workflows.
 - [ ] Source/config symlink escape, retarget, atomic replacement, and ABA tests
       preserve the prior snapshot.
 - [ ] Failed parse/stage/publication tests preserve prior facts and metadata.
+- [ ] Fingerprint foreign-key and partial bucket failures restore complete
+      batches when caught inside an outer transaction; publisher failures roll
+      back all graph facts. Duplicate/ref/alias output remains identical.
+- [ ] Reused statements remain correct after rollback and while independent
+      iterators are active; closing one connection never affects another.
 - [ ] Candidate replacement, candidate WAL, rollback, maintenance-lock, and
       first-publication failure tests leave either the prior graph or no graph.
 - [ ] Ordinary check, doctor, dashboard, and status paths do not change graph
@@ -165,6 +242,12 @@ test fails, verify which layer re-read the filesystem after secure discovery;
 fix that boundary instead of adding timing delays.
 
 ## Update Scaffold
+
+The 2026-09-09 update records the owned-transaction and statement-lifetime
+contracts from the branch implementation. Existing `grounds_to` fingerprints and
+`bodyHash` values are retained unchanged; this upkeep does not authorize baseline
+renewal. See `docs/design/code-graph-performance-implementation.md` for evidence
+and remaining process/memory limits.
 
 - [ ] Update `.mex/ROUTER.md` when freshness, refresh, or recovery capabilities
       move from "Not Built" to "Working".

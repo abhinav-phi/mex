@@ -55,6 +55,8 @@ import {
   WikiEntityIdSchema,
   WikiEntityListRequestSchema,
   WikiEntityListResponseSchema,
+  WikiGraphResponseSchema,
+  WikiGroundedCodeResponseSchema,
   WikiRelationsRequestSchema,
 } from "./index.js";
 
@@ -537,8 +539,8 @@ describe("Hub API contracts", () => {
       expectedRevisions: [memberTarget, draftTarget],
     };
     expect(RelayOperationPreviewRequestSchema.parse(publish)).toEqual(publish);
+    expect(RelayOperationPreviewRequestSchema.safeParse({ ...publish, expectedRevisions: [draftTarget] }).success).toBe(true);
     for (const expectedRevisions of [
-      [draftTarget],
       [memberTarget],
       [draftTarget, memberTarget, {
         target: { kind: "artifact" as const, path: "README.md" },
@@ -1260,6 +1262,28 @@ describe("Hub API contracts", () => {
       truncated: false,
     };
     expect(WikiEntityListResponseSchema.safeParse(page).success).toBe(true);
+    const graph = {
+      indexedRevision: page.indexedRevision, observedAt: page.observedAt,
+      nodes: [summary], relations: [],
+      coverage: { nodeLimit: 100, relationLimit: 500, nodesTruncated: false, relationsTruncated: false },
+    };
+    expect(WikiGraphResponseSchema.safeParse(graph).success).toBe(true);
+    expect(WikiGraphResponseSchema.safeParse({ ...graph, nodes: [summary, summary] }).success).toBe(false);
+    expect(WikiGraphResponseSchema.safeParse({ ...graph, nodes: Array.from({ length: 101 }, (_, index) => ({ ...summary, id: `mx_${String(index).padStart(26, "0")}` })) }).success).toBe(false);
+    const relation = { type: "related_to", source: { id, kind: "architecture", title: null }, target: { id, kind: "architecture", title: null }, note: null };
+    expect(WikiGraphResponseSchema.safeParse({ ...graph, relations: Array(501).fill(relation) }).success).toBe(false);
+    expect(WikiGraphResponseSchema.safeParse({ ...graph, relations: [{ ...relation, target: { ...relation.target, id: "mx_01K4FAM7W8N9R3T5Y6Q2ZBCHJE" } }] }).success).toBe(false);
+    const code = {
+      indexedRevision: page.indexedRevision, observedAt: page.observedAt, entityId: id,
+      graphRevision: null, groundings: [{ requestedNode: "function:queue", resolvedNode: null, health: "unverified", symbol: null }], truncated: false,
+    };
+    expect(WikiGroundedCodeResponseSchema.safeParse(code).success).toBe(true);
+    expect(WikiGroundedCodeResponseSchema.safeParse({ ...code, groundings: Array(51).fill(code.groundings[0]) }).success).toBe(false);
+    const symbol = { id: "function:queue", symbolKind: "function", name: "queue", qualifiedName: "queue", language: "typescript", path: "src/queue.ts", startLine: 1, endLine: 4, route: "/code/symbols/function%3Aqueue" };
+    const resolvedCode = { ...code, graphRevision: "c".repeat(64), groundings: [{ requestedNode: "function:queue", resolvedNode: "function:queue", health: "fresh", symbol }] };
+    expect(WikiGroundedCodeResponseSchema.safeParse(resolvedCode).success).toBe(true);
+    expect(WikiGroundedCodeResponseSchema.safeParse({ ...resolvedCode, graphRevision: null }).success).toBe(false);
+    expect(WikiGroundedCodeResponseSchema.safeParse({ ...resolvedCode, groundings: [{ ...resolvedCode.groundings[0], resolvedNode: "function:other" }] }).success).toBe(false);
     expect(CodeKnowledgeResponseSchema.safeParse({
       ...page,
       items: [{ entity: summary, matchedNodes: ["function:queue"] }],

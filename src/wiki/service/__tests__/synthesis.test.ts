@@ -25,6 +25,7 @@ import {
 } from "../synthesis.js";
 import { wikiRebuildIndex } from "../write.js";
 import { parseWikiMarkdown } from "../../markdown/contract.js";
+import { readAuditLog } from "../../operations/audit.js";
 import type { GroundingGraph, SynthesisGraph } from "../../grounding/adapter.js";
 
 const ISSUE = "function:a3f8c21d9e4b7f60a1c2d3e4f5061728";
@@ -307,11 +308,15 @@ describe("wiki propose — stage A", () => {
     const parsed = parseWikiMarkdown({ path: "context/architecture.md", text: readFileSync(path, "utf-8") });
     expect(parsed.diagnostics).toEqual([]);
     expect(parsed.entities).toHaveLength(2);
+    const completed = readAuditLog(scaffoldRoot).entries.filter((entry) => entry.phase === "complete");
     for (const entry of parsed.entities) {
       expect(entry.entity.status).toBe("promoted");
       // Every grounding came from the graph, so every one carries a body hash.
       expect(entry.entity.groundsTo[0]!.bodyHash).toBe(BODY_HASH);
       expect((entry.entity.metadata as { synthesis: { confidence: number } }).synthesis.confidence).toBeGreaterThan(0.8);
+      const audit = completed.find((record) => record.createdIds.includes(entry.entity.id));
+      expect(audit?.actor).toEqual({ kind: "agent", id: "synthesis" });
+      expect(entry.entity.provenance).toEqual({ createdBy: audit!.actor, createdAt: audit!.timestamp });
     }
     // And the prose that was there is still there.
     expect(readFileSync(path, "utf-8")).toContain("How this is shaped.");

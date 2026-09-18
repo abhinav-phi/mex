@@ -14,12 +14,12 @@ edges:
     condition: "when the value also lives in the graph database"
   - target: "context/conventions.md"
     condition: "when verifying the change"
-last_updated: 2026-09-03
+last_updated: 2026-09-07
 mex:
   id: mx_01M1M0CJK5ZTSHCDDWB3NTSEBF
   type: pattern
   status: promoted
-  revision: 4
+  revision: 5
   title: durable-change-signal
   grounds_to:
     - node: function:fa9a6935ad14990f545c7802e4ecbc0a
@@ -73,10 +73,12 @@ Two distinct kinds of value, and the difference decides where each one lives:
    scaffold in the world lacks it, and a required field turns each of them into
    a parse error. Mirror the wiki lane's key name and placement so both writers
    produce one shape rather than two conventions.
-3. Populate it at every write site, from a value the graph produced. The setup
-   and sync path converges through
+3. Populate it during initial capture or explicitly accepted renewal, from a
+   value the graph produced. The setup and sync path converges through
    [`captureGroundingBaselines()`](mex://function:fa9a6935ad14990f545c7802e4ecbc0a).
-   Never let a caller supply one — a hash an agent can invent is not evidence.
+   A reviewed replacement must match the exact current graph fingerprint/body
+   hash and the reviewed document bytes. A hash an agent can invent is not
+   evidence, and a successful agent exit is not acceptance.
 4. **Change the readers in the same commit.** A field nothing reads is inert,
    and a fix that ships only the write half looks complete and does nothing.
    Grep for every consumer of the old source of truth before you start.
@@ -91,10 +93,15 @@ Two distinct kinds of value, and the difference decides where each one lives:
    canonical value**, not a second store of a fact. Otherwise the next reader
    deletes it as a duplicate — and it often carries something Markdown has no
    business holding, such as the body text a drift review needs for a diff.
-7. Backfill by default; re-baseline only through an explicitly authorized sync
-   or when a caller is deliberately re-pointing the record at current code. A
-   value that merely **differs** is the finding; overwriting it erases the
-   evidence and reports fresh on the next run.
+7. Initial capture may establish a missing baseline. Legacy backfill must use
+   the prior cached baseline when one exists, preserving the old body as well
+   as its hash. Renew only the specific entries accepted after a concrete
+   review; unrelated groundings must remain untouched. A value that merely
+   **differs** is the finding, not permission to replace it.
+8. Keep pointer repair separate from accepting behavior. MOVED repairs carry
+   forward earlier change evidence, and the reader compares that evidence to
+   the resolved node. A rename may therefore still need review. Do not erase
+   that review signal merely because identity reconciliation succeeded.
 
 ## Verify
 
@@ -102,6 +109,12 @@ Two distinct kinds of value, and the difference decides where each one lives:
   still fire. This is the whole point, and it is the only test that proves it.
 - A record written before the field existed must still parse, still validate,
   still warn, and still behave exactly as it did against a live index.
+- A no-op agent that exits successfully must preserve existing hashes,
+  fingerprints, cached old code, and drift. Include literal-only code changes,
+  which can leave fingerprints identical.
+- A declined or stale review must preserve the baseline. An accepted review
+  must affect only its selected grounding, with document and source facts
+  revalidated before publication.
 - Confirm the new tests actually fail on the pre-fix tree. Restore the source
   files from the base commit and re-run; a test that passes both ways is a
   backward-compatibility pin, not a proof of the fix, and should be labelled as

@@ -25,8 +25,9 @@ import type {
   CreateEntryPayload,
 } from "../model/operation.js";
 import { sourceIdentity, type WikiSource } from "../model/source.js";
+import { authoringSourceCollectionFits, validateAuthoringProvenance } from "../model/authoring-evidence.js";
 import type { WikiRelationRef } from "../model/relation.js";
-import type { WikiEntity, WikiLifecycleState } from "../model/entity.js";
+import type { WikiEntity, WikiLifecycleState, WikiProvenance } from "../model/entity.js";
 import type { WikiGrounding } from "../model/grounding.js";
 import { deriveVerifiedGroundings } from "../grounding/provenance.js";
 import type { PatchEdit } from "../markdown/patch.js";
@@ -69,6 +70,8 @@ export interface OperationContext {
   scaffoldRoot: string;
   /** The subject, already located. Null for `create-entry`. */
   located: LocatedEntity | null;
+  /** Explicit operation authority, used only when this writer opted in. */
+  creationProvenance?: WikiProvenance;
   mintId: () => EntityId;
   locate: (path: string) => LocatedFile | null;
   locateEntity: (id: string) => LocatedEntity | null;
@@ -263,6 +266,7 @@ function newEntityFields(id: EntityId, payload: CreateEntryPayload): (readonly [
     ["topics", payload.topics === undefined || payload.topics.length === 0 ? undefined : payload.topics],
     ["relations", payload.relations === undefined || payload.relations.length === 0 ? undefined : payload.relations],
     ["sources", payload.sources === undefined || payload.sources.length === 0 ? undefined : payload.sources],
+    ["provenance", payload.provenance],
     [METADATA_KEYS.groundsTo, payload.groundsTo === undefined || payload.groundsTo.length === 0 ? undefined : payload.groundsTo],
   ];
 }
@@ -284,6 +288,13 @@ function createEntry(context: OperationContext, operation: Extract<WikiOperation
  * two cannot come to disagree about what a well-formed new entity looks like.
  */
 function createInto(context: OperationContext, payload: CreateEntryPayload, id: EntityId): OperationEdits {
+  if (payload.adopt === undefined && payload.provenance === undefined && context.creationProvenance !== undefined) {
+    const validated = validateAuthoringProvenance(context.creationProvenance, { path: "provenance" });
+    if (!validated.ok) {
+      return reject("INVALID_OPERATION_PAYLOAD", "The operation's creation authority must fit the bounded provenance identity and timestamp contract.");
+    }
+    payload = { ...payload, provenance: context.creationProvenance };
+  }
   const file = context.locate(payload.file);
   if (file === null) {
     return reject("WIKI_PARSE_ERROR", `${payload.file} exists but could not be read; refusing to write over it.`);
@@ -525,9 +536,24 @@ export function buildOperationEdits(operation: WikiOperation, context: Operation
 
 function updateEntry(context: OperationContext, operation: Extract<WikiOperation, { type: "update-entry" }>): OperationEdits {
   const located = context.located!;
-  const { title, summary, body } = operation.payload;
+  const { title, summary, body, appendSources } = operation.payload;
   const fields: (readonly [string, unknown])[] = [];
   const extra: PatchEdit[] = [];
+
+  if (appendSources !== undefined && appendSources.length > 0) {
+    const sources = [...located.entity.sources];
+    const existing = new Set(sources.map(sourceIdentity));
+    for (const source of appendSources) {
+      const identity = sourceIdentity(source);
+      if (existing.has(identity)) continue;
+      sources.push(source);
+      existing.add(identity);
+    }
+    if (!authoringSourceCollectionFits(sources)) {
+      return reject("INVALID_OPERATION_PAYLOAD", "Appending evidence would exceed the entity's source count or byte bounds.", located.entity.id);
+    }
+    if (sources.length > located.entity.sources.length) fields.push([METADATA_KEYS.sources, sources]);
+  }
 
   if (summary !== undefined) fields.push([METADATA_KEYS.summary, summary]);
 

@@ -50,7 +50,15 @@ export function readRelayPreviewFile(
   path: string,
   expectedCommand: RelayMutationCommandName,
 ): TeamRelayPreviewEnvelope {
-  const envelope = record(readBoundedJsonFile(path), "Relay preview envelope");
+  return parseRelayPreviewValue(readBoundedJsonFile(path), expectedCommand);
+}
+
+/** Validate an already bounded complete CLI preview wrapper without file I/O. */
+export function parseRelayPreviewValue(
+  value: unknown,
+  expectedCommand: RelayMutationCommandName,
+): TeamRelayPreviewEnvelope {
+  const envelope = record(value, "Relay preview envelope");
   exactKeys(
     envelope,
     ["schemaVersion", "command", "mode", "ok", "data", "diagnostics", "problem"],

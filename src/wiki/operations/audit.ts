@@ -121,12 +121,12 @@ export function assertOperationLogPath(scaffoldRoot: string, path: string): void
 interface OperationLogBinding {
   root: string;
   realRoot: string;
-  rootDev: number;
-  rootIno: number;
+  rootDev: bigint;
+  rootIno: bigint;
   directory: string;
   realDirectory: string;
-  directoryDev: number;
-  directoryIno: number;
+  directoryDev: bigint;
+  directoryIno: bigint;
 }
 
 export interface AppendAuditOptions {
@@ -235,11 +235,11 @@ export function appendAudit(
     const opened = fstatSync(fd, { bigint: true });
     if (!opened.isFile()) throw new OperationLogPathError(path);
     assertOperationLogBinding(binding, path);
-    const current = lstatSync(path);
+    const current = lstatSync(path, { bigint: true });
     if (
       current.isSymbolicLink()
-      || Number(current.dev) !== Number(opened.dev)
-      || Number(current.ino) !== Number(opened.ino)
+      || current.dev !== opened.dev
+      || current.ino !== opened.ino
     ) throw new OperationLogPathError(path);
     const expectedBefore = options.expectedText ?? readFdText(fd, path);
     assertFdText(fd, expectedBefore, path);
@@ -270,10 +270,10 @@ function bindOperationLog(
   createDirectory = true,
 ): OperationLogBinding {
   const root = resolve(scaffoldRoot);
-  const rootLexical = lstatSync(root);
+  const rootLexical = lstatSync(root, { bigint: true });
   if (!rootLexical.isDirectory() || rootLexical.isSymbolicLink()) throw new OperationLogPathError(path);
   const realRoot = realpathSync(root);
-  const rootStats = lstatSync(realRoot);
+  const rootStats = lstatSync(realRoot, { bigint: true });
   const directory = dirname(path);
   assertRootIdentity(root, realRoot, rootStats.dev, rootStats.ino, path);
   if (!existsSync(directory)) {
@@ -283,21 +283,21 @@ function bindOperationLog(
     // its ledger for crash recovery.
     syncDirectory(root);
   }
-  const directoryLexical = lstatSync(directory);
+  const directoryLexical = lstatSync(directory, { bigint: true });
   if (!directoryLexical.isDirectory() || directoryLexical.isSymbolicLink()) throw new OperationLogPathError(path);
   const realDirectory = realpathSync(directory);
   if (!insideRoot(realRoot, realDirectory)) throw new OperationLogPathError(path);
-  const directoryStats = lstatSync(realDirectory);
+  const directoryStats = lstatSync(realDirectory, { bigint: true });
   assertNoFollowOperationLogLeaf(path);
   return {
     root,
     realRoot,
-    rootDev: Number(rootStats.dev),
-    rootIno: Number(rootStats.ino),
+    rootDev: rootStats.dev,
+    rootIno: rootStats.ino,
     directory,
     realDirectory,
-    directoryDev: Number(directoryStats.dev),
-    directoryIno: Number(directoryStats.ino),
+    directoryDev: directoryStats.dev,
+    directoryIno: directoryStats.ino,
   };
 }
 
@@ -307,17 +307,17 @@ function assertOperationLogBinding(binding: OperationLogBinding, path: string): 
   let realDirectory: string;
   let directoryStats;
   try {
-    const lexical = lstatSync(binding.directory);
+    const lexical = lstatSync(binding.directory, { bigint: true });
     if (!lexical.isDirectory() || lexical.isSymbolicLink()) throw new OperationLogPathError(path);
     realDirectory = realpathSync(binding.directory);
-    directoryStats = lstatSync(realDirectory);
+    directoryStats = lstatSync(realDirectory, { bigint: true });
   } catch {
     throw new OperationLogPathError(path);
   }
   if (
     realDirectory !== binding.realDirectory
-    || Number(directoryStats.dev) !== binding.directoryDev
-    || Number(directoryStats.ino) !== binding.directoryIno
+    || directoryStats.dev !== binding.directoryDev
+    || directoryStats.ino !== binding.directoryIno
   ) throw new OperationLogPathError(path);
   assertNoFollowOperationLogLeaf(path);
 }
@@ -325,20 +325,20 @@ function assertOperationLogBinding(binding: OperationLogBinding, path: string): 
 function assertRootIdentity(
   root: string,
   realRoot: string,
-  dev: number | bigint,
-  ino: number | bigint,
+  dev: bigint,
+  ino: bigint,
   path: string,
 ): void {
   try {
-    const lexical = lstatSync(root);
+    const lexical = lstatSync(root, { bigint: true });
     const currentReal = realpathSync(root);
-    const current = lstatSync(currentReal);
+    const current = lstatSync(currentReal, { bigint: true });
     if (
       !lexical.isDirectory()
       || lexical.isSymbolicLink()
       || currentReal !== realRoot
-      || Number(current.dev) !== Number(dev)
-      || Number(current.ino) !== Number(ino)
+      || current.dev !== dev
+      || current.ino !== ino
     ) throw new OperationLogPathError(path);
   } catch (error) {
     if (error instanceof OperationLogPathError) throw error;
@@ -348,7 +348,7 @@ function assertRootIdentity(
 
 function assertNoFollowOperationLogLeaf(path: string): void {
   try {
-    const stats = lstatSync(path);
+    const stats = lstatSync(path, { bigint: true });
     if (!stats.isFile() || stats.isSymbolicLink()) throw new OperationLogPathError(path);
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
@@ -391,13 +391,13 @@ export function restoreOperationLogExact(
     let fd: number | undefined;
     try {
       fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-      const opened = fstatSync(fd);
-      const lexical = lstatSync(path);
+      const opened = fstatSync(fd, { bigint: true });
+      const lexical = lstatSync(path, { bigint: true });
       if (
         !opened.isFile()
         || lexical.isSymbolicLink()
-        || Number(opened.dev) !== Number(lexical.dev)
-        || Number(opened.ino) !== Number(lexical.ino)
+        || opened.dev !== lexical.dev
+        || opened.ino !== lexical.ino
       ) throw new OperationLogPathError(path);
       assertOperationLogBinding(binding, path);
       assertFdText(fd, expectedCurrentText, path);
@@ -430,12 +430,12 @@ export function restoreOperationLogExact(
     );
     created = true;
     const opened = fstatSync(fd, { bigint: true });
-    const lexical = lstatSync(temp);
+    const lexical = lstatSync(temp, { bigint: true });
     if (
       !opened.isFile()
       || lexical.isSymbolicLink()
-      || Number(opened.dev) !== Number(lexical.dev)
-      || Number(opened.ino) !== Number(lexical.ino)
+      || opened.dev !== lexical.dev
+      || opened.ino !== lexical.ino
     ) throw new OperationLogPathError(path);
     writeExact(fd, originalBytes, path);
     fsyncSync(fd);
@@ -445,10 +445,12 @@ export function restoreOperationLogExact(
     assertOperationLogBinding(binding, path);
     if (readOperationLogExact(scaffoldRoot).text !== expectedCurrentText) throw new OperationLogPathError(path);
     options.beforeRename?.(temp);
+    assertOperationLogBinding(binding, path);
     fd = openSync(temp, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     if (tempBinding === undefined) throw new OperationLogPathError(path);
     assertLedgerTemp(temp, fd, tempBinding, original.text);
     if (readOperationLogExact(scaffoldRoot).text !== expectedCurrentText) throw new OperationLogPathError(path);
+    assertOperationLogBinding(binding, path);
     renameSync(temp, path);
     assertLedgerTemp(path, fd, tempBinding, original.text, true);
     closeSync(fd);
@@ -466,10 +468,12 @@ export function restoreOperationLogExact(
     if (fd !== undefined) closeSync(fd);
     if (created) {
       try {
+        assertOperationLogBinding(binding, path);
         const cleanupFd = openSync(temp, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
         try {
           if (tempBinding !== undefined) {
             assertLedgerTemp(temp, cleanupFd, tempBinding, original.text);
+            assertOperationLogBinding(binding, path);
             rmSync(temp, { force: true });
           }
         } finally {
@@ -535,10 +539,10 @@ export function readOperationLogExact(scaffoldRoot: string): ExactOperationLog {
     if (existsSync(directory)) bindOperationLog(scaffoldRoot, path, false);
     else {
       const root = resolve(scaffoldRoot);
-      const lexical = lstatSync(root);
+      const lexical = lstatSync(root, { bigint: true });
       if (!lexical.isDirectory() || lexical.isSymbolicLink()) throw new OperationLogPathError(path);
       const realRoot = realpathSync(root);
-      const stats = lstatSync(realRoot);
+      const stats = lstatSync(realRoot, { bigint: true });
       assertRootIdentity(root, realRoot, stats.dev, stats.ino, path);
     }
     return { exists: false, text: "" };

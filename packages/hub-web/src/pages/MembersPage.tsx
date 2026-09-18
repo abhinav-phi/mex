@@ -514,6 +514,7 @@ function MemberDetail({
   invalidSelection,
   onClearSelection,
   onEdit,
+  onReactivate,
   onSwitchStatus,
   refreshGeneration,
   selectedId,
@@ -529,6 +530,7 @@ function MemberDetail({
   invalidSelection: boolean;
   onClearSelection(): void;
   onEdit(member: TeamMember, event: MouseEvent<HTMLButtonElement>): void;
+  onReactivate(member: TeamMember, event: MouseEvent<HTMLButtonElement>): void;
   onSwitchStatus(status: MemberStatus, memberId: string): void;
   refreshGeneration: number;
   selectedId: string | null;
@@ -608,6 +610,10 @@ function MemberDetail({
               Editing this Member is unavailable. {canonicalReason ?? "Shared Member changes are not connected."}
             </p>
           ) : null}
+          {!detail.active ? <div className={styles.capabilityReason}>
+            <p>This Member cannot take or resume Relays while inactive. Reactivation restores the same identity and handoff eligibility.</p>
+            <Button disabled={!canonicalAvailable} onClick={(event) => onReactivate(detail, event)} type="button">Reactivate Member</Button>
+          </div> : null}
           <section className={styles.aliases} aria-labelledby="member-aliases-heading">
             <div className={styles.sectionHeading}>
               <h4 id="member-aliases-heading">Recognized Git identities</h4>
@@ -823,7 +829,7 @@ export function MembersPage() {
     }
 
     const affected = result.members[0]
-      ?? (appliedOperation.kind === "update" ? appliedOperation.member : undefined);
+      ?? (appliedOperation.kind === "update" || appliedOperation.kind === "reactivate" ? appliedOperation.member : undefined);
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["members"] }),
       ...(affected ? [queryClient.invalidateQueries({ queryKey: ["member", affected.id] })] : []),
@@ -846,8 +852,8 @@ export function MembersPage() {
     } else {
       setNotice({
         kind: "canonical",
-        title: "Member updated",
-        description: "Member updated in your working tree. Commit and push to share the change.",
+        title: appliedOperation.kind === "reactivate" ? "Member reactivated" : "Member updated",
+        description: `${appliedOperation.kind === "reactivate" ? "Member reactivated" : "Member updated"} in your working tree. Commit and push to share the change.`,
       });
     }
     focusNoticeAfterClose.current = true;
@@ -1013,6 +1019,7 @@ export function MembersPage() {
                         invalidSelection={invalidSelection}
                         onClearSelection={() => setMemberSelection(null, status)}
                         onEdit={(member, event) => openOperation({ kind: "update", member }, event)}
+                        onReactivate={(member, event) => openOperation({ kind: "reactivate", member }, event)}
                         onSwitchStatus={(nextStatus, memberId) => setMemberSelection(memberId, nextStatus)}
                         refreshGeneration={refreshGeneration}
                         selectedId={selectedId}

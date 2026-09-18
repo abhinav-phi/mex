@@ -1,10 +1,14 @@
 import { existsSync, readFileSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { globSync } from "glob";
-import { graphManifest } from "./engine-impl.js";
+import { graphManifest, graphManifestDiffersOnlyByConfig } from "./engine-impl.js";
 import type { GraphEngine, GraphNeighbor, IndexedFileInfo } from "./engine.js";
 import type { SqliteDatabase } from "./db/sqlite.js";
 import { isSupportedSourceFile, SUPPORTED_SOURCE_GLOB } from "./extraction/index.js";
+import {
+  coverageFields, coverageReportable, hasGraphCoverageCache, readGraphCoverageObservation,
+  type GraphCoverageObservation,
+} from "./coverage.js";
 import type { GraphEdge, GraphNode } from "./types.js";
 import {
   compactFact, groupByFile, planFileSource, readNodeSource, selectScope, sourceHash,
@@ -16,7 +20,6 @@ import {
   BudgetLedger, estimateTokens, resolveOptions, resolveScopeOptions, SCHEMA_VERSION, type AgentOptions,
 } from "./agent-protocol.js";
 import { identifierComponents, isLowValueGraphPath, planGraphQuery } from "./retrieval/query.js";
-import { GraphRebuildRequiredError } from "./errors.js";
 import {
   loadFreshGraphReadSession,
   openImmutableGraphReadSessionSync,
@@ -24,13 +27,21 @@ import {
   type GraphReadValidation,
   type LoadFreshGraphReadSessionOptions,
 } from "./read-session.js";
+import { GRAPH_SNAPSHOT_METADATA_KEY, parseGraphSnapshot } from "./snapshot.js";
 import type { GraphStatus } from "../team/contracts/graph.js";
+import type { GraphReadDegradation } from "./status.js";
 
 type QueryRelation = "who-calls" | "what-calls" | "where-defined";
 
 interface AgentGraphSession {
   graph: GraphEngine;
   db: SqliteDatabase;
+  /** Absent for caller-injected sessions, which make no freshness claim. */
+  degradations?: readonly GraphReadDegradation[];
+  /** Indexed paths whose facts describe an older revision of the file. */
+  driftedSources?: readonly string[];
+  /** The status a degraded answer must declare; present only when drifted. */
+  graphStatus?: GraphStatus;
   readIndexedSource?: (filePath: string) => string;
   validate?: () => GraphReadValidation;
   revalidateFreshness?: () => Promise<GraphFreshnessRevalidation>;
@@ -70,14 +81,20 @@ export function runImpact(
 ): void | Promise<void> {
   const output = deps.write ?? console.log;
   const opts = resolveOptions(rawOptions);
-  return withAgentGraphSession(rootDir, deps, output, "fresh", (session, write) => {
+  return withAgentGraphSession(rootDir, deps, output, freshTargetedRead(opts), (session, write) => {
     const fileNodes = nodesForFile(session, rootDir, target);
     const roots = fileNodes.length > 0 ? fileNodes : resolveSymbol(session.graph, target);
     if (roots.length === 0) {
-      writeJson(write, { type: "error", code: "TARGET_NOT_FOUND", target });
+      for (const record of configDriftRecords(session)) writeJson(write, record);
+      writeJson(write, {
+        type: "error", code: "TARGET_NOT_FOUND", target,
+        ...targetNotFoundCoverage(session, rootDir),
+      });
       return;
     }
+    if (emitTargetSourceDrifted(session, write, target, roots)) return;
     if (fileNodes.length === 0 && roots.length > 1) {
+      for (const record of configDriftRecords(session)) writeJson(write, record);
       writeJson(write, { type: "error", code: "TARGET_AMBIGUOUS", target, candidates: roots.map(nodeRef) });
       return;
     }
@@ -119,7 +136,10 @@ export function runImpact(
       if (emittedNodes.length >= opts.maxNodes) { truncated = true; break; }
       const fact = factFor(session, entry.node.id, opts.detail, opts.fingerprint);
       if (!fact) continue;
-      const record: Rec = { type: "caller", depth: entry.depth, root: entry.root, ...agentFactFields(fact, opts) };
+      // Reached by following call edges, which is exactly what drifted
+      // resolution can get wrong.
+      const record: Rec = markResolutionStale(session,
+        { type: "caller", depth: entry.depth, root: entry.root, ...agentFactFields(fact, opts) });
       if (!ledger.tryAdd(record)) { truncated = true; break; }
       factRecords.push(record);
       emittedNodes.push(entry.node);
@@ -127,14 +147,20 @@ export function runImpact(
 
     const sourceRecords = planSource(session, ledger, emittedNodes, rootDir, opts);
 
-    const affectedIds = [...new Set([...roots.map((node) => node.id), ...impacted.keys()])];
+    // Grounding is keyed by node, so an excluded node must not reappear
+    // through it. Nodes omitted only by the returned-node cap still count.
+    const affectedIds = [...new Set([...roots.map((node) => node.id), ...impacted.keys()])]
+      .filter((id) => !isDriftedFile(session, session.graph.getNode(id)?.filePath));
     const groundingRecords: Rec[] = [];
     for (const grounding of groundedFiles(session.db, affectedIds)) {
       const record: Rec = { type: "grounding", node: grounding.node_id, file: grounding.scaffold_file };
       if (ledger.tryAdd(record)) groundingRecords.push(record); else truncated = true;
     }
 
-    emitAll(write, meta, [...headRecords, ...factRecords, ...sourceRecords, ...groundingRecords]);
+    emitAll(write, meta, [
+      ...configDriftRecords(session),
+      ...headRecords, ...factRecords, ...sourceRecords, ...groundingRecords,
+    ]);
     write(JSON.stringify(summaryRecord(ctx, {
       matchedNodes: roots.length + impacted.size,
       returnedNodes: emittedNodes.length,
@@ -159,14 +185,20 @@ export function runGraphQuery(
     return;
   }
   const opts = resolveOptions(rawOptions);
-  return withAgentGraphSession(rootDir, deps, output, "fresh", (session, write) => {
+  return withAgentGraphSession(rootDir, deps, output, freshTargetedRead(opts), (session, write) => {
     const nodes = resolveSymbol(session.graph, target);
     if (nodes.length === 0) {
       if (relation === "who-calls"
         && emitUnresolvedCallers(session, write, target, opts)) return;
-      writeJson(write, { type: "error", code: "TARGET_NOT_FOUND", target });
+      for (const record of configDriftRecords(session)) writeJson(write, record);
+      writeJson(write, {
+        type: "error", code: "TARGET_NOT_FOUND", target,
+        ...targetNotFoundCoverage(session, rootDir),
+      });
       return;
     }
+
+    if (emitTargetSourceDrifted(session, write, target, nodes)) return;
 
     // Preserve (queried target, result) pairs; dedupe by that pair, not by result id alone.
     const pairs: Array<{ targetId: string; node: GraphNode }> = [];
@@ -193,14 +225,20 @@ export function runGraphQuery(
       if (entries.length >= opts.maxNodes) { truncated = true; break; }
       const fact = factFor(session, pair.node.id, opts.detail, opts.fingerprint);
       if (!fact) continue;
-      const record: Rec = { type: "result", relation, target: pair.targetId, ...agentFactFields(fact, opts) };
+      // `where-defined` returns the declaration itself and is independent of
+      // resolution; the call relations are edges and are not.
+      const base: Rec = { type: "result", relation, target: pair.targetId, ...agentFactFields(fact, opts) };
+      const record: Rec = relation === "where-defined" ? base : markResolutionStale(session, base);
       if (!ledger.tryAdd(record)) { truncated = true; break; }
       entries.push({ record, node: pair.node });
     }
 
     const sourceRecords = planSource(session, ledger, entries.map((e) => e.node), rootDir, opts);
 
-    emitAll(write, meta, [...entries.map((e) => e.record), ...sourceRecords]);
+    emitAll(write, meta, [
+      ...configDriftRecords(session),
+      ...entries.map((e) => e.record), ...sourceRecords,
+    ]);
     write(JSON.stringify(summaryRecord(ctx, {
       matchedNodes: pairs.length,
       returnedNodes: entries.length,
@@ -485,8 +523,14 @@ export function runGraphScope(
     // Source is the high-value payload. Give it 75% first, then let unused
     // flow/fact capacity spill back into deferred source records.
     const plannedFlowRecords = trustworthyFlows.flatMap((flow) => {
-      const record = scopeFlowRecord(flow, nodeById, opts.maxFlowSteps);
-      return record ? [record] : [];
+      const planned = scopeFlowRecord(flow, nodeById, opts.maxFlowSteps);
+      // A flow is a chain of resolved edges, so drifted compiler inputs can
+      // change where it goes even when every file in it is current. The label
+      // belongs on the emitted record, not on the planning envelope that
+      // carries it alongside its step count.
+      return planned
+        ? [{ ...planned, record: markResolutionStale(session, planned.record) }]
+        : [];
     });
     const summaryTokenReserve = estimateTokens(summarySkeleton([])) + RESERVE_PAD;
     const sourceRecords: Rec[] = [];
@@ -656,7 +700,24 @@ export function runGraphScope(
     if (textFallbackFiles.length > 0) truncated = true;
     const materiallyReliesOnTextOnly = textFallbackFiles.length > 0
       && !hasTrustworthyGraphPrimary;
+    // Unsupported languages can only explain an answer that is weak or empty.
+    // Repositories that parse many languages keep fixtures in all of them, and
+    // flagging every strong answer there would send agents narrowing tasks the
+    // graph already answered; `status` stays about this task's evidence.
+    const coverageMayExplainGap = selection.evidenceStrength !== "strong" || materiallyReliesOnTextOnly;
+    // Parse health says nothing about which languages exist, so only drift in
+    // the indexed corpus itself stops coverage from verifying as current.
+    const coverage = coverageMayExplainGap
+      ? readGraphCoverageObservation(session.db, rootDir, {
+        graphCurrent: staleFiles.length === 0 && unindexedFiles.length === 0 && !session.degradations?.length,
+        verify: "when-reported",
+      })
+      : null;
+    const coverageUnknown = coverageMayExplainGap && coverage === null && hasGraphCoverageCache(session.db);
+    const coverageIncomplete = coverage !== null && coverageReportable(coverage.histogram);
     const warnings = [
+      ...(coverageUnknown ? ["Graph coverage is unknown: its cached observation is unreadable; use source search or run mex graph rebuild."] : []),
+      ...(coverageIncomplete ? [coverageWarning(coverage!)] : []),
       ...(health.failedFiles > 0 ? [`${health.failedFiles} indexed file(s) have failed structural parsing.`] : []),
       ...(health.partialFiles > 0 ? [`${health.partialFiles} indexed file(s) have partial structural parsing.`] : []),
       ...(staleFiles.length > 0
@@ -667,6 +728,12 @@ export function runGraphScope(
         : []),
       ...(highPriorityEvidenceOmitted
         ? [`High-priority evidence omitted: ${omittedHighPrioritySourceFiles.length} source file(s), ${omittedHighPriorityFlowSteps} flow step(s).`]
+        : []),
+      ...(isConfigDrifted(session)
+        ? ["Graph build configuration changed after this index was built; flows and other resolved relationships may be out of date."]
+        : []),
+      ...(isParseDegraded(session)
+        ? ["Some indexed files did not parse completely; this answer may be missing symbols they define."]
         : []),
     ];
     const status = returnedFiles.length === 0 && facts.length === 0 && flowRecords.length === 0
@@ -690,6 +757,7 @@ export function runGraphScope(
     }
 
     emitAll(write, meta, [
+      ...configDriftRecords(session),
       ...healthRecords,
       ...sourceRecords,
       ...flowRecords,
@@ -722,7 +790,7 @@ export function runGraphGet(
 ): void | Promise<void> {
   const output = deps.write ?? console.log;
   const opts = resolveOptions({ ...rawOptions, detail: "source" });
-  return withAgentGraphSession(rootDir, deps, output, "fresh", (session, write) => {
+  return withAgentGraphSession(rootDir, deps, output, freshTargetedRead(opts), (session, write) => {
     const ctx = beginResponse("graph get", { ...opts, maxNodes: ids.length, maxFlowSteps: 0 }, undefined, []);
     const { ledger, meta } = ctx;
 
@@ -736,6 +804,15 @@ export function runGraphGet(
         if (ledger.tryAdd(record)) errorRecords.push(record); else truncated = true;
         continue;
       }
+      // Present in the index, excluded from the answer. Saying so is not the
+      // same as saying the node does not exist.
+      if (isDriftedFile(session, node.filePath)) {
+        const record: Rec = {
+          type: "error", code: "NODE_SOURCE_DRIFTED", id, filePath: node.filePath,
+        };
+        if (ledger.tryAdd(record)) errorRecords.push(record); else truncated = true;
+        continue;
+      }
       nodes.push(node);
     }
     const sourceRecords = planSource(session, ledger, nodes, rootDir, opts);
@@ -743,7 +820,9 @@ export function runGraphGet(
       sourceRecords.flatMap((record) => (record.ranges as SourceRange[]).flatMap((range) => range.nodeIds)),
     );
 
-    emitAll(write, meta, [...errorRecords, ...sourceRecords]);
+    // `get` returns declarations and their proven source bytes only, so the
+    // drift declaration appears without any record being marked stale.
+    emitAll(write, meta, [...configDriftRecords(session), ...errorRecords, ...sourceRecords]);
     write(JSON.stringify(summaryRecord(ctx, {
       matchedNodes: ids.length,
       returnedNodes: sourcedIds.size,
@@ -1028,6 +1107,10 @@ function scopeFactRecord(fact: CompactFact, score: number, reasons: string[], op
 
 function factFor(session: AgentGraphSession, id: string, detail: DetailLevel, includeFingerprint: boolean): CompactFact | null {
   const fact = compactFact(session.graph, id, detail);
+  // One seam for every command: a fact about a file that has moved on is not
+  // returned at all, rather than returned with coordinates that no longer
+  // point at what they describe.
+  if (fact && isDriftedFile(session, fact.filePath)) return null;
   if (!fact || !includeFingerprint) return fact;
   const fingerprint = new FingerprintStore(session.db).get(id);
   return fingerprint ? { ...fact, fingerprint: serializeFingerprint(fingerprint) } : fact;
@@ -1838,7 +1921,11 @@ function scopeEdgeKey(edge: Pick<GraphEdge, "source" | "target" | "kind" | "line
   return `${edge.source}\0${edge.target}\0${edge.kind}\0${edge.line ?? -1}\0${edge.column ?? -1}`;
 }
 
-type AgentSessionMode = "stable" | "fresh";
+interface FreshSessionMode {
+  readonly kind: "fresh";
+  readonly structuralAudit: "full" | "graph";
+}
+type AgentSessionMode = "stable" | FreshSessionMode;
 type AgentSessionTask = (session: AgentGraphSession, write: (line: string) => void) => void;
 
 interface AgentCommandInternalHooks {
@@ -1862,7 +1949,7 @@ function withAgentGraphSession(
   rootDir: string,
   deps: AgentCommandDeps,
   write: (line: string) => void,
-  mode: "fresh",
+  mode: FreshSessionMode,
   task: AgentSessionTask,
 ): void | Promise<void>;
 function withAgentGraphSession(
@@ -1876,8 +1963,22 @@ function withAgentGraphSession(
   // them synchronous so protocol goldens and deterministic unit harnesses do
   // not acquire filesystem/Git behavior they did not request.
   if (deps.open) return runInjectedAgentSession(rootDir, deps.open, write, task);
-  if (mode === "stable") return runStableAgentSession(rootDir, write, task);
-  return runFreshAgentSession(rootDir, deps as AgentCommandInternalDeps, write, task);
+  if (mode === "stable") return runScopeAgentSession(rootDir, write, task);
+  return runFreshAgentSession(rootDir, deps as AgentCommandInternalDeps, write, task, mode.structuralAudit);
+}
+
+/**
+ * The freshness-bound session for a targeted read (query, get, impact).
+ *
+ * These reads touch fingerprint rows only when the `fingerprint` option asks
+ * for them, and never read LSH buckets, so only then do they pay for the
+ * fingerprint/LSH audit. (The CLI offers `--fingerprint` only on `graph scope`,
+ * which runs no audit; programmatic callers may still pass the option here.)
+ * Every relational and full-text invariant their answer depends on is audited
+ * either way.
+ */
+function freshTargetedRead(opts: AgentOptions): FreshSessionMode {
+  return { kind: "fresh", structuralAudit: opts.fingerprint ? "full" : "graph" };
 }
 
 function runInjectedAgentSession(
@@ -1899,7 +2000,24 @@ function runInjectedAgentSession(
   }
 }
 
-function runStableAgentSession(
+/**
+ * Scope's gate, which asks the same question as the targeted commands and
+ * tolerates a different answer.
+ *
+ * Scope owns a per-file freshness pass: it hashes every indexed file's live
+ * source, discards the graph-derived facts of the ones that moved, and
+ * re-admits them as text-only evidence. Drifted source is therefore something
+ * it handles rather than something it must refuse — which is why it does not
+ * adopt the exact-freshness handshake the targeted commands use. Binding it to
+ * that handshake would make one edited file refuse a whole retrieval that
+ * currently answers.
+ *
+ * What it could not do was tell a store built by other code apart from one
+ * whose build inputs moved underneath it. It now asks that question through the
+ * same classifier, and answers a config-drifted store labelled instead of
+ * demanding a rebuild.
+ */
+function runScopeAgentSession(
   rootDir: string,
   write: (line: string) => void,
   task: AgentSessionTask,
@@ -1914,11 +2032,14 @@ function runStableAgentSession(
     }
     const opened = openImmutableGraphReadSessionSync(rootDir, dbPath);
     session = { ...opened };
-    const storedManifest = session.db.prepare(
-      "SELECT value FROM project_metadata WHERE key = 'manifest_hash'",
-    ).get() as { value: string } | undefined;
-    if (storedManifest?.value !== graphManifest(resolve(rootDir)).manifestHash) {
-      throw new GraphRebuildRequiredError("The code graph build manifest is stale.");
+    const stored = storedManifestIdentity(session.db);
+    const current = graphManifest(resolve(rootDir));
+    if (stored.manifestHash !== current.manifestHash) {
+      if (!graphManifestDiffersOnlyByConfig(current, stored.manifestHash, stored.configHash)) {
+        manifestUnavailable(write);
+        return;
+      }
+      session = { ...session, degradations: ["config-drift"] };
     }
     task(session, (line) => pending.push(line));
     const validation = session.validate?.() ?? { valid: true };
@@ -1942,6 +2063,7 @@ async function runFreshAgentSession(
   deps: AgentCommandInternalDeps,
   write: (line: string) => void,
   task: AgentSessionTask,
+  structuralAudit: "full" | "graph",
 ): Promise<void> {
   let session: AgentGraphSession | null = null;
   const pending: string[] = [];
@@ -1951,12 +2073,19 @@ async function runFreshAgentSession(
       ...deps.__internal?.freshRead,
       dbPath,
       loadSession: true,
+      allowDegradedReads: true,
+      structuralAudit,
     });
     if (!loaded.session) {
-      graphStatusUnavailable(write, loaded.graphStatus);
+      graphStatusUnavailable(write, loaded.graphStatus, undefined, loaded.configDriftTolerated);
       return;
     }
-    session = { ...loaded.session };
+    session = {
+      ...loaded.session,
+      degradations: loaded.session.degradations,
+      driftedSources: loaded.session.driftedSources,
+      graphStatus: loaded.graphStatus,
+    };
     try {
       task(session, (line) => pending.push(line));
     } catch (error) {
@@ -1981,18 +2110,227 @@ async function runFreshAgentSession(
   }
 }
 
+/**
+ * True when this session's structural facts describe compiler inputs that have
+ * since changed.
+ *
+ * Definition and containment facts survive that — a symbol's file, range and
+ * body text are read from the file itself, and the source bytes returned with
+ * them are proven byte-identical to what was indexed. What does not survive is
+ * resolution: `paths`, `moduleResolution`, `references` and a package's `type`
+ * decide which declaration a reference binds to, so any fact reached by
+ * following an edge may name the wrong target.
+ */
+function isConfigDrifted(session: AgentGraphSession): boolean {
+  return session.degradations?.includes("config-drift") === true;
+}
+
+/**
+ * True when some files in this store parsed partially or not at all.
+ *
+ * This is a different claim from config drift, and a weaker one. Every fact
+ * the store holds is still true; there are simply fewer of them than the
+ * repository contains, so an answer can be missing a caller or a definition
+ * that lives in a file the parser could not finish. Nothing is relabelled
+ * `stale` for it — the answer is incomplete, not out of date.
+ */
+function isParseDegraded(session: AgentGraphSession): boolean {
+  return session.degradations?.includes("parse-degraded") === true;
+}
+
+/**
+ * The files this answer must leave out.
+ *
+ * A file that changed since indexing invalidates every coordinate the graph
+ * holds for it — a line range now points somewhere else, and a symbol may not
+ * exist any more. Scope answers around that by re-admitting the file as
+ * text-only evidence; a command that returns exact node coordinates has no
+ * such fallback, so it drops those files' facts and answers from the rest.
+ *
+ * Dropping them silently would be the dishonest half. The response names them.
+ */
+function driftedSourceFiles(session: AgentGraphSession): ReadonlySet<string> {
+  return new Set(session.driftedSources ?? []);
+}
+
+function isSourceDrifted(session: AgentGraphSession): boolean {
+  return session.degradations?.includes("source-drift") === true;
+}
+
+function isDriftedFile(session: AgentGraphSession, filePath: string | undefined): boolean {
+  return typeof filePath === "string" && driftedSourceFiles(session).has(filePath);
+}
+
+/**
+ * Report a target that resolved, but only into files this answer excluded.
+ *
+ * Returning an empty result would be true and useless: the symbol exists, the
+ * store simply cannot describe where it is any more. Say that instead, with
+ * the file to refresh.
+ */
+function emitTargetSourceDrifted(
+  session: AgentGraphSession,
+  write: (line: string) => void,
+  target: string,
+  nodes: readonly GraphNode[],
+): boolean {
+  if (nodes.length === 0 || !nodes.every((node) => isDriftedFile(session, node.filePath))) return false;
+  for (const record of configDriftRecords(session)) writeJson(write, record);
+  writeJson(write, {
+    type: "error",
+    code: "TARGET_SOURCE_DRIFTED",
+    target,
+    filePaths: [...new Set(nodes.map((node) => node.filePath))].sort(),
+  });
+  return true;
+}
+
+/** Mark one record as resolution-derived under config drift; otherwise unchanged. */
+function markResolutionStale(session: AgentGraphSession, record: Rec): Rec {
+  return isConfigDrifted(session) ? { ...record, stale: true } : record;
+}
+
+/**
+ * The response-level declaration that this answer came from a drifted store.
+ *
+ * Emitted only when drifted, so a fresh response is byte-identical to what it
+ * was before degraded reads existed. It carries the same recovery command the
+ * refusal used to carry, as a record rather than an exception.
+ */
+function configDriftRecords(session: AgentGraphSession): Rec[] {
+  const degradations = [...(session.degradations ?? [])].sort();
+  if (degradations.length === 0) return [];
+  // Scope classifies from the store's own manifest and has no inspection to
+  // quote, so the record degrades to its fixed half rather than disappearing.
+  const status = session.graphStatus;
+  const diagnostics = status?.diagnostics ?? [];
+  const drifted = isConfigDrifted(session);
+  const incomplete = isParseDegraded(session);
+  const sourceDrifted = isSourceDrifted(session);
+  const reasonDiagnostic = drifted
+    ? diagnostics.find((entry) => entry.code === "GRAPH_SEMANTIC_INPUTS_CHANGED")
+      ?? diagnostics.find((entry) => entry.code === "GRAPH_BUILD_MANIFEST_CHANGED")
+    : sourceDrifted
+      ? diagnostics.find((entry) => entry.code === "GRAPH_SOURCE_CORPUS_MISMATCH")
+      : diagnostics.find((entry) => entry.code === "GRAPH_PARSE_DEGRADED");
+  const changedPaths = [...new Set(diagnostics
+    .filter((entry) => entry.code === "GRAPH_SEMANTIC_INPUT_CHANGED")
+    .map((entry) => (entry as { path?: unknown }).path)
+    .filter((path): path is string => typeof path === "string"))].sort();
+  const recoveryCommand = diagnostics
+    .flatMap((entry) => entry.remediation ?? [])
+    .find((entry) => entry.command)?.command
+    ?? "mex graph refresh";
+  const parseHealth = status?.parseHealth;
+  const excluded = [...(session.driftedSources ?? [])].sort();
+  return [{
+    type: "status",
+    // Config drift makes the store out of date; an unfinished parse only makes
+    // it incomplete. Report the kind the status inspection actually reached.
+    graphStatus: drifted || sourceDrifted ? "stale" : "degraded",
+    reasons: degradations,
+    ...(reasonDiagnostic?.code ? { reasonCode: reasonDiagnostic.code } : {}),
+    message: reasonDiagnostic?.message
+      ?? (drifted
+        ? "Graph build configuration changed after this index was built."
+        : sourceDrifted
+          ? "Some indexed files changed after this index was built and were excluded."
+          : "Some files could not be parsed completely when this index was built."),
+    // Say which part of the answer each label applies to, rather than leaving
+    // the reader to guess how much of it to discard.
+    trusted: ["definitions", "containment", "source"],
+    ...(drifted ? { stale: ["resolution", "edges"] } : {}),
+    ...(incomplete
+      ? {
+          incomplete: ["files that did not parse completely"],
+          partialFiles: parseHealth?.partial ?? 0,
+          failedFiles: parseHealth?.failed ?? 0,
+          ...(parseHealth && parseHealth.failedPaths.length > 0
+            ? {
+                failedPaths: [...parseHealth.failedPaths].sort(),
+                ...(parseHealth.failedPathsTruncated ? { failedPathsTruncated: true } : {}),
+              }
+            : {}),
+        }
+      : {}),
+    ...(excluded.length > 0
+      ? {
+          // The complete set, because the answer was built by excluding
+          // exactly these. A caller can reproduce what was left out.
+          excludedFiles: excluded,
+          excludedFileCount: excluded.length,
+        }
+      : {}),
+    ...(changedPaths.length > 0 ? { changedInputs: changedPaths } : {}),
+    ...(recoveryCommand ? { recoveryCommand } : {}),
+  }];
+}
+
+/** The build identity a store recorded, preferring its snapshot over loose metadata. */
+function storedManifestIdentity(db: SqliteDatabase): {
+  manifestHash: string | undefined;
+  configHash: string | undefined;
+} {
+  const metadata = (key: string): string | undefined => {
+    const row = db.prepare("SELECT value FROM project_metadata WHERE key = ?").get(key) as
+      { value?: unknown } | undefined;
+    return typeof row?.value === "string" ? row.value : undefined;
+  };
+  const snapshot = parseGraphSnapshot(metadata(GRAPH_SNAPSHOT_METADATA_KEY) ?? null);
+  return {
+    manifestHash: snapshot?.manifestHash ?? metadata("manifest_hash"),
+    configHash: snapshot?.configHash ?? metadata("config_hash"),
+  };
+}
+
+/**
+ * One refusal shape for every command. Scope used to raise its own error code
+ * for the same condition the targeted commands reported as unavailable, which
+ * left two vocabularies for one state.
+ */
+function manifestUnavailable(write: (line: string) => void): void {
+  writeJson(write, {
+    type: "error",
+    code: "GRAPH_UNAVAILABLE",
+    graphStatus: "rebuild_required",
+    reasonCode: "GRAPH_BUILD_MANIFEST_CHANGED",
+    message: "The graph was built by a different indexing engine; no graph-derived result was returned.",
+    recoveryCommand: "mex graph rebuild",
+  });
+}
+
+/**
+ * Diagnostics that describe drifted build configuration.
+ *
+ * When engine identity still reproduces, the read gate excuses all of these,
+ * so none of them can be the reason a read was refused. Naming one anyway
+ * sends the reader to revert a dependency bump that was never the blocker.
+ */
+const CONFIG_DRIFT_DIAGNOSTIC_CODES = new Set([
+  "GRAPH_BUILD_MANIFEST_CHANGED",
+  "GRAPH_SEMANTIC_INPUTS_CHANGED",
+  "GRAPH_SEMANTIC_INPUT_CHANGED",
+]);
+
 function graphStatusUnavailable(
   write: (line: string) => void,
   status: GraphStatus,
   validation?: GraphReadValidation,
+  configDriftTolerated = false,
 ): void {
+  const blocking = configDriftTolerated
+    ? status.diagnostics.filter((entry) => !CONFIG_DRIFT_DIAGNOSTIC_CODES.has(entry.code))
+    : status.diagnostics;
+  // Fall back to the full list only when config drift was the whole story and
+  // something else — a race, a mid-read change — still refused the read.
+  const candidates = blocking.length > 0 ? blocking : status.diagnostics;
   const diagnostic = validation?.code
     ? status.diagnostics.find((entry) => entry.code === validation.code)
-    : [...status.diagnostics].reverse().find((entry) => entry.severity !== "info")
-      ?? status.diagnostics.at(-1);
+    : [...candidates].reverse().find((entry) => entry.severity !== "info")
+      ?? candidates.at(-1);
   const graphStatus = validation && status.status === "fresh" ? "degraded" : status.status;
   const recoveryCommand = diagnostic?.remediation?.find((entry) => entry.command)?.command
-    ?? status.diagnostics.flatMap((entry) => entry.remediation ?? [])
+    ?? candidates.flatMap((entry) => entry.remediation ?? [])
       .find((entry) => entry.command)?.command;
   writeJson(write, {
     type: "error",
@@ -2145,12 +2483,15 @@ function emitUnresolvedCallers(
       fromNode: row.from_node_id,
       ...(row.receiver === null ? {} : { receiver: row.receiver }),
       ...(row.qualifier === null ? {} : { qualifier: row.qualifier }),
+      // An unresolved reference is a resolution outcome, so drifted compiler
+      // inputs are the most likely reason this row exists at all.
+      ...(isConfigDrifted(session) ? { stale: true } : {}),
     };
     if (!ctx.ledger.tryAdd(record)) { truncated = true; break; }
     records.push(record);
   }
 
-  emitAll(write, ctx.meta, records);
+  emitAll(write, ctx.meta, [...configDriftRecords(session), ...records]);
   write(JSON.stringify(summaryRecord(ctx, {
     matchedNodes: matched,
     // No node was returned: these are call sites, not declarations.
@@ -2225,6 +2566,41 @@ function liveUnindexedFiles(indexedFiles: IndexedFileInfo[], rootDir: string): s
   }).map((file) => file.replaceAll("\\", "/"))
     .filter((file) => isSupportedSourceFile(file) && !indexed.has(file))
     .sort();
+}
+
+/**
+ * Coverage context for a `TARGET_NOT_FOUND` record.
+ *
+ * A miss and a typo currently emit the identical record, so an agent cannot
+ * tell "this symbol does not exist" from "this symbol lives in a file no
+ * extractor indexes". The context is emitted only when it changes the
+ * record's meaning — the store indexed nothing, or recognized source files
+ * were left unindexed — so ordinary misses in a healthy repository keep
+ * their exact prior shape. Absent otherwise, because this reporting must
+ * never fail the command that carries it.
+ */
+function targetNotFoundCoverage(session: AgentGraphSession, rootDir: string): Record<string, unknown> {
+  const indexedFiles = session.graph.getIndexedFiles?.() ?? [];
+  const coverage = readGraphCoverageObservation(session.db, rootDir, {
+    graphCurrent: !session.degradations?.length && !session.driftedSources?.length
+      && (!session.graphStatus || session.graphStatus.status === "fresh"),
+    verify: "when-reported",
+  });
+  // An unreadable observation must not fall back to the bare record: that is
+  // the "a miss looks like a typo" answer this context exists to prevent.
+  const unknown = coverage === null && hasGraphCoverageCache(session.db) ? { coverage: "unknown" } : {};
+  if ((!coverage || !coverageReportable(coverage.histogram)) && indexedFiles.length > 0) return unknown;
+  return { filesIndexed: indexedFiles.length, ...unknown, ...coverageFields(coverage) };
+}
+
+/** Counts not re-verified since the build are still named, with their age stated. */
+function coverageWarning(coverage: GraphCoverageObservation): string {
+  const { histogram } = coverage;
+  const breakdown = histogram.entries.map((entry) => `${entry.extension}: ${entry.files}`).join(", ");
+  const count = `${histogram.truncated ? "at least " : ""}${histogram.total}`;
+  return coverage.verified
+    ? `Graph coverage excludes ${count} recognized source file(s) with unsupported extensions (${breakdown}); use source search for these languages.`
+    : `Graph coverage excluded ${count} recognized source file(s) with unsupported extensions at the last graph build (${breakdown}); use source search for these languages.`;
 }
 
 function nodeRef(node: GraphNode): Record<string, string | number> {

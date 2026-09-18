@@ -11,7 +11,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as repositoryGit from "../../git/git-port.js";
 import { generateArtifactId } from "../../artifacts/ulid.js";
 import type {
   GitChangedFilesRequest,
@@ -46,6 +47,7 @@ const LOCAL_DRAFT_ID = "inbox_test_draft";
 const roots: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -169,6 +171,35 @@ describe("RepositoryTeamWorkflowPort", () => {
     git(root, ["commit", "-q", "-a", "-m", "unparseable blob"]);
     writeFileSync(configPath, JSON.stringify({ scaffold_id: "good-identity" }), "utf8");
     await rejects();
+  });
+
+  it("rejects a CRLF-only config edit between exact production reads", async () => {
+    const root = temporaryRoot();
+    initializeGitFixture(root);
+    git(root, ["config", "core.autocrlf", "true"]);
+    mkdirSync(join(root, ".mex"), { recursive: true });
+    const path = join(root, ".mex/config.json");
+    const original = `${JSON.stringify({ scaffold_id: "config-race" }, null, 2)}\n`;
+    writeFileSync(path, original);
+    git(root, ["add", "--", ".mex/config.json"]);
+    git(root, ["commit", "-q", "-m", "track config"]);
+    const createGit = repositoryGit.createRepositoryGitPort;
+    vi.spyOn(repositoryGit, "createRepositoryGitPort").mockImplementation((...args) => {
+      const port = createGit(...args);
+      const read = port.readFileAtRevision.bind(port);
+      vi.spyOn(port, "readFileAtRevision").mockImplementation(async (request) => {
+        const result = await read(request);
+        writeFileSync(path, original.replaceAll("\n", "\r\n"));
+        return result;
+      });
+      return port;
+    });
+    await expect(createRepositoryTeamWorkflowPort(root)).rejects.toMatchObject({
+      problem: { code: "REVISION_CONFLICT" },
+    });
+    expect(readFileSync(path, "utf8")).toBe(original.replaceAll("\n", "\r\n"));
+    expect(execFileSync("git", ["diff", "--name-only"], { cwd: root }).toString()).toBe("");
+    expect(existsSync(join(root, ".mex/local"))).toBe(false);
   });
 
   it("captures service-owned actor, time, and repository state in a canonical Workstream and Activity event", async () => {

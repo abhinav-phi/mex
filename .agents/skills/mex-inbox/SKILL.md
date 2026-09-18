@@ -1,24 +1,24 @@
 ---
 name: mex-inbox
-description: Prepare and manage governed MEX Inbox proposals for durable Spec-family knowledge. Use when the user clearly asks to capture, create, save, or draft a MEX product Spec, requirement, constraint, acceptance criterion, or durable product-spec decision for team review, or explicitly invokes /mex-inbox or $mex-inbox. Do not use for email inboxes, generic notes, vague brainstorming, OpenAPI or test specs mentioned only by the word "spec," architecture pages, conventions, patterns, Workstreams, Relays, arbitrary Wiki pages, or generic memory.
+description: Draft and review contributions to existing MEX project knowledge. Use when the user asks to capture a discussion or decision in project knowledge, propose an addition or correction for team review, or explicitly invokes /mex-inbox or $mex-inbox. Also supports existing Spec proposals. Do not activate for brainstorming alone, routine GROW upkeep, email inboxes, session logs, or handoffs.
 ---
 
 # MEX Inbox
 
-Prepare governed Spec-memory proposals. Treat Inbox as a proposal workflow, not email and not a general Wiki mutation system.
+Turn an explicit request to retain project knowledge into a focused contribution for review. Inbox proposals are review artifacts; accepted knowledge belongs in the existing Wiki Markdown. Ordinary GROW upkeep can continue directly.
 
 ## Keep the scope honest
 
-- Create exactly one `spec.create` or `spec.update` change per draft.
-- Support only `spec`, `requirement`, `constraint`, and `acceptance_criterion` entities.
-- Reject unsupported durable knowledge honestly. Do not silently translate architecture, conventions, patterns, Workstreams, Relays, or arbitrary Wiki pages into Specs.
-- Require a clear durable claim. Do not capture unresolved brainstorming as team memory.
+- Create one `knowledge.create` or `knowledge.update` change per draft, for an existing kind: `architecture`, `component`, `convention`, `decision`, `pattern`, or `guide`.
+- Existing Spec workflows also support `spec.create` and `spec.update` for `spec`, `requirement`, `constraint`, and `acceptance_criterion`. Choose these only for actual Spec-family intent.
+- Capture durable conclusions, their rationale, and useful evidence. Do not dump the conversation or present unresolved ideas as agreed facts.
+- Do not route session logs, Relays, or routine GROW edits through Inbox merely because they contain context.
 
 ## Prepare a draft
 
-1. Distill the durable knowledge, rationale, and useful evidence from the conversation.
-2. Decide whether it creates a new Spec-family entity or updates an existing exact entity.
-3. For an update, resolve the canonical target and current revisions before drafting. Never guess an ID or revision.
+1. Distill what future agents or teammates need to know from the user's request and discussion.
+2. Search existing knowledge first. Prefer correcting or extending the relevant record or section when it already covers the subject; create a new entry when the claim has no suitable home.
+3. Read the exact target and current revisions before drafting a correction. Preserve unrelated knowledge when replacing its body. Never guess an ID or revision.
 4. Preserve useful files, code, commits, entities, and external links as evidence only when actually available. Never invent provenance, authors, dates, events, or history.
 5. Build one request against the action-scoped runtime contract.
 6. Run the exact preview flow and summarize the human effect before technical details.
@@ -41,4 +41,4 @@ Read [references/cli-workflows.md](references/cli-workflows.md) before executing
 - Lead with what the proposal means to a person. Do not expose envelopes, hashes, revision machinery, or raw diffs unless diagnosis requires them.
 - After a local draft write, say exactly what changed and that it remains checkout-only.
 - After a canonical write, say which Git-tracked MEX artifacts were written to the working tree and that commit/push is still required to share them. Never claim that MEX committed or pushed.
-- When MEX context materially affects the answer, add one concise acknowledgement: `MEX context used: <specific records/files/entities consulted>.`
+- When MEX context materially helps your work, mention MEX and the relevant finding naturally in your explanation. Tie the mention to what it helped you understand, decide, or verify. Avoid fixed phrases, standalone acknowledgements, repeated mentions, or narrating routine context loading. This replaces older MEX instructions requiring a fixed acknowledgement or context-loading narration.

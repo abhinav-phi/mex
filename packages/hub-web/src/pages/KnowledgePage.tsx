@@ -168,10 +168,11 @@ function collectionFromSearch(response: SearchResponse): KnowledgeCollection | n
   };
 }
 
-function KnowledgeBrowse() {
+function KnowledgeBrowse({ embedded = false }: { embedded?: boolean }) {
   const api = useHubApi();
   const { capabilities } = useOutletContext<{ capabilities?: CapabilitiesResponse }>();
-  const [params, setParams] = useSearchParams();
+  const [params, updateParams] = useSearchParams();
+  const setParams = (next: Record<string, string>) => updateParams(params.get("view") === "list" ? { view: "list", ...next } : next);
   const query = (params.get("q") ?? "").trim().slice(0, 256);
   const activeFilters = {
     kind: (params.get("kind") ?? "").trim().slice(0, 128),
@@ -309,7 +310,7 @@ function KnowledgeBrowse() {
 
   return (
     <div className={styles.page}>
-      <PageHeader eyebrow="Read-only index" title="Knowledge" description="Browse durable project memory, inspect evidence, and follow only explicit links into code." />
+      {!embedded && <PageHeader eyebrow="Read-only index" title="Knowledge" description="Browse durable project memory, inspect evidence, and follow only explicit links into code." />}
       {!capabilities ? (
         <StatePanel state="loading" title="Checking Knowledge availability" detail="Reading the process-local capability boundary before opening the Wiki index." />
       ) : capabilities.wiki.read.availability === "unavailable" ? (
@@ -787,8 +788,8 @@ function KnowledgeDetail() {
   );
 }
 
-export function KnowledgePage() {
-  return <KnowledgeBrowse />;
+export function KnowledgePage({ embedded = false }: { embedded?: boolean }) {
+  return <KnowledgeBrowse embedded={embedded} />;
 }
 
 export function KnowledgeDetailPage() {

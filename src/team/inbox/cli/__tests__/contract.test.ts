@@ -6,8 +6,40 @@ import {
 } from "../../../../capabilities.js";
 import { TEAM_INBOX_SPEC_LIMITS } from "../../../contracts/workflow.js";
 import { runInboxContract } from "../contract.js";
+import { normalizeTeamInboxSpecCommand } from "../../spec-authoring.js";
 
 describe("Inbox contract resolver CLI", () => {
+  it("keeps knowledge creates/corrections and legacy Specs aligned with the request parser", () => {
+    const lines: string[] = [];
+    runInboxContract({ action: "inbox.draft.save", json: true }, {
+      write: (line) => lines.push(line), setExitCode: () => {},
+    });
+    const data = JSON.parse(lines[0]!).data;
+    const validate = new Ajv2020({ strict: true }).compile(data.requestFile.schema);
+    const id = "mx_01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    const make = (change: unknown, targetRevisions: unknown[] = []) => ({
+      operationId: "capture-decision", expectedRevisions: [],
+      action: { kind: "inbox.draft.save", draft: { change, rationale: "Capture our decision.", evidence: [], targetRevisions } },
+    });
+    const check = (request: unknown, accepted: boolean) => {
+      expect(validate(request), JSON.stringify(validate.errors)).toBe(accepted);
+      if (accepted) expect(() => normalizeTeamInboxSpecCommand(request)).not.toThrow();
+      else expect(() => normalizeTeamInboxSpecCommand(request)).toThrow();
+    };
+    for (const entityKind of ["architecture", "component", "convention", "decision", "pattern", "guide"]) {
+      const create = { kind: "knowledge.create", entityKind, title: "Shared decision", body: "Durable context.", status: "promoted" };
+      check(make(create), true);
+      check(make({ ...create, path: "context/arbitrary.md" }), false);
+      check(make({ ...create, relation: { type: "related_to", target: { id, kind: entityKind } } }), false);
+      const update = { kind: "knowledge.update", target: { id, kind: entityKind }, patch: { body: "Corrected context." } };
+      const revisions = [{ target: { kind: "entity", id }, revision: "a".repeat(64), semanticRevision: 1 }];
+      check(make(update, revisions), true);
+      check(make(update), false);
+      check(make({ ...update, patch: {} }, revisions), false);
+    }
+    check(make({ kind: "knowledge.create", entityKind: "spec", title: "Scope", body: "Scope.", status: "promoted" }), false);
+    check(make({ kind: "spec.create", entityKind: "spec", title: "Scope", body: "Scope.", status: "in_flight" }), true);
+  });
   it("returns one bounded static catalog whose roots and examples strict-compile", () => {
     const lines: string[] = [];
     let exit = -1;

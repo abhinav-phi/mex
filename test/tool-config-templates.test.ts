@@ -104,7 +104,7 @@ describe("shipped code-graph agent guidance", () => {
     const agents = readText("templates/AGENTS.md");
     expect(agents).toContain("mex graph query <who-calls|what-calls|where-defined> <symbol>");
     expect(agents).toContain(MEX_INSTRUCTIONS_START);
-    expect(agents).toContain("MEX context used: <specific records/files/entities consulted>.");
+    expect(agents).toContain("mention MEX and the relevant finding naturally in your explanation");
     expect(agents).not.toMatch(/[/$]mex-(?:inbox|relay)/u);
     for (const guidance of capabilityGuidance) expect(agents).toContain(guidance);
     expect(agents).not.toContain(supersededBlanketApprovalGuidance);

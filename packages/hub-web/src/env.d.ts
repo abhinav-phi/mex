@@ -3,6 +3,7 @@
 interface ImportMetaEnv {
   readonly DEV: boolean;
   readonly PROD: boolean;
+  readonly VITE_WEB3FORMS_ACCESS_KEY?: string;
 }
 
 interface ImportMeta {

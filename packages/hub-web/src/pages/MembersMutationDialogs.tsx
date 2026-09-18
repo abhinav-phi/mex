@@ -11,7 +11,7 @@ import {
   Trash2,
   UserRoundCheck,
 } from "lucide-react";
-import { useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useHubApi } from "../api/context";
 import type {
   TeamCurrentActorResponse,
@@ -98,6 +98,7 @@ export type MembersOperation =
     prefill?: { name: string | null; email: string | null };
   }
   | { kind: "update"; member: TeamMember }
+  | { kind: "reactivate"; member: TeamMember }
   | {
     kind: "choose";
     initialMembers: readonly TeamMember[];
@@ -739,6 +740,78 @@ function ChooseIdentityDialog({
   );
 }
 
+function ReactivateMemberDialog({
+  operation, onApplied, onClose,
+}: {
+  operation: Extract<MembersOperation, { kind: "reactivate" }>;
+  onApplied(result: TeamOperationApplyResponse, operation: MembersOperation): Promise<void>;
+  onClose(): void;
+}) {
+  const api = useHubApi();
+  const [envelope, setEnvelope] = useState<TeamOperationPreviewResponse | null>(null);
+  const generation = useRef(0);
+  const request = useRef<TeamOperationPreviewRequest>({
+    operationId: operationId("reactivate"),
+    action: { kind: "member.reactivate", memberId: operation.member.id },
+    expectedRevisions: [memberExpectation(operation.member)],
+  });
+  const preview = useMutation({
+    mutationFn: async () => {
+      const result = await api.previewTeamOperation(request.current);
+      if (stableRequest(result.request) !== stableRequest(request.current)) {
+        throw new Error("The reviewed Member did not match this reactivation. Nothing was applied.");
+      }
+      return result;
+    },
+  });
+  const apply = useMutation({
+    mutationFn: (accepted: TeamOperationPreviewResponse) => api.applyTeamOperation(accepted),
+    onSuccess: async (result) => {
+      await onApplied(result, operation);
+      onClose();
+    },
+  });
+  const review = () => {
+    const attempt = ++generation.current;
+    setEnvelope(null);
+    apply.reset();
+    preview.mutate(undefined, { onSuccess: (result) => {
+      if (attempt === generation.current) setEnvelope(result);
+    } });
+  };
+  useEffect(() => {
+    review();
+    return () => { generation.current += 1; };
+  // One immutable Member revision is reviewed for this mounted dialog.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return (
+    <AlertDialog open onOpenChange={(open) => { if (!open && !apply.isPending) onClose(); }}>
+      <AlertDialogContent className={styles.confirmation}>
+        <AlertDialogHeader>
+          <AlertDialogMedia><UserRoundCheck aria-hidden="true" /></AlertDialogMedia>
+          <AlertDialogTitle>Reactivate {operation.member.displayName}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Restore this existing Member to active status so they can take eligible Relays and resume their handoffs. Their identity and recorded history stay the same.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <p>This updates the Member record and adds one Activity entry in your working tree. Commit and push to share it through Git.</p>
+        {preview.isPending ? <p role="status">Checking the current Member record…</p> : null}
+        {preview.isError ? <ErrorState error={preview.error} retry={review} /> : null}
+        {envelope && !envelope.preview.valid ? <p role="alert">This Member cannot be reactivated yet. Nothing was applied.</p> : null}
+        {envelope ? <PreviewTechnicalDetails envelope={envelope} /> : null}
+        {apply.isError ? <ErrorState error={apply.error} retry={review} /> : null}
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={apply.isPending}>Keep inactive</AlertDialogCancel>
+          <AlertDialogAction disabled={!envelope?.preview.valid || apply.isPending || apply.isError} onClick={() => { if (envelope) apply.mutate(envelope); }}>
+            {apply.isPending ? "Reactivating…" : "Reactivate Member"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
 export default function MembersMutationDialogs({
   currentActor,
   onApplied,
@@ -750,6 +823,9 @@ export default function MembersMutationDialogs({
   onClose(): void;
   operation: MembersOperation;
 }) {
+  if (operation.kind === "reactivate") {
+    return <ReactivateMemberDialog operation={operation} onApplied={onApplied} onClose={onClose} />;
+  }
   if (operation.kind === "add" || operation.kind === "update") {
     return (
       <CanonicalMemberDialog

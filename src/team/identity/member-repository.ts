@@ -92,7 +92,7 @@ export class MemberRepository implements MemberReader {
 
   async get(memberId: string): Promise<TeamMember | null> {
     const path = memberArtifactPath(memberId);
-    const stored = tryReadContainedArtifact(this.#projectRoot, path, MEMBER_ARTIFACT_MAX_BYTES);
+    const stored = tryReadContainedArtifact(this.#projectRoot, path, MEMBER_ARTIFACT_MAX_BYTES, "canonical");
     return stored === null ? null : parseMemberArtifact(stored.bytes, path);
   }
 
@@ -146,7 +146,7 @@ export class MemberRepository implements MemberReader {
 
     let corpusBytes = 0;
     return paths.map((path) => {
-      const stored = tryReadContainedArtifact(this.#projectRoot, path, MEMBER_ARTIFACT_MAX_BYTES);
+      const stored = tryReadContainedArtifact(this.#projectRoot, path, MEMBER_ARTIFACT_MAX_BYTES, "canonical");
       if (stored === null) {
         throw artifactError(
           "REVISION_CONFLICT",
@@ -257,6 +257,7 @@ export class MemberRepository implements MemberReader {
       this.#projectRoot,
       current.sourcePath,
       MEMBER_ARTIFACT_MAX_BYTES,
+      "canonical",
     );
     if (beforeRead === null || beforeRead.revision !== current.revision) {
       throw artifactError(
@@ -284,6 +285,20 @@ export class MemberRepository implements MemberReader {
       beforeDocument: before,
       previewRevision: previewRevision("update", current.revision, change, document, before),
     });
+  }
+
+  /** Reactivation retains the canonical identity and uses ordinary update proofs. */
+  async previewReactivate(memberId: string, expectedRevision: Revision): Promise<MemberWritePlan> {
+    const plan = await this.previewUpdate(memberId, { active: true }, expectedRevision);
+    if (plan.kind !== "update" || parseMemberArtifact(plan.beforeDocument, plan.member.sourcePath).active) {
+      throw artifactError(
+        "VALIDATION_FAILED",
+        "Member is already active",
+        "Only an inactive member can be reactivated.",
+        plan.member.sourcePath,
+      );
+    }
+    return plan;
   }
 
   async apply(
@@ -328,6 +343,7 @@ export class MemberRepository implements MemberReader {
               plan.beforeRevision,
               plan.document,
               MEMBER_ARTIFACT_MAX_BYTES,
+              "canonical",
             );
           }
         }
@@ -501,7 +517,7 @@ export class MemberRepository implements MemberReader {
           }
           continue;
         }
-        const stored = tryReadContainedArtifact(this.#projectRoot, path, MEMBER_ARTIFACT_MAX_BYTES);
+        const stored = tryReadContainedArtifact(this.#projectRoot, path, MEMBER_ARTIFACT_MAX_BYTES, "canonical");
         if (stored === null) {
           throw artifactError(
             "REVISION_CONFLICT",

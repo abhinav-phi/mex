@@ -345,6 +345,62 @@ describe("mutation cannot bypass review", () => {
   });
 });
 
+describe("creation provenance through the ordinary Wiki service", () => {
+  it("previews and applies exact recorded author/time/session, then preserves them on retry and update", () => {
+    const root = scaffold(false);
+    const path = "context/new-decision.md";
+    const request = {
+      opId: "service-created-provenance", type: "create-entry",
+      actor: { kind: "agent", id: "explicit-agent", sessionId: "explicit-session" },
+      timestamp: "2026-09-08T10:00:00.000Z",
+      payload: { file: path, insertAt: { at: "end-of-file" }, type: "decision", title: "A documented choice", body: "The reason for this choice." },
+    };
+    const preview = wikiPlanOperation(request, { scaffoldRoot: root });
+    expect(preview.data.planned, JSON.stringify(preview.diagnostics)).toBe(true);
+    expect(existsSync(join(root, path))).toBe(false);
+    const applied = wikiApplyOperation(request, {
+      scaffoldRoot: root, apply: true,
+      plan: preview.data.plan!, expectedPreviewRevision: preview.data.preview!.previewHash,
+    });
+    expect(applied.data.applied).toBe(true);
+    expect(readFileSync(join(root, path), "utf8")).toBe(preview.data.proposedText[path]);
+    const entity = locateEntity(applied.data.createdIds[0]!, { scaffoldRoot: root })!.entity;
+    expect(entity.provenance).toEqual({
+      createdBy: { kind: "agent", id: "explicit-agent" },
+      createdAt: request.timestamp, agentSessionId: "explicit-session",
+    });
+    const retry = wikiApplyOperation(request, { scaffoldRoot: root, apply: true });
+    expect(retry.data.replayed).toBe(true);
+    expect(retry.data.createdIds).toEqual(applied.data.createdIds);
+    const completedBytes = readFileSync(join(root, "events/operations.jsonl"), "utf8");
+    const createdBytes = readFileSync(join(root, path), "utf8");
+    for (const changed of [
+      { ...request, payload: { ...request.payload, body: "Unapproved different content." } },
+      { ...request, actor: { ...request.actor, id: "different-author" } },
+      { ...request, timestamp: "2026-09-09T10:00:00.000Z" },
+      { ...request, actor: { ...request.actor, sessionId: "different-session" } },
+    ]) {
+      const refused = wikiApplyOperation(changed, { scaffoldRoot: root, apply: true });
+      expect(refused.data.applied).toBe(false);
+      expect(refused.data.replayed).toBe(false);
+      expect(refused.diagnostics.some((entry) => entry.code === "INVALID_OPERATION_ENVELOPE")).toBe(true);
+    }
+    expect(readFileSync(join(root, "events/operations.jsonl"), "utf8")).toBe(completedBytes);
+    expect(readFileSync(join(root, path), "utf8")).toBe(createdBytes);
+    expect(readAuditLog(root).entries.filter((entry) => entry.phase === "complete")).toHaveLength(1);
+    const update = wikiApplyOperation({
+      ...request, opId: "service-updated-provenance", type: "update-entry", entityId: entity.id,
+      actor: { kind: "human", id: "explicit-editor" }, timestamp: "2026-09-08T11:00:00.000Z",
+      baseRevision: entity.revision, baseContentHash: entity.location.entityContentHash,
+      payload: { body: "The corrected reason for this choice." },
+    }, { scaffoldRoot: root, apply: true });
+    expect(update.data.applied).toBe(true);
+    expect(locateEntity(entity.id, { scaffoldRoot: root })!.entity.provenance).toEqual(entity.provenance);
+    expect(readAuditLog(root).entries.filter((entry) => entry.phase === "complete").at(-1)?.actor)
+      .toEqual({ kind: "human", id: "explicit-editor" });
+  });
+});
+
 describe("INDEX_REFRESH_REQUIRED", () => {
   it("is suppressed when the scaffold has no index at all", () => {
     const root = scaffold(false);

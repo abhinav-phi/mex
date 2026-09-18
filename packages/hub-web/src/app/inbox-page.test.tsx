@@ -238,7 +238,7 @@ describe("Inbox Spec-authoring workbench", () => {
     renderRoute(createFixtureApi(), `/inbox?view=review&proposal=${OWN_PROPOSAL_ID}`);
 
     const detail = await screen.findByRole("region", { name: "Selected Inbox review detail" });
-    expect(await within(detail).findByText("Spec change")).toBeVisible();
+    expect(await within(detail).findByText("Knowledge change")).toBeVisible();
     expect(within(detail).getByText("New constraint")).toBeVisible();
     expect(within(detail).getByText("Published by Ada Lovelace")).toBeVisible();
     expect(within(detail).getByRole("heading", { name: "What will change" })).toBeVisible();
@@ -336,7 +336,7 @@ describe("Inbox Spec-authoring workbench", () => {
     renderRoute(api, `/inbox?view=review&proposal=${PROPOSAL_ID}`);
 
     const detail = await screen.findByRole("region", { name: "Selected Inbox review detail" });
-    expect(await within(detail).findByText("Current Spec content could not be read")).toBeVisible();
+    expect(await within(detail).findByText("Current knowledge content could not be read")).toBeVisible();
     expect(within(detail).getByText(/Proposed values remain available below/)).toBeVisible();
     expect(within(detail).getByText("Require exact evidence review before release approval.")).toBeVisible();
     expect(within(detail).getByText(/Private proposal prose remains outside durable Specs until approval/)).toBeVisible();
@@ -450,12 +450,12 @@ describe("Inbox Spec-authoring workbench", () => {
     renderRoute(api);
     await screen.findByRole("heading", { level: 2, name: "Clarify release evidence review" });
     await user.click(screen.getByRole("button", { name: "Approve change" }));
-    const confirmation = await screen.findByRole("alertdialog", { name: "Approve this Spec change?" });
+    const confirmation = await screen.findByRole("alertdialog", { name: "Approve this knowledge change?" });
     expect(within(confirmation).getByText("Clarify release evidence review")).toBeVisible();
-    expect(within(confirmation).getByText("Spec entity affected")).toBeVisible();
+    expect(within(confirmation).getByText("Knowledge entity affected")).toBeVisible();
     expect(within(confirmation).getByText("Human-team memory release")).toBeVisible();
     expect(within(confirmation).getByText("Approving as Ada Lovelace")).toBeVisible();
-    expect(within(confirmation).getByText("Write the reviewed Spec change")).toBeVisible();
+    expect(within(confirmation).getByText("Write the reviewed knowledge change")).toBeVisible();
     expect(within(confirmation).queryByText(".mex/specs/mx_01000000000000000000000001.md")).not.toBeInTheDocument();
 
     expect(await openExactTechnicalDetails(user, confirmation)).toBeVisible();
@@ -528,7 +528,7 @@ describe("Inbox Spec-authoring workbench", () => {
     expect(preview).not.toHaveBeenCalled();
 
     await user.click(within(warning).getByRole("button", { name: "Continue without teammate review" }));
-    const confirmation = await screen.findByRole("alertdialog", { name: "Approve this Spec change?" });
+    const confirmation = await screen.findByRole("alertdialog", { name: "Approve this knowledge change?" });
     expect(preview).toHaveBeenCalledOnce();
     expect(preview.mock.calls[0]![0].action).toEqual({
       kind: "inbox.approve",
@@ -544,7 +544,7 @@ describe("Inbox Spec-authoring workbench", () => {
     const gitNotice = noticeTitle.closest<HTMLElement>("[role='alert']");
     if (gitNotice === null) throw new Error("Expected the focused Git truth alert.");
     expect(within(gitNotice).getByText(
-      "Spec change and review record were written to your working tree. Commit and push them to share the result with your team.",
+      "Knowledge change and review record were written to your working tree. Commit and push them to share the result with your team.",
     )).toBeVisible();
     await waitFor(() => expect(gitNotice).toHaveFocus());
     await user.click(within(gitNotice).getByRole("button", { name: "Dismiss Git notice" }));
@@ -557,8 +557,8 @@ describe("Inbox Spec-authoring workbench", () => {
 
     await screen.findByRole("heading", { level: 2, name: "Refresh the stale review boundary" });
     expect(screen.getAllByText("Needs refresh").length).toBeGreaterThan(0);
-    expect(screen.getByText("The referenced Spec content changed after this proposal was published.")).toBeVisible();
-    expect(screen.getByText("Its author or their agent should refresh this proposal against current Spec content.")).toBeVisible();
+    expect(screen.getByText("The referenced knowledge content changed after this proposal was published.")).toBeVisible();
+    expect(screen.getByText("Its author or their agent should refresh this proposal against current knowledge content.")).toBeVisible();
     expect(screen.queryByRole("button", { name: "Approve change" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "More proposal actions" })).not.toBeInTheDocument();
     expect(screen.queryByText("Repair manually…")).not.toBeInTheDocument();
@@ -727,10 +727,10 @@ describe("Inbox Spec-authoring workbench", () => {
     await openDrafts(user);
     const trigger = await screen.findByRole("button", { name: "Create manually" });
     await user.click(trigger);
-    const dialog = await screen.findByRole("dialog", { name: "Create local Spec draft" });
+    const dialog = await screen.findByRole("dialog", { name: "Create local knowledge draft" });
     await waitFor(() => expect(within(dialog).getByRole("combobox", { name: "Change type" })).toHaveFocus());
     const title = within(dialog).getByRole("textbox", { name: "Title" });
-    const body = within(dialog).getByRole("textbox", { name: "Spec body" });
+    const body = within(dialog).getByRole("textbox", { name: "Knowledge body" });
     const rationale = within(dialog).getByRole("textbox", { name: "Rationale" });
     fireEvent.change(title, { target: { value: "Canonical multiline requirement" } });
     fireEvent.change(body, { target: { value: "First line\n\tTabbed second line" } });
@@ -824,9 +824,9 @@ describe("Inbox Spec-authoring workbench", () => {
     await openDrafts(user);
     const trigger = await screen.findByRole("button", { name: "Create manually" });
     await user.click(trigger);
-    expect(await screen.findByRole("dialog", { name: "Create local Spec draft" })).toBeVisible();
+    expect(await screen.findByRole("dialog", { name: "Create local knowledge draft" })).toBeVisible();
     await user.keyboard("{Escape}");
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Create local Spec draft" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Create local knowledge draft" })).not.toBeInTheDocument());
     expect(trigger).toHaveFocus();
   });
 
@@ -845,10 +845,10 @@ describe("Inbox Spec-authoring workbench", () => {
 
     await openDrafts(user);
     await user.click(await screen.findByRole("button", { name: "Create manually" }));
-    const dialog = await screen.findByRole("dialog", { name: "Create local Spec draft" });
+    const dialog = await screen.findByRole("dialog", { name: "Create local knowledge draft" });
     const title = within(dialog).getByRole("textbox", { name: "Title" });
     fireEvent.change(title, { target: { value: "Original reviewed title" } });
-    fireEvent.change(within(dialog).getByRole("textbox", { name: "Spec body" }), { target: { value: "Original body." } });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Knowledge body" }), { target: { value: "Original body." } });
     fireEvent.change(within(dialog).getByRole("textbox", { name: "Rationale" }), { target: { value: "Original rationale." } });
     await user.click(within(dialog).getByRole("button", { name: "Save draft" }));
     await waitFor(() => expect(staleRequest).toBeDefined());
@@ -1092,8 +1092,8 @@ describe("Inbox Spec-authoring workbench", () => {
     await screen.findByRole("heading", { level: 2, name: draft.title });
     await user.click(screen.getByRole("button", { name: "Publish for review" }));
     const confirmation = await screen.findByRole("alertdialog", { name: "Publish this draft for review?" });
-    expect(within(confirmation).getByText(/Git-tracked proposal for teammate review/)).toBeVisible();
-    expect(within(confirmation).getByText(/does not change the Spec or share anything automatically/)).toBeVisible();
+    expect(within(confirmation).getByText(/pending Markdown proposal in this checkout/)).toBeVisible();
+    expect(within(confirmation).getByText(/Project knowledge changes only after approval/)).toBeVisible();
     expect(within(confirmation).getByText("Git step still required")).toBeVisible();
     expect(preview).not.toHaveBeenCalled();
     expect(apply).not.toHaveBeenCalled();

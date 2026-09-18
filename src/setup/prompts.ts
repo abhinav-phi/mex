@@ -47,9 +47,11 @@ shadow the source being populated.
    context; they are not automatically grounding targets. Do not ground file,
    import, parameter, or vague component nodes.
 3. When prose names a load-bearing function, method, or class that you looked
-   up in the graph, make the readable symbol mention a navigation anchor:
-   [\`symbolName()\`](mex://<exact-node-id>). Anchor where a future agent would
-   plausibly jump to code, not every incidental mention. Inline anchors contain
+   up in the graph, make the readable symbol mention a navigation anchor of the
+   form \`[symbolName()](mex://<exact-node-id>)\`, using the real node id. Setup
+   verifies every mex:// link, so never write the placeholder as a link. Anchor
+   where a future agent would plausibly jump to code, not every incidental
+   mention. Inline anchors contain
    the node id only; never put a fingerprint in the URI.
 4. Broad architecture/stack/conventions files should ground sparsely or remain
    \`grounds_to: []\`. Pattern files and deep domain files should ground tightly

@@ -79,6 +79,12 @@ export function makeGroundingChecker(
       if (!baseline) continue;
       const resolution = reconciler.reconcile(grounding.node, baseline);
       if (resolution.kind === "MOVED") {
+        const moved = graph.getNode(resolution.nodeId);
+        const baselineBodyHash = grounding.bodyHash ?? baselineSource?.bodyHash;
+        if (moved && baselineBodyHash !== undefined && moved.bodyHash !== baselineBodyHash) {
+          issues.push(issue("GROUNDING_DRIFT", "warning", source,
+            `Grounded node body changed: ${grounding.node}; candidate: ${resolution.nodeId}`));
+        }
         grounding.node = resolution.nodeId;
         const movedFingerprint = capabilities.getFingerprint?.(resolution.nodeId);
         if (movedFingerprint) grounding.fingerprint = serializeFingerprint(movedFingerprint);

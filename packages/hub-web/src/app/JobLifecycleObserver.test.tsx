@@ -1,5 +1,6 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { HubApi } from "../api/client";
 import { HubApiProvider } from "../api/context";
@@ -32,17 +33,79 @@ class FakeBroadcastChannel {
   }
 }
 
-function renderObserver(api: HubApi, queryClient: QueryClient, channelScope?: string) {
+function renderObserver(api: HubApi, queryClient: QueryClient, channelScope?: string, children?: ReactNode) {
   return render(
     <QueryClientProvider client={queryClient}>
       <HubApiProvider api={api}>
         <JobLifecycleObserver channelScope={channelScope} />
+        {children}
       </HubApiProvider>
     </QueryClientProvider>,
   );
 }
 
+const contextKeys = [
+  ["wiki-graph"],
+  ["context-detail", "mx_selected", "same-wiki-revision"],
+  ["context-code", "mx_selected", "same-wiki-revision"],
+] as const;
+
+function ContextRead({ queryKey, read }: {
+  queryKey: readonly string[];
+  read(): Promise<{ indexedRevision: string; observation: number }>;
+}) {
+  useQuery({ queryKey, queryFn: read, staleTime: Infinity });
+  return null;
+}
+
 describe("JobLifecycleObserver", () => {
+  it.each(["graph_refresh", "graph_rebuild", "wiki_refresh", "wiki_rebuild"] as const)(
+    "refreshes mounted Context reads after successful %s even when the Wiki revision is unchanged",
+    async (kind) => {
+      const fixture = createFixtureApi();
+      const jobs = await fixture.getJobs();
+      const original = jobs.items.find((job) => job.state === "running");
+      if (!original) throw new Error("Expected a running fixture job.");
+      let current = { ...original, kind };
+      let publish: ((job: typeof original) => void) | undefined;
+      const subscribeToJob = vi.fn((_id: string, callback: (job: typeof original) => void) => {
+        publish = callback;
+        return { close() {} };
+      });
+      const api = {
+        getJobs: vi.fn(async () => ({ items: [current], nextCursor: null })),
+        subscribeToJob,
+      } as unknown as HubApi;
+      let observation = 0;
+      const readers = contextKeys.map(() => vi.fn(async () => ({
+        indexedRevision: "same-wiki-revision", observation,
+      })));
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const rendered = renderObserver(api, queryClient, undefined, contextKeys.map((queryKey, index) => (
+        <ContextRead key={queryKey[0]} queryKey={queryKey} read={readers[index]!} />
+      )));
+      try {
+        await waitFor(() => {
+          expect(subscribeToJob).toHaveBeenCalled();
+          for (const key of contextKeys) expect(queryClient.getQueryData(key)).toMatchObject({ observation: 0 });
+        });
+        await act(async () => publish?.({ ...current, progress: { completed: 2, total: 4 } }));
+        for (const read of readers) expect(read).toHaveBeenCalledOnce();
+
+        observation = 1;
+        current = { ...current, state: "succeeded", phase: "publish", finishedAt: "2026-08-26T12:01:00.000Z" };
+        await act(async () => publish?.(current));
+        await waitFor(() => {
+          for (const key of contextKeys) expect(queryClient.getQueryData(key)).toEqual({ indexedRevision: "same-wiki-revision", observation: 1 });
+        });
+        for (const read of readers) expect(read).toHaveBeenCalledTimes(2);
+      } finally {
+        rendered.unmount();
+        queryClient.clear();
+      }
+    },
+  );
+
   it("loads lifecycle state once without registering a timer poll", async () => {
     const getJobs = vi.fn().mockResolvedValue({ items: [], nextCursor: null });
     const subscribeToJob = vi.fn();

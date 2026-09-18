@@ -120,8 +120,9 @@ import {
 import { artifactError } from "../artifacts/errors.js";
 import {
   assertContainedArtifactDirectory,
-  readContainedArtifact,
+  canonicalCheckoutBytes,
   tryReadContainedArtifact,
+  type ArtifactByteMode,
 } from "../artifacts/filesystem.js";
 import { revisionOf } from "../artifacts/revision.js";
 import { generateArtifactId, isArtifactId } from "../artifacts/ulid.js";
@@ -181,6 +182,8 @@ import {
   inboxDraftInputFromProduct,
   inboxSigningPayload,
   materializeSpecWikiRequest,
+  isInboxCreateChange,
+  isInboxUpdateChange,
   normalizeInboxListFilter,
   normalizeTeamInboxSpecCommand,
   productDraftProjection,
@@ -628,7 +631,7 @@ export class RepositoryTeamWorkflowPort<
     this.#assertPortablePreviewFresh(envelope.receipt.authority.occurredAt);
     await this.#assertAuthorityCurrent(
       envelope.receipt.authority,
-      envelope.request.action.kind === "member.clear",
+      actionAllowsStaleSelectionFallback(envelope.request.action.kind),
     );
     const replanned = await this.#plan(
       command,
@@ -1198,14 +1201,14 @@ export class RepositoryTeamWorkflowPort<
         ) continue;
         if (
           filter.workstreamId !== null
-          && (stored.schemaVersion === 3
+          && ((stored.schemaVersion === 3 || stored.schemaVersion === 4)
             || stored.workstream.id !== filter.workstreamId)
         ) continue;
         if (filter.perspective === "sent") {
           if (stored.sender.kind !== "member" || stored.sender.memberId !== memberId) continue;
         } else if (filter.perspective === "mine") {
           const mine = stored.state === "published"
-            ? stored.recipients.some(
+            ? stored.audience === "team" || stored.recipients.some(
                 (recipient) => recipient.kind === "member" && recipient.memberId === memberId,
               )
             : stored.acknowledgedBy?.kind === "member"
@@ -1979,6 +1982,18 @@ export class RepositoryTeamWorkflowPort<
           return primary([applied.member], [applied.change]);
         });
       }
+      case "member.reactivate": {
+        const current = await required(this.#members.get(action.memberId), "Member");
+        requireArtifactExpectation(expectedRevisions, current.sourcePath, current.revision);
+        const plan = await this.#members.previewReactivate(action.memberId, current.revision);
+        return canonicalPlan<TWikiPayload>(plan, "member", action.memberId, workflowActivity("member.reactivate", {
+          action: "member.reactivated",
+          subjects: [entitySubject(plan.member.ref)],
+        }, plan.member.displayName), async () => {
+          const applied = await this.#members.apply(plan, plan.previewRevision);
+          return primary([applied.member], [applied.change]);
+        });
+      }
       case "member.select": {
         const member = await required(this.#members.get(action.memberId), "Member");
         requireArtifactExpectation(expectedRevisions, member.sourcePath, member.revision);
@@ -2273,6 +2288,7 @@ export class RepositoryTeamWorkflowPort<
         requireLocalExpectation(expectedRevisions, "relay-draft", action.draftId, draft.revision);
         const compatibility = normalizeRelayDraftInputWithLegacy(draft.payload);
         const payload = normalizeStoredRelayProductDraftInput(compatibility.input);
+        const { audience, ...publicationPayload } = payload;
         const recipients = await Promise.all(payload.recipients.map(async (recipient) => {
           if (recipient.kind !== "member") throw relayUnauthorized("Relay recipients must be Members.");
           const member = await required(this.#members.get(recipient.memberId), "Member");
@@ -2296,7 +2312,7 @@ export class RepositoryTeamWorkflowPort<
           );
           const plan = await this.#relays.previewCreate({
             ...(recoveryId === null ? {} : { id: recoveryId }),
-            ...payload,
+            ...publicationPayload,
             schemaVersion: 2,
             evidence: compatibility.legacy.evidence,
             recipients,
@@ -2312,8 +2328,8 @@ export class RepositoryTeamWorkflowPort<
         }
         const plan = await this.#relays.previewCreate({
           ...(recoveryId === null ? {} : { id: recoveryId }),
-          ...payload,
-          schemaVersion: 3,
+          ...publicationPayload,
+          ...(audience === "team" ? { schemaVersion: 4 as const, audience: "team" as const } : { schemaVersion: 3 as const }),
           recipients,
           sender: authority.actor,
           publishedAt: authority.occurredAt,
@@ -2344,7 +2360,7 @@ export class RepositoryTeamWorkflowPort<
         return canonicalWorkflowPlan(plan, "relay", action.relayId, workflowActivity(action.kind, {
           action: action.kind === "relay.acknowledge" ? "relay.acknowledged" : "relay.closed",
           subjects: [entitySubject(plan.artifact.ref)],
-          ...(current.schemaVersion === 3
+          ...((current.schemaVersion === 3 || current.schemaVersion === 4)
             ? {}
             : { workstream: current.workstream }),
         }, current.summary), this.#relays);
@@ -2440,7 +2456,7 @@ export class RepositoryTeamWorkflowPort<
     if (governedInbox && specChange === null) {
       throw artifactError(
         "VALIDATION_FAILED",
-        "Inbox proposal is outside Spec authoring",
+        "Inbox proposal is outside governed Inbox authoring",
         "The governed Inbox/Spec facade cannot execute a generic Wiki proposal.",
         current.sourcePath,
       );
@@ -2496,7 +2512,7 @@ export class RepositoryTeamWorkflowPort<
         );
       }
       const receiptSpecId = purposeId(purposeIds, "spec-entity");
-      const recoverySpecId = specChange?.kind === "spec.create"
+      const recoverySpecId = (specChange !== null && isInboxCreateChange(specChange))
         ? recoveryCreatedSpecId(
             recoveryEffects,
             current.ref.id,
@@ -2510,11 +2526,11 @@ export class RepositoryTeamWorkflowPort<
       ) throw previewConflict();
       if (
         governedInbox
-        && specChange?.kind === "spec.create"
+        && (specChange !== null && isInboxCreateChange(specChange))
         && recoveryEffects !== undefined
         && recoverySpecId === null
       ) throw incompleteRecovery();
-      const pinnedSpecId = specChange?.kind === "spec.create"
+      const pinnedSpecId = (specChange !== null && isInboxCreateChange(specChange))
         ? receiptSpecId ?? recoverySpecId ?? this.#mintSpecId()
         : undefined;
       const wikiRequest = specChange === null
@@ -2524,9 +2540,9 @@ export class RepositoryTeamWorkflowPort<
             command.authority,
             pinnedSpecId,
           ) as unknown as WikiOperationRequest<TWikiPayload>;
-      const wikiPreview = specChange?.kind === "spec.create"
+      const wikiPreview = (specChange !== null && isInboxCreateChange(specChange))
         ? await this.#previewWikiWithCreatedId(wikiRequest, pinnedSpecId!)
-        : specChange?.kind === "spec.update"
+        : (specChange !== null && isInboxUpdateChange(specChange))
           ? await this.#previewWikiAuthoringUpdate(wikiRequest)
           : await this.#wiki.previewOperations(wikiRequest);
       if (!wikiPreview.valid) {
@@ -2542,7 +2558,7 @@ export class RepositoryTeamWorkflowPort<
           ? [entitySubject(current.ref), ...wikiPreview.affectedEntities.map(entitySubject)]
           : [
               entitySubject(current.ref),
-              entitySubject(specChange.kind === "spec.create"
+              entitySubject(isInboxCreateChange(specChange)
                 ? { id: pinnedSpecId!, kind: specChange.entityKind }
                 : specChange.target),
             ],
@@ -2629,6 +2645,7 @@ export class RepositoryTeamWorkflowPort<
           this.#root.path,
           expectation.target.path,
           recoveryFileByteLimit(expectation.target.path),
+          teamArtifactByteMode(expectation.target.path),
         );
         if ((artifact?.revision ?? null) !== expectation.revision) {
           throw targetRevisionChanged(expectation.target.path);
@@ -2717,7 +2734,7 @@ export class RepositoryTeamWorkflowPort<
       ) {
         throw artifactError(
           "VALIDATION_FAILED",
-          "Inbox draft is outside Spec authoring",
+          "Inbox draft is outside governed Inbox authoring",
           "The governed Inbox/Spec facade accepts only its own typed local drafts.",
         );
       }
@@ -2732,7 +2749,7 @@ export class RepositoryTeamWorkflowPort<
     ) {
       throw artifactError(
         "VALIDATION_FAILED",
-        "Inbox proposal is outside Spec authoring",
+        "Inbox proposal is outside governed Inbox authoring",
         "The governed Inbox/Spec facade accepts only its own typed canonical proposals.",
       );
     }
@@ -2917,6 +2934,13 @@ export class RepositoryTeamWorkflowPort<
         "relay",
       );
       const payload = normalizeStoredRelayProductDraftInput(draft.payload);
+      if (payload.audience !== "team" && payload.recipients.length === 0) {
+        throw artifactError(
+          "VALIDATION_FAILED",
+          "Relay recipients are required for publication",
+          "Choose at least one active Member or explicitly open the handoff to the team before publishing.",
+        );
+      }
       const recipients = await Promise.all(payload.recipients.map(async (recipient) => {
         if (recipient.kind !== "member") {
           throw artifactError(
@@ -2978,7 +3002,7 @@ export class RepositoryTeamWorkflowPort<
           relay.sourcePath,
         );
       }
-      if (!relay.recipients.some(
+      if (relay.audience !== "team" && !relay.recipients.some(
         (recipient) => recipient.kind === "member" && recipient.memberId === actorId,
       )) {
         throw relayUnauthorized("Only a listed Relay recipient may acknowledge it.");
@@ -3320,6 +3344,7 @@ export class RepositoryTeamWorkflowPort<
         this.#root.path,
         change.path,
         recoveryFileByteLimit(change.path),
+        teamArtifactByteMode(change.path),
       );
       if ((observed?.revision ?? null) !== change.beforeRevision) {
         throw targetRevisionChanged(change.path);
@@ -3330,6 +3355,7 @@ export class RepositoryTeamWorkflowPort<
       this.#root.path,
       prepared.activity.sourcePath,
       ACTIVITY_ARTIFACT_MAX_BYTES,
+      "canonical",
     );
     if (observedActivity !== null) {
       throw targetRevisionChanged(prepared.activity.sourcePath);
@@ -3623,6 +3649,7 @@ export class RepositoryTeamWorkflowPort<
         this.#root.path,
         activity.path,
         ACTIVITY_ARTIFACT_MAX_BYTES,
+        "canonical",
       );
       if (occupied !== null) throw targetRevisionChanged(activity.path);
     }
@@ -3762,16 +3789,16 @@ export class RepositoryTeamWorkflowPort<
     const specChange = storedSpecChange(
       proposal as unknown as InboxProposal<JsonValue>,
     );
-    const recoveredSpecId = specChange?.kind === "spec.create"
+    const recoveredSpecId = (specChange !== null && isInboxCreateChange(specChange))
       ? recoveryCreatedSpecId(
           effects,
           proposal.ref.id,
           specChange.entityKind,
         )
       : null;
-    if (specChange?.kind === "spec.create" && recoveredSpecId === null) {
+    if ((specChange !== null && isInboxCreateChange(specChange)) && recoveredSpecId === null) {
       throw wikiRecoveryConflict(
-        "The durable Wiki recovery manifest lost the receipt-pinned Spec ID.",
+        "The durable Wiki recovery manifest lost the receipt-pinned entity ID.",
       );
     }
     const request = specChange === null
@@ -3787,7 +3814,7 @@ export class RepositoryTeamWorkflowPort<
             occurredAt: activity.occurredAt,
             repoState: activity.repoState,
           },
-          specChange.kind === "spec.create" ? recoveredSpecId! : undefined,
+          isInboxCreateChange(specChange) ? recoveredSpecId! : undefined,
         ) as unknown as WikiOperationRequest<TWikiPayload>;
     if (recovery.manifest.operationId !== request.operation.opId) {
       throw wikiRecoveryConflict(
@@ -3842,6 +3869,7 @@ export class RepositoryTeamWorkflowPort<
         this.#root.path,
         change.path,
         recoveryFileByteLimit(change.path),
+        "exact",
       );
       if ((observed?.revision ?? null) !== change.beforeRevision) {
         throw targetRevisionChanged(change.path);
@@ -3941,6 +3969,7 @@ export class RepositoryTeamWorkflowPort<
       this.#root.path,
       activity.path,
       ACTIVITY_ARTIFACT_MAX_BYTES,
+      "canonical",
     );
     if (stored?.revision !== activity.revision) throw incompleteRecovery();
   }
@@ -3957,6 +3986,7 @@ export class RepositoryTeamWorkflowPort<
       this.#root.path,
       activity.path,
       ACTIVITY_ARTIFACT_MAX_BYTES,
+      "canonical",
     )?.revision !== activity.revision;
   }
 
@@ -4071,6 +4101,7 @@ export class RepositoryTeamWorkflowPort<
         this.#root.path,
         effect.path,
         recoveryFileByteLimit(effect.path),
+        effect.namespace === "wiki" ? "exact" : teamArtifactByteMode(effect.path),
       );
       const revision = read?.revision ?? null;
       if (revision === effect.afterRevision) return "after";
@@ -4254,6 +4285,7 @@ export async function createRepositoryTeamWorkflowPort(
     root.path,
     ".mex/config.json",
     64 * 1024,
+    "exact",
   );
   if (config === null) {
     throw missingScaffoldIdentity();
@@ -4268,19 +4300,14 @@ export async function createRepositoryTeamWorkflowPort(
     path: ".mex/config.json",
     maxBytes: 64 * 1024,
   });
-  // Byte equality, deliberately: this attests the whole tracked config, not
-  // just its identity, and a local edit to any field means teammates are
-  // reading something this checkout is not.
-  //
-  // It compares cleanly across platforms because `tryReadContainedArtifact`
-  // undoes Git's checkout line-ending conversion — without that, `core.autocrlf`
-  // (true by default on Windows) made the working copy and its blob differ by
-  // one byte per line on a tree `git diff` calls clean, and the Hub refused to
-  // start for everyone who cloned.
+  // Compare the whole tracked config after undoing checkout CRLF conversion.
+  // Keep the observed file and revision exact so a concurrent line-ending edit
+  // still invalidates the second read below.
   if (
     trackedConfig === null
     || trackedConfig.truncated
-    || !Buffer.from(trackedConfig.content).equals(Buffer.from(config.bytes))
+    || !Buffer.from(canonicalCheckoutBytes(trackedConfig.content))
+      .equals(Buffer.from(canonicalCheckoutBytes(config.bytes)))
   ) {
     throw missingScaffoldIdentity();
   }
@@ -4290,6 +4317,7 @@ export async function createRepositoryTeamWorkflowPort(
     root.path,
     ".mex/config.json",
     64 * 1024,
+    "exact",
   );
   const confirmedAuthority = await git.getRepoState();
   if (
@@ -4369,10 +4397,19 @@ function inboxPublicPreviewFrom<TWikiPayload extends JsonValue>(
   return deepFreeze({
     valid: preview.valid,
     scope: preview.scope,
-    changes: preview.changes,
+    changes: preview.changes.map(inboxPresentationChange),
     localChanges: preview.localChanges as TeamInboxSpecPreviewEnvelope["preview"]["localChanges"],
     diagnostics: preview.diagnostics,
   });
+}
+
+/** Show CR unambiguously in the signed display; executable text and hashes stay exact. */
+function inboxPresentationChange(change: FileChange): FileChange {
+  if (!change.diff.includes("\r")) return change;
+  return {
+    ...change,
+    diff: `Carriage returns are displayed as \\r; literal backslashes as \\\\ below.\n${change.diff.replaceAll("\\", "\\\\").replaceAll("\r", "\\r")}`,
+  };
 }
 
 function relayPublicPreviewFrom<TWikiPayload extends JsonValue>(
@@ -4661,6 +4698,7 @@ function purposeIdsFromEffects(
     action === "member.add"
     || action === "member.update"
     || action === "member.deactivate"
+    || action === "member.reactivate"
     || action === "activity.record"
   ) {
     const activities = effects.filter(
@@ -4727,6 +4765,7 @@ function assertIdentityActivityCommand(
       break;
     }
     case "member.deactivate":
+    case "member.reactivate":
     case "member.select":
     case "member.clear":
       break;
@@ -5536,6 +5575,7 @@ function normalizeReceiptPurposeIds(
     ? ["activity", "member"]
     : action === "member.update"
       || action === "member.deactivate"
+      || action === "member.reactivate"
       || action === "activity.record"
       ? ["activity"]
       : [];
@@ -6218,6 +6258,27 @@ function recoveryFileByteLimit(path: RepoRelativePath): number {
     : MAX_WIKI_RECOVERY_FILE_BYTES;
 }
 
+/** Only serializer-owned Team records use portable LF revisions. */
+function teamArtifactByteMode(path: RepoRelativePath): ArtifactByteMode {
+  if (!path.endsWith(".md")) return "exact";
+  const id = path.slice(path.lastIndexOf("/") + 1, -3);
+  for (const [prefix, pathOf] of [
+    ["member", memberArtifactPath],
+    ["ws", workstreamArtifactPath],
+    ["proposal", inboxProposalArtifactPath],
+    ["relay", relayArtifactPath],
+    ["playbook", playbookArtifactPath],
+    ["run", playbookRunArtifactPath],
+  ] as const) {
+    if (isArtifactId(id, prefix) && pathOf(id) === path) return "canonical";
+  }
+  if (isArtifactId(id, "event")
+    && /^\.mex\/events\/activity\/\d{4}-(?:0[1-9]|1[0-2])\/[^/]+\.md$/u.test(path)) {
+    return "canonical";
+  }
+  return "exact";
+}
+
 function isWikiOperationLogEffect(effect: CanonicalWorkflowEffect): boolean {
   return effect.namespace === "wiki"
     && effect.path === ".mex/events/operations.jsonl";
@@ -6291,12 +6352,12 @@ function compareCodePoints(left: string, right: string): number {
 
 function inboxSummaryMatches(
   summary: {
-    changeKind: "spec.create" | "spec.update";
+    changeKind: "spec.create" | "spec.update" | "knowledge.create" | "knowledge.update";
     entityKind: string;
     state?: string;
   },
   filter: {
-    changeKinds?: readonly ("spec.create" | "spec.update")[];
+    changeKinds?: readonly ("spec.create" | "spec.update" | "knowledge.create" | "knowledge.update")[];
     entityKinds?: readonly string[];
     states?: readonly string[];
   },
@@ -6550,6 +6611,7 @@ function assertActionShape(action: unknown): void {
     "member.add": [["kind", "member"], []],
     "member.update": [["kind", "memberId", "patch"], []],
     "member.deactivate": [["kind", "memberId"], []],
+    "member.reactivate": [["kind", "memberId"], []],
     "member.select": [["kind", "memberId"], []],
     "member.clear": [["kind"], []],
     "activity.record": [["kind", "activity"], []],
@@ -6718,6 +6780,7 @@ function actionAllowsStaleSelectionFallback(
   kind: TeamWorkflowAction<JsonValue>["kind"],
 ): boolean {
   return kind === "member.clear"
+    || kind === "member.reactivate"
     || kind === "relay.draft.save"
     || kind === "relay.draft.delete";
 }

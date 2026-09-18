@@ -8,10 +8,9 @@ import {
   CheckCircle2,
   ChevronDown,
   CircleDashed,
-  ExternalLink,
   GitBranch,
-  Inbox,
   LoaderCircle,
+  Network,
   RadioTower,
   RefreshCw,
   ScrollText,
@@ -21,7 +20,7 @@ import {
 } from "lucide-react";
 import { useState, type CSSProperties, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { InboxProposalIdSchema, RelayIdSchema } from "@mex/hub-contracts/ids";
+import { RelayIdSchema } from "@mex/hub-contracts/ids";
 import { useHubApi } from "../api/context";
 import type { ActivityItem, OverviewResponse } from "../api/types";
 import {
@@ -80,6 +79,7 @@ import {
   activitySubjectRoute,
 } from "../lib/activity-presentation";
 import { graphParseComposition, shortRepositoryHead } from "../lib/health-presentation";
+import { TeamAccessCard } from "./TeamAccessCard";
 import homeStyles from "../styles/home.module.css";
 
 type FocusPanel = Extract<OverviewResponse["focus"], { availability: "available" }>;
@@ -124,14 +124,16 @@ function HomeHeader({
       title="Overview"
       description={data ? `Last checked ${formatDate(data.observedAt)}` : undefined}
       actions={(
-        <Button disabled={refreshing} onClick={onRefresh} size="sm" type="button" variant="outline">
-          <RefreshCw
-            aria-hidden="true"
-            className={refreshing ? homeStyles.refreshingIcon : undefined}
-            data-icon="inline-start"
-          />
-          {refreshing ? "Refreshing…" : "Refresh"}
-        </Button>
+        <div className={homeStyles.headerActions}>
+          <Button disabled={refreshing} onClick={onRefresh} size="sm" type="button" variant="outline">
+            <RefreshCw
+              aria-hidden="true"
+              className={refreshing ? homeStyles.refreshingIcon : undefined}
+              data-icon="inline-start"
+            />
+            {refreshing ? "Refreshing…" : "Refresh"}
+          </Button>
+        </div>
       )}
     />
   );
@@ -194,15 +196,6 @@ function actorAttentionDescription(data: OverviewResponse): string {
   return "Review the team identity MEX uses for shared actions in this checkout.";
 }
 
-function proposalRoute(source: FocusPanel["inbox"]): string {
-  if (source.availability !== "available") return "/inbox?view=review";
-  const proposal = source.items[0];
-  const parsed = proposal ? InboxProposalIdSchema.safeParse(proposal.ref.id) : null;
-  return parsed?.success
-    ? `/inbox?view=review&proposal=${encodeURIComponent(parsed.data)}`
-    : "/inbox?view=review";
-}
-
 function relayRoute(source: FocusPanel["relays"], kind: "ready" | "claimed"): string {
   if (source.availability !== "available") return "/relays?view=mine&state=open";
   const relay = kind === "ready" ? source.readyToTake[0] : source.inYourHands[0];
@@ -249,6 +242,50 @@ function contextReadiness(context: OverviewResponse["context"]): ReadinessView {
   };
 }
 
+// Context reads refuse every Wiki index that is not fresh, so only offer the
+// doorway when the page behind it can load.
+function knowledgeBrowsable(context: OverviewResponse["context"]): boolean {
+  return context.availability === "available"
+    && context.wiki.availability === "available"
+    && context.wiki.details.indexStatus === "fresh";
+}
+
+function memoryHero(context: OverviewResponse["context"]): {
+  description: string;
+  action: string;
+  route: string;
+} {
+  if (knowledgeBrowsable(context)) {
+    return {
+      description: "Notes for this repo, linked to the code.",
+      action: "Open Context",
+      route: "/knowledge",
+    };
+  }
+  return {
+    description: "The local index isn’t ready to browse yet.",
+    action: "Open Health",
+    route: "/health",
+  };
+}
+
+function MemoryHero({ context }: { context: OverviewResponse["context"] }) {
+  const hero = memoryHero(context);
+  return (
+    <section className={homeStyles.memoryHero} role="region" aria-labelledby="overview-memory-hero-heading">
+      <span className={homeStyles.memoryHeroIcon}><Network aria-hidden="true" /></span>
+      <div className={homeStyles.memoryHeroCopy}>
+        <h2 id="overview-memory-hero-heading">Context</h2>
+        <p>{hero.description}</p>
+      </div>
+      <Button nativeButton={false} render={<Link to={hero.route} />} size="sm">
+        {hero.action}
+        <ArrowRight aria-hidden="true" data-icon="inline-end" />
+      </Button>
+    </section>
+  );
+}
+
 function buildFocusItems(data: OverviewResponse): FocusItemView[] {
   const items: FocusItemView[] = [];
   const focus = data.focus.availability === "available" ? data.focus : null;
@@ -265,16 +302,6 @@ function buildFocusItems(data: OverviewResponse): FocusItemView[] {
       action: "Review identity",
       route: "/members",
       icon: UserRound,
-    });
-  }
-  if (focus?.inbox.availability === "available" && focus.inbox.teamReviewCount > 0) {
-    const count = focus.inbox.teamReviewCount;
-    items.push({
-      id: "inbox",
-      title: count === 1 ? "Review one proposed Spec change" : `Review ${count} proposed Spec changes`,
-      action: "Open Inbox",
-      route: proposalRoute(focus.inbox),
-      icon: Inbox,
     });
   }
   if (focus?.relays.availability === "available" && focus.relays.readyToTakeCount > 0) {
@@ -335,9 +362,6 @@ function focusWarnings(data: OverviewResponse): Array<{ label: string; reason: s
   if (data.focus.identity.availability === "unavailable") {
     warnings.push({ label: "Identity focus", reason: data.focus.identity.reason });
   }
-  if (data.focus.inbox.availability === "unavailable") {
-    warnings.push({ label: "Inbox focus", reason: data.focus.inbox.reason });
-  }
   if (data.focus.relays.availability === "unavailable") {
     warnings.push({ label: "Relay focus", reason: data.focus.relays.reason });
   }
@@ -371,42 +395,6 @@ function FocusTechnicalDetails({ data }: { data: OverviewResponse }) {
             ))}
           </>
         ) : <div><dt>Identity source</dt><dd>{data.identity.reason}</dd></div>}
-        {focus?.inbox.availability === "available" ? (
-          <>
-            <div><dt>Inbox revision</dt><dd><code>{focus.inbox.deterministicRevision}</code></dd></div>
-            <div><dt>Inbox source truncated</dt><dd>{focus.inbox.sourceTruncated ? "Yes" : "No"}</dd></div>
-            <div><dt>Inbox diagnostics truncated</dt><dd>{focus.inbox.diagnosticsTruncated ? "Yes" : "No"}</dd></div>
-            {focus.inbox.diagnostics.map((diagnostic, index) => (
-              <div key={`inbox:${diagnostic.code}:${diagnostic.path ?? "none"}:${index}`}>
-                <dt>{diagnostic.code}</dt>
-                <dd>{diagnostic.path ? <code>{diagnostic.path}</code> : diagnostic.message}</dd>
-              </div>
-            ))}
-          </>
-        ) : null}
-        {focus?.inbox.availability === "unavailable" ? (
-          <>
-            <div><dt>Inbox source</dt><dd>{focus.inbox.reason}</dd></div>
-            {focus.inbox.deterministicRevision ? (
-              <div><dt>Inbox revision</dt><dd><code>{focus.inbox.deterministicRevision}</code></dd></div>
-            ) : null}
-            {focus.inbox.truncated !== undefined ? (
-              <div><dt>Inbox corpus truncated</dt><dd>{focus.inbox.truncated ? "Yes" : "No"}</dd></div>
-            ) : null}
-            {focus.inbox.sourceTruncated !== undefined ? (
-              <div><dt>Inbox source truncated</dt><dd>{focus.inbox.sourceTruncated ? "Yes" : "No"}</dd></div>
-            ) : null}
-            {focus.inbox.diagnosticsTruncated !== undefined ? (
-              <div><dt>Inbox diagnostics truncated</dt><dd>{focus.inbox.diagnosticsTruncated ? "Yes" : "No"}</dd></div>
-            ) : null}
-            {focus.inbox.diagnostics?.map((diagnostic, index) => (
-              <div key={`inbox:${diagnostic.code}:${diagnostic.path ?? "none"}:${index}`}>
-                <dt>{diagnostic.code}</dt>
-                <dd>{diagnostic.path ? <code>{diagnostic.path}</code> : diagnostic.message}</dd>
-              </div>
-            ))}
-          </>
-        ) : null}
         {focus?.relays.availability === "available" ? (
           <>
             <div><dt>Relay revision</dt><dd><code>{focus.relays.deterministicRevision}</code></dd></div>
@@ -458,6 +446,12 @@ function FocusCard({ data, onRetry }: { data: OverviewResponse; onRetry: () => v
     <Card className={homeStyles.focusCard} role="region" aria-labelledby="overview-focus-heading">
       <CardHeader className={homeStyles.panelHeader}>
         <CardTitle><h2 id="overview-focus-heading">Attention</h2></CardTitle>
+        <CardAction>
+          <Button nativeButton={false} render={<Link to="/relays" />} size="sm" variant="ghost">
+            View Relays
+            <ArrowRight aria-hidden="true" data-icon="inline-end" />
+          </Button>
+        </CardAction>
       </CardHeader>
       <CardContent className={homeStyles.focusContent}>
         {primary && PrimaryIcon ? (
@@ -479,9 +473,9 @@ function FocusCard({ data, onRetry }: { data: OverviewResponse; onRetry: () => v
               <EmptyTitle>You’re caught up</EmptyTitle>
             </EmptyHeader>
             <EmptyContent>
-              <Button nativeButton={false} render={<Link to="/search" />} size="sm" variant="outline">
-                <BookOpenText aria-hidden="true" data-icon="inline-start" />
-                Browse project memory
+              <Button nativeButton={false} render={<Link to="/knowledge" />} size="sm" variant="outline">
+                <Network aria-hidden="true" data-icon="inline-start" />
+                Browse shared knowledge
               </Button>
             </EmptyContent>
           </Empty>
@@ -559,58 +553,6 @@ function ActivityRow({ item }: { item: ActivityItem }) {
   );
 }
 
-/**
- * Where the signup lives, and why the Hub never sees the address.
- *
- * The form is hosted; this card only opens it. That is not a shortcut — the Hub
- * serves itself under a policy that permits neither an outbound `fetch` nor a
- * cross-origin form post (`src/hub/app.ts`, `connect-src 'self'`,
- * `form-action 'self'`), so an input here could not submit anywhere without
- * loosening the rule that makes "Runs locally" in the sidebar true. Opening a
- * link is a navigation rather than a connection, so it stays inside the policy.
- *
- * The consequence worth stating: **no email address ever passes through mex.**
- */
-const UPDATES_FORM = "https://tally.so/r/KYjv4k";
-
-/**
- * The card is permanent and carries no dismissal, which is why it has to stay
- * quiet. Anything that cannot be put away has to be worth living with on every
- * visit, so this one states its offer once and never asks twice — no badge, no
- * count, nothing that reads as unresolved work.
- */
-function UpdatesSignupCard() {
-  return (
-    <Card className={homeStyles.updatesCard} role="region" aria-labelledby="overview-updates-heading">
-      <CardHeader className={homeStyles.panelHeader}>
-        <div>
-          <CardTitle><h2 id="overview-updates-heading">Help make MEX better</h2></CardTitle>
-        </div>
-      </CardHeader>
-      <CardContent className={homeStyles.updatesContent}>
-        <p className={homeStyles.updatesBody}>
-          A short form about how you&rsquo;re using it. Your answers help shape mex :)
-        </p>
-        <div className={homeStyles.updatesActions}>
-          {/*
-            * The trailing arrow is the only remaining cue that this leaves the
-            * Hub for a new tab, so it stays where the mail glyph did not.
-            */}
-          <Button
-            nativeButton={false}
-            render={<a href={UPDATES_FORM} rel="noopener noreferrer" target="_blank" />}
-            size="sm"
-            variant="outline"
-          >
-            Open the form
-            <ExternalLink aria-hidden="true" data-icon="inline-end" />
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
 function LatestActivityCard({ activity, onRetry }: { activity: OverviewResponse["activity"]; onRetry: () => void }) {
   return (
     <Card className={homeStyles.activityCard} role="region" aria-labelledby="overview-activity-heading">
@@ -635,7 +577,7 @@ function LatestActivityCard({ activity, onRetry }: { activity: OverviewResponse[
                 <EmptyMedia variant="icon"><ScrollText aria-hidden="true" /></EmptyMedia>
                 <EmptyHeader>
                   <EmptyTitle>No team memory yet</EmptyTitle>
-                  <EmptyDescription>Shared MEX changes, including agent-prepared Spec proposals and handoffs, will appear here automatically.</EmptyDescription>
+                  <EmptyDescription>Recorded team changes, handoffs, and project notes will appear here.</EmptyDescription>
                 </EmptyHeader>
               </Empty>
             ) : (
@@ -924,7 +866,8 @@ function OperationCard({ operation }: { operation: OverviewResponse["operation"]
   const job = operation.active ?? operation.latestRelevantFailure;
   if (job === null) return null;
   const isActive = operation.active !== null;
-  const percent = job.progress?.total === undefined
+  const graph = job.kind === "graph_refresh" || job.kind === "graph_rebuild";
+  const percent = job.progress?.total === undefined || (graph && job.phase !== "parse")
     ? null
     : Math.round((job.progress.completed / job.progress.total) * 100);
   return (
@@ -952,7 +895,9 @@ function OperationCard({ operation }: { operation: OverviewResponse["operation"]
             <Progress value={percent}>
               <ProgressLabel>{sentenceCase(job.kind)} · {sentenceCase(job.phase)}</ProgressLabel>
               <ProgressValue>
-                {() => percent !== null
+                {() => graph && job.progress
+                  ? `${job.progress.completed}${job.progress.total === undefined ? "" : ` / ${job.progress.total}`} files parsed`
+                  : percent !== null
                   ? `${job.progress!.completed} / ${job.progress!.total}`
                   : job.progress ? `${job.progress.completed} completed` : "In progress"}
               </ProgressValue>
@@ -992,6 +937,7 @@ function OverviewLoading({ onRefresh }: { onRefresh: () => void }) {
     <div className={homeStyles.page}>
       <HomeHeader onRefresh={onRefresh} refreshing={false} />
       <p className="sr-only" role="status">Loading project overview</p>
+      <PanelSkeleton label="Context" />
       <div className={homeStyles.atlasGrid}>
         <div className={homeStyles.primaryColumn}>
           <PanelSkeleton label="Attention" />
@@ -1051,6 +997,7 @@ export function HomeOverview() {
     <div className={homeStyles.page} data-overview-workbench="ready">
       <HomeHeader data={data} onRefresh={() => void refresh()} refreshing={refreshing} />
       <div className={homeStyles.liveStatus} aria-live="polite" role="status">{refreshStatus}</div>
+      <MemoryHero context={data.context} />
       <div className={homeStyles.atlasGrid}>
         <div className={homeStyles.primaryColumn}>
           <FocusCard data={data} onRetry={() => void refresh()} />
@@ -1058,7 +1005,7 @@ export function HomeOverview() {
         </div>
         <div className={homeStyles.asideColumn}>
           <LatestActivityCard activity={data.activity} onRetry={() => void refresh()} />
-          <UpdatesSignupCard />
+          <TeamAccessCard api={api} />
         </div>
         <OperationCard operation={data.operation} />
       </div>

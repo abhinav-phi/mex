@@ -27,7 +27,6 @@ import {
   lstatSync,
   linkSync,
   openSync,
-  readFileSync,
   readSync,
   realpathSync,
   renameSync,
@@ -61,8 +60,8 @@ export class IndexPathError extends Error {
 export interface IndexDirectoryBinding {
   readonly directory: string;
   readonly realDirectory: string;
-  readonly dev: number;
-  readonly ino: number;
+  readonly dev: bigint;
+  readonly ino: bigint;
   readonly allowedRoot: string;
 }
 
@@ -108,7 +107,7 @@ export function bindIndexGeneration(
     if (code !== "ENOENT") throw error;
     assertIndexPath(path, binding);
     try {
-      lstatSync(path);
+      lstatSync(path, { bigint: true });
       return generationMismatch(path, "index generation appeared while absence was being bound");
     } catch (nested) {
       const nestedCode = nested && typeof nested === "object" && "code" in nested ? nested.code : undefined;
@@ -197,7 +196,7 @@ export function bindIndexDirectory(indexPath: string, allowedRoot?: string): Ind
   const directory = resolve(dirname(indexPath));
   let lexicalDirectory;
   try {
-    lexicalDirectory = lstatSync(directory);
+    lexicalDirectory = lstatSync(directory, { bigint: true });
   } catch {
     throw new IndexPathError(indexPath);
   }
@@ -205,17 +204,17 @@ export function bindIndexDirectory(indexPath: string, allowedRoot?: string): Ind
     throw new IndexPathError(indexPath);
   }
   const realDirectory = realpathSync(directory);
-  const stats = lstatSync(realDirectory);
+  const stats = lstatSync(realDirectory, { bigint: true });
   if (
     !stats.isDirectory()
     || stats.isSymbolicLink()
-    || Number(stats.dev) !== Number(lexicalDirectory.dev)
-    || Number(stats.ino) !== Number(lexicalDirectory.ino)
+    || stats.dev !== lexicalDirectory.dev
+    || stats.ino !== lexicalDirectory.ino
   ) throw new IndexPathError(indexPath);
   const lexicalAllowedRoot = resolve(allowedRoot ?? directory);
   let allowedStats;
   try {
-    allowedStats = lstatSync(lexicalAllowedRoot);
+    allowedStats = lstatSync(lexicalAllowedRoot, { bigint: true });
   } catch {
     throw new IndexPathError(indexPath);
   }
@@ -223,8 +222,8 @@ export function bindIndexDirectory(indexPath: string, allowedRoot?: string): Ind
     lexicalAllowedRoot !== directory
     || !allowedStats.isDirectory()
     || allowedStats.isSymbolicLink()
-    || Number(allowedStats.dev) !== Number(lexicalDirectory.dev)
-    || Number(allowedStats.ino) !== Number(lexicalDirectory.ino)
+    || allowedStats.dev !== lexicalDirectory.dev
+    || allowedStats.ino !== lexicalDirectory.ino
     || realpathSync(lexicalAllowedRoot) !== realDirectory
   ) {
     throw new IndexPathError(indexPath);
@@ -233,8 +232,8 @@ export function bindIndexDirectory(indexPath: string, allowedRoot?: string): Ind
   return {
     directory,
     realDirectory,
-    dev: Number(lexicalDirectory.dev),
-    ino: Number(lexicalDirectory.ino),
+    dev: lexicalDirectory.dev,
+    ino: lexicalDirectory.ino,
     allowedRoot: lexicalAllowedRoot,
   };
 }
@@ -247,8 +246,8 @@ export function assertIndexPath(path: string, binding?: IndexDirectoryBinding): 
   let lexicalDirectory;
   let lexicalAllowedRoot;
   try {
-    lexicalDirectory = lstatSync(binding.directory);
-    lexicalAllowedRoot = lstatSync(binding.allowedRoot);
+    lexicalDirectory = lstatSync(binding.directory, { bigint: true });
+    lexicalAllowedRoot = lstatSync(binding.allowedRoot, { bigint: true });
   } catch {
     throw new IndexPathError(path);
   }
@@ -256,40 +255,40 @@ export function assertIndexPath(path: string, binding?: IndexDirectoryBinding): 
     binding.allowedRoot !== binding.directory
     || !lexicalDirectory.isDirectory()
     || lexicalDirectory.isSymbolicLink()
-    || Number(lexicalDirectory.dev) !== binding.dev
-    || Number(lexicalDirectory.ino) !== binding.ino
+    || lexicalDirectory.dev !== binding.dev
+    || lexicalDirectory.ino !== binding.ino
     || !lexicalAllowedRoot.isDirectory()
     || lexicalAllowedRoot.isSymbolicLink()
-    || Number(lexicalAllowedRoot.dev) !== binding.dev
-    || Number(lexicalAllowedRoot.ino) !== binding.ino
+    || lexicalAllowedRoot.dev !== binding.dev
+    || lexicalAllowedRoot.ino !== binding.ino
   ) throw new IndexPathError(path);
   let realDirectory: string;
   let stats;
   let lexicalAfter;
   try {
     realDirectory = realpathSync(binding.directory);
-    stats = lstatSync(realDirectory);
-    lexicalAfter = lstatSync(binding.directory);
+    stats = lstatSync(realDirectory, { bigint: true });
+    lexicalAfter = lstatSync(binding.directory, { bigint: true });
   } catch {
     throw new IndexPathError(path);
   }
   if (
     realDirectory !== binding.realDirectory
-    || Number(stats.dev) !== binding.dev
-    || Number(stats.ino) !== binding.ino
+    || stats.dev !== binding.dev
+    || stats.ino !== binding.ino
     || !stats.isDirectory()
     || stats.isSymbolicLink()
     || !lexicalAfter.isDirectory()
     || lexicalAfter.isSymbolicLink()
-    || Number(lexicalAfter.dev) !== binding.dev
-    || Number(lexicalAfter.ino) !== binding.ino
+    || lexicalAfter.dev !== binding.dev
+    || lexicalAfter.ino !== binding.ino
   ) throw new IndexPathError(path);
   assertNoFollowLeaf(path);
 }
 
 function assertNoFollowLeaf(path: string): void {
   try {
-    if (lstatSync(path).isSymbolicLink()) throw new IndexPathError(path);
+    if (lstatSync(path, { bigint: true }).isSymbolicLink()) throw new IndexPathError(path);
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
     if (code !== "ENOENT") throw error;
@@ -642,8 +641,8 @@ interface LockOwner {
 interface HeldLock {
   path: string;
   owner: LockOwner;
-  dev: number;
-  ino: number;
+  dev: bigint;
+  ino: bigint;
   release(): void;
 }
 
@@ -723,23 +722,34 @@ function acquireLock(
     }
 
     let writeError: unknown;
-    let openedDev: number | undefined;
-    let openedIno: number | undefined;
+    let openedDev: bigint | undefined;
+    let openedIno: bigint | undefined;
     try {
+      // Capture ownership before writing: even a partial owner record may
+      // fail, and cleanup must never unlink a replacement at the same path.
+      const openedStats = fstatSync(fd, { bigint: true });
+      if (!openedStats.isFile()) throw new WikiMaintenanceLockedError(path);
+      openedDev = openedStats.dev;
+      openedIno = openedStats.ino;
       assertIndexPath(path, binding);
       writeExact(fd, Buffer.from(`${JSON.stringify(owner)}\n`, "utf8"));
       fsyncSync(fd);
-      const openedStats = fstatSync(fd);
-      openedDev = Number(openedStats.dev);
-      openedIno = Number(openedStats.ino);
     } catch (error) {
       writeError = error;
     } finally {
       closeSync(fd);
     }
     if (writeError !== undefined) {
-      assertIndexPath(path, binding);
-      rmSync(path, { force: true });
+      try {
+        assertIndexPath(path, binding);
+        const current = lstatSync(path, { bigint: true });
+        if (current.isFile() && !current.isSymbolicLink()
+          && current.dev === openedDev && current.ino === openedIno) {
+          rmSync(path, { force: true });
+        }
+      } catch {
+        // A missing/unverifiable/replaced lock is not ours to remove.
+      }
       throw writeError;
     }
     if (openedDev === undefined || openedIno === undefined) throw new WikiMaintenanceLockedError(path);
@@ -768,12 +778,15 @@ function removeDeadLock(path: string, binding: IndexDirectoryBinding): boolean {
   if (observed === null || processIsAlive(observed.owner.pid)) return false;
   let current;
   try {
-    current = lstatSync(path);
+    current = lstatSync(path, { bigint: true });
   } catch {
     return true;
   }
   if (current.dev !== observed.dev || current.ino !== observed.ino) return false;
   assertIndexPath(path, binding);
+  const final = lstatSync(path, { bigint: true });
+  if (!final.isFile() || final.isSymbolicLink()
+    || final.dev !== observed.dev || final.ino !== observed.ino) return false;
   rmSync(path, { force: true });
   return true;
 }
@@ -781,8 +794,8 @@ function removeDeadLock(path: string, binding: IndexDirectoryBinding): boolean {
 function releaseLock(
   path: string,
   owner: LockOwner,
-  dev: number,
-  ino: number,
+  dev: bigint,
+  ino: bigint,
   binding: IndexDirectoryBinding,
 ): void {
   const observed = readOwner(path, binding);
@@ -795,24 +808,43 @@ function releaseLock(
     throw new WikiMaintenanceLockedError(path);
   }
   assertIndexPath(path, binding);
+  const final = lstatSync(path, { bigint: true });
+  if (!final.isFile() || final.isSymbolicLink() || final.dev !== dev || final.ino !== ino) {
+    throw new WikiMaintenanceLockedError(path);
+  }
   rmSync(path, { force: true });
 }
 
 function readOwner(
   path: string,
   binding: IndexDirectoryBinding,
-): { owner: LockOwner; dev: number; ino: number } | null {
+): { owner: LockOwner; dev: bigint; ino: bigint } | null {
   let fd: number | undefined;
   try {
     assertIndexPath(path, binding);
     const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
     fd = openSync(path, flags);
-    const stats = fstatSync(fd);
-    if (!stats.isFile() || stats.size > MAX_LOCK_BYTES) return null;
+    const stats = fstatSync(fd, { bigint: true });
+    if (!stats.isFile() || stats.size > BigInt(MAX_LOCK_BYTES)) return null;
     // Read through the descriptor whose identity was just captured. Reading by
     // pathname after lstat would let a replace race supply a different owner.
-    const raw = readFileSync(fd, "utf8");
-    const parsed = JSON.parse(raw) as Partial<LockOwner>;
+    const bytes = Buffer.alloc(MAX_LOCK_BYTES + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const read = readSync(fd, bytes, length, bytes.length - length, length);
+      if (read === 0) break;
+      length += read;
+    }
+    if (length > MAX_LOCK_BYTES) return null;
+    const after = fstatSync(fd, { bigint: true });
+    assertIndexPath(path, binding);
+    const current = lstatSync(path, { bigint: true });
+    if (!current.isFile() || current.isSymbolicLink()
+      || current.dev !== stats.dev || current.ino !== stats.ino
+      || after.dev !== stats.dev || after.ino !== stats.ino
+      || after.size !== stats.size || BigInt(length) !== stats.size
+      || after.mtimeNs !== stats.mtimeNs || after.ctimeNs !== stats.ctimeNs) return null;
+    const parsed = JSON.parse(bytes.toString("utf8", 0, length)) as Partial<LockOwner>;
     if (
       parsed.v !== 1
       || !Number.isSafeInteger(parsed.pid)

@@ -501,6 +501,7 @@ function runBatch(
   const cache: ParseCache = createParseCache();
   const planOptions = {
     scaffoldRoot: resolve(options.scaffoldRoot),
+    captureCreationProvenance: true,
     parseCache: cache,
     ...(options.indexPath === undefined ? {} : { indexPath: options.indexPath }),
     ...(options.exclude === undefined ? {} : { exclude: options.exclude }),

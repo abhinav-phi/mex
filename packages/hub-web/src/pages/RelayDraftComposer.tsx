@@ -83,6 +83,7 @@ export interface RelayDraftComposerProps {
   onClose(): void;
   onApplied(result: RelayOperationApplyResponse): Promise<void>;
   onRetryMembers?(): void;
+  onAudienceChange(audience: "team" | "members"): void;
 }
 
 const PREVIEW_IDENTITY_ERROR = "The signed Relay preview did not exactly match the submitted request.";
@@ -321,9 +322,12 @@ export default function RelayDraftComposer({
   onClose,
   onApplied,
   onRetryMembers,
+  onAudienceChange,
 }: RelayDraftComposerProps) {
   const api = useHubApi();
   const recipientsInputId = useId();
+  const [audience, setAudience] = useState<"team" | "members">(draft ? draft.input.audience ?? "members" : "team");
+  useEffect(() => { onAudienceChange(audience); }, [audience, onAudienceChange]);
   const recipientsAnchor = useComboboxAnchor();
   const eligibleMembers = useMemo(() => members.filter((member) => member.active), [members]);
   const [recipients, setRecipients] = useState<RecipientRef[]>(draft?.input.recipients ? [...draft.input.recipients] : []);
@@ -443,20 +447,20 @@ export default function RelayDraftComposer({
     ));
     if (
       !summary.trim()
-      || recipients.length === 0
       || recipients.length > 32
       || recipients.some((recipient) => !MEMBER_ID_PATTERN.test(recipient.memberId))
       || invalidEvidence
     ) {
       setProblem({
         title: "Finish the required handoff details",
-        detail: "Choose at least one eligible recipient and add a summary. Complete any Knowledge or code evidence fields before saving.",
+        detail: "Add a summary and complete any Knowledge or code evidence fields before saving. Recipients can be chosen before publication.",
         diagnostics: [],
       });
       return null;
     }
     return {
-      recipients,
+      ...(audience === "members" && draft !== null && draft.input.audience === undefined ? {} : { audience }),
+      recipients: audience === "team" ? [] : recipients,
       summary: summary.trim(),
       completed: clean(completed),
       inProgress: clean(inProgress),
@@ -535,7 +539,7 @@ export default function RelayDraftComposer({
         </DialogHeader>
 
         <div className={styles.scrollRegion} inert={apply.isPending || undefined}>
-          {membersError ? (
+          {audience === "members" && membersError ? (
             <Alert className={styles.referenceWarning}>
               <TriangleAlert aria-hidden="true" />
               <AlertTitle>Some project references could not be loaded</AlertTitle>
@@ -553,7 +557,17 @@ export default function RelayDraftComposer({
               <h3 id="relay-draft-core-heading">What your teammate needs</h3>
             </div>
             <FieldGroup className={styles.fieldGroup}>
-              <Field data-invalid={recipients.length === 0 || undefined}>
+              <Field>
+                <FieldLabel htmlFor="relay-draft-audience">Who can take this handoff?</FieldLabel>
+                <NativeSelect className={styles.audienceSelect} id="relay-draft-audience" value={audience} onChange={(event) => change(setAudience)(event.target.value as "team" | "members")}>
+                  <NativeSelectOption value="team">Open to team</NativeSelectOption>
+                  <NativeSelectOption value="members">Named Members</NativeSelectOption>
+                </NativeSelect>
+                <FieldDescription>{audience === "team"
+                  ? "Any active Member can take the published handoff, including teammates who join later."
+                  : "Only the Members you name can take it. You can choose them later while this is a local draft."}</FieldDescription>
+              </Field>
+              {audience === "members" ? <Field>
                 <FieldLabel htmlFor={recipientsInputId}>Eligible recipients</FieldLabel>
                 <Combobox
                   isItemEqualToValue={(item: RecipientChoice, value: RecipientChoice) => item.id === value.id}
@@ -564,7 +578,7 @@ export default function RelayDraftComposer({
                   onValueChange={(choices: RecipientChoice[]) => change(setRecipients)(choices.slice(0, 32).map((choice) => choice.reference))}
                   value={selectedRecipients}
                 >
-                  <ComboboxChips aria-invalid={recipients.length === 0 || undefined} className={styles.recipientChips} ref={recipientsAnchor}>
+                  <ComboboxChips className={styles.recipientChips} ref={recipientsAnchor}>
                     <ComboboxValue>
                       {(choices: RecipientChoice[]) => (
                         <>
@@ -591,8 +605,8 @@ export default function RelayDraftComposer({
                     </ComboboxList>
                   </ComboboxContent>
                 </Combobox>
-                <FieldDescription>Choose one or more active teammates who are eligible to take the published handoff.</FieldDescription>
-              </Field>
+                <FieldDescription>Optional for a local draft. Publication requires at least one active Member.</FieldDescription>
+              </Field> : null}
 
               <Field data-invalid={!summary.trim() || undefined}>
                 <FieldLabel htmlFor="relay-draft-summary">Summary</FieldLabel>
@@ -637,7 +651,7 @@ export default function RelayDraftComposer({
                 </dl>
               ) : null}
 
-              <FieldSet className={styles.fieldSet}>
+              {audience === "members" ? <FieldSet className={styles.fieldSet}>
                 <FieldLegend>Recipient references</FieldLegend>
                 <div className={styles.technicalList}>
                   {recipients.length ? recipients.map((recipient) => (
@@ -657,7 +671,7 @@ export default function RelayDraftComposer({
                   </Button>
                 </div>
                 <FieldDescription>Use a raw Member ID only when the project Member list cannot be read. Publication still verifies that recipient exactly.</FieldDescription>
-              </FieldSet>
+              </FieldSet> : null}
 
               {code.length || evidence.some((row) => row.kind === "code") ? (
                 <FieldSet className={styles.fieldSet}>

@@ -1,7 +1,11 @@
 import { HUB_LIMITS } from "@mex/hub-contracts";
 import { invalidRequest } from "./errors.js";
 
-export async function readBoundedJson(request: Request): Promise<unknown> {
+export async function readBoundedJson(
+  request: Request,
+  maximumBytes: number = HUB_LIMITS.maxMutationBodyBytes,
+): Promise<unknown> {
+  const limitDescription = maximumBytes === HUB_LIMITS.maxMutationBodyBytes ? "64 KiB" : `${maximumBytes} byte`;
   const contentType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
   if (contentType !== "application/json") {
     throw invalidRequest("Mutations require an application/json request body.");
@@ -12,8 +16,8 @@ export async function readBoundedJson(request: Request): Promise<unknown> {
     if (!/^\d+$/.test(contentLength)) {
       throw invalidRequest("The Content-Length header is invalid.");
     }
-    if (Number(contentLength) > HUB_LIMITS.maxMutationBodyBytes) {
-      throw invalidRequest("The request body exceeds the 64 KiB limit.");
+    if (Number(contentLength) > maximumBytes) {
+      throw invalidRequest(`The request body exceeds the ${limitDescription} limit.`);
     }
   }
 
@@ -29,9 +33,9 @@ export async function readBoundedJson(request: Request): Promise<unknown> {
       const { done, value } = await reader.read();
       if (done) break;
       byteLength += value.byteLength;
-      if (byteLength > HUB_LIMITS.maxMutationBodyBytes) {
+      if (byteLength > maximumBytes) {
         await reader.cancel();
-        throw invalidRequest("The request body exceeds the 64 KiB limit.");
+        throw invalidRequest(`The request body exceeds the ${limitDescription} limit.`);
       }
       chunks.push(value);
     }
