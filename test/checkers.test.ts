@@ -486,6 +486,101 @@ describe("checkDependencies", () => {
     ], tmpDir);
     expect(issues).toHaveLength(0);
   });
+
+  it("reads a dependencies array written one item per line (#3)", () => {
+    writeFileSync(join(tmpDir, "pyproject.toml"), [
+      "[build-system]",
+      'requires = ["hatchling"]',
+      "",
+      "[project]",
+      'name = "svc"',
+      'requires-python = ">=3.10"',
+      "dependencies = [",
+      '    "mcp>=1.0.0,<3",',
+      "    # pinned below 4 until the next major settles",
+      '    "fastmcp>=3.2.4,<4",',
+      '    "celery[redis]==5.4.0",',
+      "]",
+      "",
+      "[project.optional-dependencies]",
+      "embeddings = [",
+      '    "sentence-transformers>=3.0.0,<6",',
+      "]",
+      "all = [",
+      '    "svc[embeddings]",',
+      "]",
+      "",
+    ].join("\n"));
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "mcp" }),
+      claim({ kind: "dependency", value: "FastMCP" }),
+      claim({ kind: "dependency", value: "celery" }),
+      claim({ kind: "dependency", value: "sentence-transformers" }),
+      claim({ kind: "dependency", value: "boto3" }),
+      // The `all` extra lists the project itself; that is not a dependency.
+      claim({ kind: "dependency", value: "svc" }),
+    ], tmpDir);
+    expect(issues.map((i) => i.claim.value)).toEqual(["boto3", "svc"]);
+  });
+
+  it("keeps the items after a PEP 508 environment marker (#3)", () => {
+    writeFileSync(join(tmpDir, "pyproject.toml"), [
+      "[project]",
+      'name = "svc"',
+      "dependencies = [",
+      `    "tomli>=2.0.0,<3; python_version < '3.11'",`,
+      '    "fastapi>=0.115",',
+      "]",
+      "",
+    ].join("\n"));
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "tomli" }),
+      claim({ kind: "dependency", value: "FastAPI" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("reads poetry groups and PEP 735 dependency groups (#3)", () => {
+    writeFileSync(join(tmpDir, "pyproject.toml"), [
+      "[dependency-groups]",
+      "dev = [",
+      '    "ruff",',
+      '    { include-group = "test" },',
+      "]",
+      'test = ["pytest>=8.0"]',
+      "",
+      "[tool.poetry.group.dev.dependencies]",
+      'python = "^3.12"',
+      'mypy = "^1.11"',
+      'httpx = { version = "^0.27", optional = true }',
+      "",
+    ].join("\n"));
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "ruff" }),
+      claim({ kind: "dependency", value: "pytest" }),
+      claim({ kind: "dependency", value: "mypy" }),
+      claim({ kind: "dependency", value: "httpx" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("takes the constraint out of a poetry inline table (#3)", () => {
+    writeFileSync(join(tmpDir, "pyproject.toml"), [
+      "[tool.poetry.dependencies]",
+      'httpx = { version = "^0.27.2", python = ">=3.10" }',
+      "",
+    ].join("\n"));
+    // The claimed version is nowhere in the constraint. Keeping the whole
+    // inline table as the version would match "3.10" against the marker and
+    // report nothing.
+    const issues = checkDependencies([
+      claim({ kind: "version", value: "httpx 3.10" }),
+      claim({ kind: "version", value: "httpx 0.27" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe("VERSION_MISMATCH");
+    expect(issues[0].message).toContain("^0.27.2");
+  });
 });
 
 // ── Cross-file Checker ──
