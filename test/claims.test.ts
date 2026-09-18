@@ -323,32 +323,26 @@ describe("extractClaims — returns empty for missing file", () => {
   });
 });
 
-describe("extractClaims — non-package dependency filtering (#4)", () => {
-  it("drops all-caps acronyms from dependency sections", () => {
+describe("extractClaims — non-package names (#4)", () => {
+  it("keeps a bold name that has package shape, whatever it denotes", () => {
+    // Filtering belongs in the dependency checker, where the manifest says
+    // whether a name is a package this project actually declares. The
+    // extractor reports what the document claims.
     const path = writeFixture(
-      "acronyms.md",
-      "## Stack\n\n- **AWS** — cloud provider\n- **REST** — interface style\n- **JWT** — auth tokens\n"
+      "labels.md",
+      "## Dependencies\n\n- **Frontend** — the UI\n- **Express** — web framework\n- **@scope/pkg** — internal\n"
     );
-    const deps = extractClaims(path, "acronyms.md").filter((c) => c.kind === "dependency");
-    expect(deps).toEqual([]);
+    const deps = extractClaims(path, "labels.md").filter((c) => c.kind === "dependency");
+    expect(deps.map((d) => d.value)).toEqual(["Frontend", "Express", "@scope/pkg"]);
   });
 
-  it("drops multi-word descriptive phrases", () => {
+  it("drops multi-word phrases, which have no package shape", () => {
     const path = writeFixture(
       "phrases.md",
       "## Tech Stack\n\n- **REST API** — external interface\n- **Database Layer** — persistence\n"
     );
     const deps = extractClaims(path, "phrases.md").filter((c) => c.kind === "dependency");
     expect(deps).toEqual([]);
-  });
-
-  it("drops common architectural labels but keeps real packages", () => {
-    const path = writeFixture(
-      "labels.md",
-      "## Dependencies\n\n- **Frontend** — the UI\n- **Middleware** — request pipeline\n- **Express** — web framework\n- **@scope/pkg** — internal\n"
-    );
-    const deps = extractClaims(path, "labels.md").filter((c) => c.kind === "dependency");
-    expect(deps.map((d) => d.value)).toEqual(["Express", "@scope/pkg"]);
   });
 
   it("keeps mixed-case package names with digits", () => {
