@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   existsSync,
+  linkSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -123,6 +124,42 @@ describe("mex export destination safety (#183 P1)", () => {
     const second = readFileSync(join(tmpDir, bundleRel), "utf-8");
     expect(second).toBe(first);
     expect(logSpy).toHaveBeenCalled();
+  });
+
+  it("refuses any other existing project state, keeping its bytes", async () => {
+    mkdirSync(join(tmpDir, ".mex/events"), { recursive: true });
+    const decisions = join(tmpDir, ".mex/events/decisions.jsonl");
+    writeFileSync(decisions, JSON.stringify({ event: "keep-me" }));
+    const readme = join(tmpDir, "README.md");
+    writeFileSync(readme, "# Keep me\n");
+    await expect(runExport(config, { out: ".mex/events/decisions.jsonl" })).rejects.toThrow(
+      /already exists and is not a previous export bundle/
+    );
+    await expect(runExport(config, { out: "README.md" })).rejects.toThrow(
+      /already exists and is not a previous export bundle/
+    );
+    expect(readFileSync(decisions, "utf-8")).toBe(JSON.stringify({ event: "keep-me" }));
+    expect(readFileSync(readme, "utf-8")).toBe("# Keep me\n");
+  });
+
+  it("refuses a hardlink alias of a scaffold file, keeping the target bytes", async () => {
+    const routerPath = join(tmpDir, ".mex/ROUTER.md");
+    const before = readFileSync(routerPath, "utf-8");
+    mkdirSync(join(tmpDir, "exports"));
+    // Same inode, different path: realpath comparison cannot see it, but the
+    // existence refusal still protects the target.
+    linkSync(routerPath, join(tmpDir, "exports/scaffold.md"));
+    await expect(runExport(config, { out: "exports/scaffold.md" })).rejects.toThrow(
+      /Refusing to export/
+    );
+    expect(readFileSync(routerPath, "utf-8")).toBe(before);
+  });
+
+  it("refuses an existing directory as --out", async () => {
+    mkdirSync(join(tmpDir, "exports"));
+    await expect(runExport(config, { out: "exports" })).rejects.toThrow(
+      /Refusing to export/
+    );
   });
 });
 
