@@ -57,7 +57,12 @@ function realpathBestEffort(target: string): string {
 function isPreviousExportBundle(target: string): boolean {
   let fd: number | undefined;
   try {
-    fd = openSync(target, "r");
+    // O_NONBLOCK + regular-file check: a FIFO at the target must neither hang
+    // this probe nor be mistaken for a bundle.
+    fd = openSync(target, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+    if (!fstatSync(fd).isFile()) {
+      return false;
+    }
     const prefix = Buffer.alloc(BUNDLE_MARKER.length);
     const read = readSync(fd, prefix, 0, prefix.length, 0);
     return read === prefix.length && prefix.toString("utf-8") === BUNDLE_MARKER;
@@ -129,14 +134,43 @@ function pathExists(target: string): boolean {
 }
 
 /**
+ * Write the whole document through an open descriptor, looping over partial
+ * writes. A single `writeSync` may transfer only a prefix (disk quota, file
+ * size limits), which must never be reported as success.
+ */
+function writeAllSync(fd: number, document: string, out: string): void {
+  const bytes = Buffer.from(document, "utf-8");
+  let offset = 0;
+  while (offset < bytes.length) {
+    const written = writeSync(fd, bytes, offset, bytes.length - offset, null);
+    if (written === 0) {
+      throw new Error(
+        `Refusing to export: "${out}" could not be fully written ` +
+          `(${offset} of ${bytes.length} bytes stored). Choose a different --out path.`
+      );
+    }
+    offset += written;
+  }
+}
+
+/**
  * Overwrite a previous export bundle through a fresh descriptor, re-verifying
  * the bundle marker on the descriptor itself before truncating. This closes
  * the check→write race: a file swapped in after the pre-read check is refused
  * instead of truncated.
  */
 function overwritePreviousBundle(target: string, out: string, document: string): void {
-  const fd = openSync(target, "r+");
+  // O_NONBLOCK is a no-op for regular files but keeps this open from hanging
+  // if the target was replaced by a FIFO; the descriptor check below then
+  // refuses the non-regular object instead of reading or truncating it.
+  const fd = openSync(target, fsConstants.O_RDWR | fsConstants.O_NONBLOCK);
   try {
+    if (!fstatSync(fd).isFile()) {
+      throw new Error(
+        `Refusing to export: "${out}" already exists and is not a previous export bundle. ` +
+          `Choose a different --out path.`
+      );
+    }
     const prefix = Buffer.alloc(BUNDLE_MARKER.length);
     const read = readSync(fd, prefix, 0, prefix.length, 0);
     if (read !== prefix.length || prefix.toString("utf-8") !== BUNDLE_MARKER) {
@@ -146,7 +180,7 @@ function overwritePreviousBundle(target: string, out: string, document: string):
       );
     }
     ftruncateSync(fd, 0);
-    writeSync(fd, document, 0, "utf-8");
+    writeAllSync(fd, document, out);
   } finally {
     try {
       closeSync(fd);
@@ -175,7 +209,7 @@ function writeNewBundleFile(target: string, out: string, document: string): void
     throw error;
   }
   try {
-    writeSync(fd, document, 0, "utf-8");
+    writeAllSync(fd, document, out);
   } finally {
     try {
       closeSync(fd);

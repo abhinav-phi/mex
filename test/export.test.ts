@@ -4,6 +4,7 @@ import {
   linkSync,
   mkdtempSync,
   mkdirSync,
+  mkfifoSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -216,4 +217,78 @@ describe("mex export bounds (#183 P2)", () => {
     resetScaffold(filler(8, MAX_EXPORT_FILE_BYTES));
     await expect(runExport(config, {})).resolves.toBeUndefined();
   });
+});
+
+describe("mex export write completion (#183 P2)", () => {
+  // Force short writes through a per-test node:fs mock: the export module is
+  // re-imported fresh so only these tests observe the mock.
+  async function importExportWithWrites(
+    writeBehavior: (write: typeof import("node:fs").writeSync, fd: number, buf: Buffer, offset: number, length: number, position: null) => number
+  ): Promise<typeof import("../src/export.js")> {
+    vi.resetModules();
+    vi.doMock("node:fs", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("node:fs")>();
+      return {
+        ...actual,
+        writeSync: ((fd: number, buf: Buffer, offset: number, length: number, position: null) =>
+          writeBehavior(actual.writeSync, fd, buf, offset, length, position)) as unknown as typeof actual.writeSync,
+      };
+    });
+    try {
+      return await import("../src/export.js");
+    } finally {
+      vi.doUnmock("node:fs");
+      vi.resetModules();
+    }
+  }
+
+  it("fails a new-file export when the descriptor stops accepting bytes", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const mocked = await importExportWithWrites(() => 0);
+    await expect(mocked.runExport(config, { out: "exports/scaffold.md" })).rejects.toThrow(
+      /could not be fully written/
+    );
+    // Partial bytes may exist, but success is never reported.
+    expect(logSpy.mock.calls.map((call) => String(call[0])).join("")).not.toContain("Wrote");
+  });
+
+  it("fails a previous-bundle overwrite when the descriptor stops accepting bytes", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await runExport(config, { out: "exports/scaffold.md" });
+    logSpy.mockClear();
+    const mocked = await importExportWithWrites(() => 0);
+    await expect(mocked.runExport(config, { out: "exports/scaffold.md" })).rejects.toThrow(
+      /could not be fully written/
+    );
+    expect(logSpy.mock.calls.map((call) => String(call[0])).join("")).not.toContain("Wrote 3");
+  });
+
+  it("completes the bundle when an early write is short", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    let shortLeft = 1;
+    const mocked = await importExportWithWrites((write, fd, buf, offset, length, position) => {
+      if (shortLeft > 0) {
+        shortLeft -= 1;
+        return write(fd, buf, offset, Math.min(10, length), position);
+      }
+      return write(fd, buf, offset, length, position);
+    });
+    await mocked.runExport(config, { out: "exports/scaffold.md" });
+    const written = readFileSync(join(tmpDir, "exports/scaffold.md"), "utf-8");
+    expect(written).toContain("## ROUTER.md");
+    expect(written).toContain("Node 22.");
+    expect(logSpy.mock.calls.map((call) => String(call[0])).join(""))
+      .toContain("Wrote 3 scaffold file(s) to exports/scaffold.md");
+  });
+
+  it("refuses a FIFO as --out without hanging", async () => {
+    // Node cannot create FIFOs on Windows; the implementation is still safe
+    // there because the blocking probe is gone on every platform.
+    if (process.platform === "win32") return;
+    mkdirSync(join(tmpDir, "exports"));
+    mkfifoSync(join(tmpDir, "exports/scaffold.md"));
+    await expect(runExport(config, { out: "exports/scaffold.md" })).rejects.toThrow(
+      /already exists and is not a previous export bundle/
+    );
+  }, 10000);
 });
