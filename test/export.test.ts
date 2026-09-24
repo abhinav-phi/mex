@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   linkSync,
   mkdtempSync,
   mkdirSync,
-  mkfifoSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import {
   MAX_EXPORT_FILES,
   MAX_EXPORT_FILE_BYTES,
@@ -281,14 +282,24 @@ describe("mex export write completion (#183 P2)", () => {
       .toContain("Wrote 3 scaffold file(s) to exports/scaffold.md");
   });
 
-  it("refuses a FIFO as --out without hanging", async () => {
-    // Node cannot create FIFOs on Windows; the implementation is still safe
-    // there because the blocking probe is gone on every platform.
-    if (process.platform === "win32") return;
+  it.skipIf(process.platform === "win32")("refuses a FIFO as --out without hanging", () => {
     mkdirSync(join(tmpDir, "exports"));
-    mkfifoSync(join(tmpDir, "exports/scaffold.md"));
-    await expect(runExport(config, { out: "exports/scaffold.md" })).rejects.toThrow(
+    execFileSync("mkfifo", [join(tmpDir, "exports/scaffold.md")], { timeout: 5000 });
+    // A blocking open stalls the event loop, so an in-process test timeout
+    // cannot catch this regression. Bound the real CLI in a separate process.
+    const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
+    const result = spawnSync(process.execPath, [cliPath, "export", "--out", "exports/scaffold.md"], {
+      cwd: tmpDir,
+      encoding: "utf-8",
+      env: { ...process.env, MEX_TELEMETRY: "0" },
+      timeout: 5000,
+      killSignal: "SIGKILL",
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(
       /already exists and is not a previous export bundle/
     );
+    expect(result.stdout).not.toContain("Wrote");
   }, 10000);
 });
